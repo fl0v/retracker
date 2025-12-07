@@ -6,9 +6,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LISTS_DIR="${SCRIPT_DIR}/lists"
 CUSTOM_LIST="${LISTS_DIR}/_custom.txt"
-OUTPUT_FILE="${LISTS_DIR}/forwarders.yml"
+OUTPUT_FILE="${PROJECT_ROOT}/configs/forwarders.yml"
 
 # Define tracker list sources (URL and local filename)
 # Format: "URL|filename"
@@ -24,6 +25,8 @@ SKIP_FILES=("_all.txt" "_normalized.txt" "_unique.txt" "_custom.txt" "forwarders
 
 # Create lists directory if it doesn't exist
 mkdir -p "$LISTS_DIR"
+# Create configs directory if it doesn't exist
+mkdir -p "${PROJECT_ROOT}/configs"
 
 echo "Downloading tracker lists to ${LISTS_DIR}..."
 

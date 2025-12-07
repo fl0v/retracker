@@ -83,19 +83,19 @@ build-local: ## Build the Go binary locally
 	mkdir -p $(BUILD_DIR) && go build -o $(BINARY) ./cmd/retracker
 
 run-local: build-local ## Run retracker locally with HTTP only (default port 6969)
-	$(BINARY) -l :6969 -f ./scripts/lists/forwarders.yml
+	$(BINARY) -l :6969 -f ./configs/forwarders.yml
 
 run-local-udp: build-local ## Run retracker locally with both HTTP and UDP (ports 6969)
-	$(BINARY) -l :6969 -u :6969 -f ./scripts/lists/forwarders.yml
+	$(BINARY) -l :6969 -u :6969 -f ./configs/forwarders.yml
 
 run-local-udp-debug: build-local ## Run retracker locally with HTTP, UDP, and debug mode
-	$(BINARY) -l :6969 -u :6969 -d -f ./scripts/lists/forwarders.yml
+	$(BINARY) -l :6969 -u :6969 -d -f ./configs/forwarders.yml
 
 run-local-udp-prometheus: build-local ## Run retracker locally with HTTP, UDP, and Prometheus
-	$(BINARY) -l :6969 -u :6969 -p -f ./scripts/lists/forwarders.yml
+	$(BINARY) -l :6969 -u :6969 -p -f ./configs/forwarders.yml
 
 run-local-custom: build-local ## Run with custom ports (usage: make run-local-custom HTTP_PORT=9090 UDP_PORT=9091)
-	$(BINARY) -l :$(HTTP_PORT) -u :$(UDP_PORT) -f ./scripts/lists/forwarders.yml
+	$(BINARY) -l :$(HTTP_PORT) -u :$(UDP_PORT) -f ./configs/forwarders.yml
 
 clean-local: ## Remove the local build directory
 	rm -rf $(BUILD_DIR)
