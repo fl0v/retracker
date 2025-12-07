@@ -3,16 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/vvampirius/retracker/bittorrent/common"
-	Response "github.com/vvampirius/retracker/bittorrent/response"
-	"github.com/vvampirius/retracker/bittorrent/tracker"
-	CoreCommon "github.com/vvampirius/retracker/common"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"time"
+	"unicode/utf8"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/vvampirius/retracker/bittorrent/common"
+	Response "github.com/vvampirius/retracker/bittorrent/response"
+	"github.com/vvampirius/retracker/bittorrent/tracker"
+	CoreCommon "github.com/vvampirius/retracker/common"
 )
 
 type ReceiverAnnounce struct {
@@ -106,23 +108,48 @@ func (ra *ReceiverAnnounce) makeForwards(request tracker.Request) []common.Peer 
 	peers := make([]common.Peer, 0)
 	forwardsCount := len(ra.Config.Forwards)
 	if forwardsCount > 0 {
+		hash := fmt.Sprintf("%x", request.InfoHash)
+		DebugLog.Printf("Processing %d forwarder(s) for info_hash %s (timeout: %ds)\n", forwardsCount, hash, ra.Config.ForwardTimeout)
+		startTime := time.Now()
 		ch := make(chan []common.Peer, forwardsCount)
-		ctx, _ := context.WithTimeout(context.Background(), time.Second*time.Duration(ra.Config.ForwardTimeout))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(ra.Config.ForwardTimeout))
+		defer cancel()
 		for _, v := range ra.Config.Forwards {
 			go ra.makeForward(v, request, ch, ctx)
 		}
 		for i := 0; i < forwardsCount; i++ {
-			peers = append(peers, <-ch...)
+			forwardPeers := <-ch
+			peers = append(peers, forwardPeers...)
 		}
+		duration := time.Since(startTime)
 		peers = CoreCommon.PeersUniq(peers)
-		if ra.Config.Debug {
-			DebugLog.Printf("%x has uniq peers: %d\n", request.InfoHash, len(peers))
-		}
+		DebugLog.Printf("Forwarder processing completed for %s: %d unique peers from %d forwarder(s) in %v\n", hash, len(peers), forwardsCount, duration)
 	}
 	return peers
 }
 
+// isPrintableText checks if data is printable text (not binary)
+func isPrintableText(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	// Check if it's valid UTF-8 and mostly printable
+	if !utf8.Valid(data) {
+		return false
+	}
+	// Check if it contains mostly printable characters
+	printableCount := 0
+	for _, b := range data {
+		if b >= 32 && b < 127 || b == '\n' || b == '\r' || b == '\t' {
+			printableCount++
+		}
+	}
+	// Consider it text if at least 80% is printable
+	return float64(printableCount)/float64(len(data)) >= 0.8
+}
+
 func (ra *ReceiverAnnounce) makeForward(forward CoreCommon.Forward, request tracker.Request, ch chan<- []common.Peer, ctx context.Context) {
+	startTime := time.Now()
 	peers := make([]common.Peer, 0)
 	uri := fmt.Sprintf("%s?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d", forward.Uri, url.QueryEscape(string(request.InfoHash)),
 		url.QueryEscape(string(request.PeerID)), request.Port, request.Uploaded, request.Downloaded, request.Left)
@@ -131,18 +158,30 @@ func (ra *ReceiverAnnounce) makeForward(forward CoreCommon.Forward, request trac
 	}
 	hash := fmt.Sprintf("%x", request.InfoHash)
 	forwardName := forward.GetName()
+	trackerURL := forward.Uri
+
+	// Normal mode: log hash and tracker URL (without params)
+	fmt.Printf("Forwarding announce %s to %s\n", hash, trackerURL)
+	// Debug mode: log actual Request URI
 	if ra.Config.Debug {
+		DebugLog.Printf("  Request URI: %s\n", uri)
 		if forward.Ip != `` {
-			DebugLog.Printf("Announce %x to %s with IP %s", hash, forwardName, forward.Ip)
-		} else {
-			DebugLog.Printf("Announce %x to %s", hash, forwardName)
+			DebugLog.Printf("  Using IP: %s\n", forward.Ip)
 		}
-		//DebugLog.Println(uri)
+		if forward.Host != `` {
+			DebugLog.Printf("  Host header: %s\n", forward.Host)
+		}
 	}
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		ErrorLog.Println(err)
+		duration := time.Since(startTime)
+		// Normal mode: hash, tracker URL, error
+		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
+		// Debug mode: show duration
+		if ra.Config.Debug {
+			ErrorLog.Printf("  Duration: %v\n", duration)
+		}
 		ch <- peers
 		return
 	}
@@ -151,8 +190,14 @@ func (ra *ReceiverAnnounce) makeForward(forward CoreCommon.Forward, request trac
 	}
 	client := http.Client{}
 	response, err := client.Do(rqst)
+	duration := time.Since(startTime)
 	if err != nil {
-		ErrorLog.Printf("Announce %x to %s got error: %s", hash, forwardName, err.Error())
+		// Normal mode: hash, tracker URL, error
+		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
+		// Debug mode: show duration
+		if ra.Config.Debug {
+			ErrorLog.Printf("  Duration: %v\n", duration)
+		}
 		if ra.Prometheus != nil {
 			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
 		}
@@ -160,44 +205,76 @@ func (ra *ReceiverAnnounce) makeForward(forward CoreCommon.Forward, request trac
 		return
 	}
 	defer response.Body.Close()
+
 	if ra.Prometheus != nil {
 		ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
 	}
 	if response.StatusCode != http.StatusOK {
-		ErrorLog.Printf("Announce %x to %s got status: %s", request.InfoHash, forward.GetName(), response.Status)
+		// Normal mode: hash, tracker URL, error
+		ErrorLog.Printf("Error forwarding %s to %s: HTTP %d %s\n", hash, trackerURL, response.StatusCode, response.Status)
+		// Debug mode: show duration
+		if ra.Config.Debug {
+			ErrorLog.Printf("  Duration: %v\n", duration)
+		}
 		ch <- peers
 		return
 	}
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		ErrorLog.Printf("Announce %x from %s read error: %s", request.InfoHash, forward.GetName(), err.Error())
+		// Normal mode: hash, tracker URL, error
+		ErrorLog.Printf("Error forwarding %s to %s: failed to read response: %s\n", hash, trackerURL, err.Error())
+		// Debug mode: show duration
+		if ra.Config.Debug {
+			ErrorLog.Printf("  Duration: %v\n", duration)
+		}
 		if ra.Prometheus != nil {
 			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
 		}
 		ch <- peers
 		return
 	}
+
 	tempFilename := ``
 	if ra.Config.Debug {
 		tempFilename = ra.TempStorage.SaveBencodeFromForwarder(payload, fmt.Sprintf("%x", request.InfoHash), uri)
 	}
 	bitResponse, err := Response.Load(payload)
 	if err != nil {
-		ErrorLog.Printf("Announce %x from %s parse error: %s", request.InfoHash, forward.GetName(), err.Error())
-		if tempFilename == `` {
-			tempFilename = ra.TempStorage.SaveBencodeFromForwarder(payload, fmt.Sprintf("%x", request.InfoHash), uri)
+		// Normal mode: hash, tracker URL, error
+		ErrorLog.Printf("Error forwarding %s to %s: failed to parse response: %s\n", hash, trackerURL, err.Error())
+		// Debug mode: show raw received data if not binary
+		if ra.Config.Debug {
+			if isPrintableText(payload) {
+				// Limit to first 500 chars to avoid huge logs
+				payloadStr := string(payload)
+				if len(payloadStr) > 500 {
+					payloadStr = payloadStr[:500] + "... (truncated)"
+				}
+				ErrorLog.Printf("  Raw response data: %s\n", payloadStr)
+			} else {
+				ErrorLog.Printf("  Response is binary (%d bytes)\n", len(payload))
+			}
+			if tempFilename == `` {
+				tempFilename = ra.TempStorage.SaveBencodeFromForwarder(payload, fmt.Sprintf("%x", request.InfoHash), uri)
+			}
+			if tempFilename != `` {
+				ErrorLog.Printf("  Response saved to: %s\n", tempFilename)
+			}
 		}
-		ErrorLog.Fatalln(`Check file`, tempFilename)
 		if ra.Prometheus != nil {
 			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
 		}
 		ch <- peers
 		return
 	}
-	if ra.Config.Debug {
-		DebugLog.Printf("Announce %x to %s got %d peers", request.InfoHash, forward.GetName(), len(bitResponse.Peers))
-	}
+
 	peers = append(peers, bitResponse.Peers...)
+	// Normal mode: response size + duration
+	fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
+	// Debug mode: decoded response data
+	if ra.Config.Debug {
+		DebugLog.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
+	}
 	ch <- peers
 }
 
