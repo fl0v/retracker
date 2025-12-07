@@ -1,36 +1,39 @@
 package tracker
 
 import (
-	"github.com/vvampirius/retracker/bittorrent/common"
 	"errors"
-	"strconv"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
+
+	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
 )
 
 type Request struct {
-	timestamp time.Time
+	timestamp  time.Time
 	remoteAddr common.Address
-	InfoHash common.InfoHash `bencode:"info_hash"`
-	PeerID common.PeerID `bencode:"peer_id"`
-	Port int `bencode:"port"`
-	Uploaded uint64 `bencode:"uploaded"`
-	Downloaded uint64 `bencode:"downloaded"`
-	Left uint64 `bencode:"left"`
-	IP common.Address `bencode:"ip"`
-	NumWant uint64 `bencode:"numwant"`
-	Event string `bencode:"event"`
+	InfoHash   common.InfoHash `bencode:"info_hash"`
+	PeerID     common.PeerID   `bencode:"peer_id"`
+	Port       int             `bencode:"port"`
+	Uploaded   uint64          `bencode:"uploaded"`
+	Downloaded uint64          `bencode:"downloaded"`
+	Left       uint64          `bencode:"left"`
+	IP         common.Address  `bencode:"ip"`
+	NumWant    uint64          `bencode:"numwant"`
+	Event      string          `bencode:"event"`
 }
 
 func (self *Request) Peer() common.Peer {
 	peer := common.Peer{
 		PeerID: self.PeerID,
-		IP: self.IP,
-		Port: self.Port,
+		IP:     self.IP,
+		Port:   self.Port,
 	}
-	if ! peer.IP.Valid() { peer.IP = self.remoteAddr }
+	if !peer.IP.Valid() {
+		peer.IP = self.remoteAddr
+	}
 	return peer
 }
 
@@ -47,32 +50,44 @@ func (self *Request) Bencode() (string, error) {
 }
 
 func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-event string, logger *log.Logger) (*Request, error) {
-	request := Request{ timestamp: time.Now(), remoteAddr: common.Address(remoteAddr) }
+	event string, logger *log.Logger) (*Request, error) {
+	request := Request{timestamp: time.Now(), remoteAddr: common.Address(remoteAddr)}
 
 	if v := common.InfoHash(infoHash); v.Valid() {
 		request.InfoHash = v
-	} else { return nil, errors.New(`info_hash is not valid`) }
+	} else {
+		return nil, errors.New(`info_hash is not valid`)
+	}
 
 	if v := common.PeerID(peerID); v.Valid() {
 		request.PeerID = v
-	} else { return nil, errors.New(`peer_id is not valid`) }
+	} else {
+		return nil, errors.New(`peer_id is not valid`)
+	}
 
 	if d, err := strconv.Atoi(port); err == nil {
 		request.Port = d
-	} else { return nil, errors.New(fmt.Sprintf("Can't parse 'port' value: '%s'", err.Error())) }
+	} else {
+		return nil, errors.New(fmt.Sprintf("Can't parse 'port' value: '%s'", err.Error()))
+	}
 
 	if d, err := strconv.ParseUint(uploaded, 10, 64); err == nil {
 		request.Uploaded = d
-	} else { return nil, errors.New(fmt.Sprintf("Can't parse 'uploaded' value: '%s'", err.Error())) }
+	} else {
+		return nil, errors.New(fmt.Sprintf("Can't parse 'uploaded' value: '%s'", err.Error()))
+	}
 
 	if d, err := strconv.ParseUint(downloaded, 10, 64); err == nil {
 		request.Downloaded = d
-	} else { return nil, errors.New(fmt.Sprintf("Can't parse 'downloaded' value: '%s'", err.Error())) }
+	} else {
+		return nil, errors.New(fmt.Sprintf("Can't parse 'downloaded' value: '%s'", err.Error()))
+	}
 
 	if d, err := strconv.ParseUint(left, 10, 64); err == nil {
 		request.Left = d
-	} else { return nil, errors.New(fmt.Sprintf("Can't parse 'left' value: '%s'", err.Error())) }
+	} else {
+		return nil, errors.New(fmt.Sprintf("Can't parse 'left' value: '%s'", err.Error()))
+	}
 
 	request.IP = common.Address(ip)
 
@@ -80,7 +95,7 @@ event string, logger *log.Logger) (*Request, error) {
 		request.NumWant = d
 	}
 
-	if event := event; event==`` || event==`started` || event==`stopped` || event==`completed` {
+	if event := event; event == `` || event == `started` || event == `stopped` || event == `completed` {
 		request.Event = event
 	} else {
 		if logger != nil {
@@ -90,4 +105,3 @@ event string, logger *log.Logger) (*Request, error) {
 
 	return &request, nil
 }
-

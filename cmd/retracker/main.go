@@ -7,6 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
+	"github.com/fl0v/retracker/internal/server"
 )
 
 const VERSION = `0.10.0`
@@ -20,19 +24,22 @@ var (
 )
 
 func helpText() {
-	fmt.Println("# https://github.com/vvampirius/retracker\n")
+	fmt.Println("# https://github.com/fl0v/retracker\n")
 	flag.PrintDefaults()
 }
 
 func main() {
-	listen := flag.String("l", ":80", "Listen address:port")
+	listen := flag.String("l", ":80", "Listen address:port for HTTP")
+	udpListen := flag.String("u", "", "Listen address:port for UDP (empty to disable)")
 	age := flag.Float64("a", 180, "Keep 'n' minutes peer in memory")
 	debug := flag.Bool("d", false, "Debug mode")
 	xrealip := flag.Bool("x", false, "Get RemoteAddr from X-Real-IP header")
 	forwards := flag.String("f", "", "Load forwards from YAML file")
-	forwardTimeout := flag.Int("t", 2, "Timeout (sec) for forward requests (used with -f)")
+	forwardTimeout := flag.Int("t", 30, "Timeout (sec) for forward requests (used with -f)")
+	forwarderWorkers := flag.Int("w", 10, "Number of workers for parallel forwarder processing")
 	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics")
 	announceResponseInterval := flag.Int("i", 30, "Announce response interval (sec)")
+	statsInterval := flag.Int("s", 60, "Statistics print interval (sec)")
 	ver := flag.Bool("v", false, "Show version")
 	help := flag.Bool("h", false, "print this help")
 	flag.Parse()
@@ -49,27 +56,30 @@ func main() {
 
 	fmt.Printf("Starting version %s\n", VERSION)
 
-	config := Config{
+	cfg := config.Config{
 		AnnounceResponseInterval: *announceResponseInterval,
 		Listen:                   *listen,
+		UDPListen:                *udpListen,
 		Debug:                    *debug,
 		Age:                      *age,
 		XRealIP:                  *xrealip,
 		ForwardTimeout:           *forwardTimeout,
+		ForwarderWorkers:         *forwarderWorkers,
+		StatsInterval:            *statsInterval,
 	}
 
 	if *forwards != `` {
-		if err := config.ReloadForwards(*forwards); err != nil {
+		if err := cfg.ReloadForwards(*forwards); err != nil {
 			ErrorLog.Fatalln(err.Error())
 		}
 	}
 
-	tempStorage, err := NewTempStorage(``)
+	tempStorage, err := server.NewTempStorage(``)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	core := NewCore(&config, tempStorage)
+	core := server.NewCore(&cfg, tempStorage)
 
 	// https://github.com/vvampirius/retracker/issues/7
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
@@ -78,16 +88,30 @@ func main() {
 		w.Write(faviconIco)
 	})
 
-	http.HandleFunc("/scrape", core.httpScrapeHandler)
-	http.HandleFunc("/announce", core.Receiver.Announce.httpHandler)
+	http.HandleFunc("/scrape", core.HTTPScrapeHandler)
+	http.HandleFunc("/announce", core.Receiver.Announce.HTTPHandler)
 	if *enablePrometheus {
-		p, err := NewPrometheus()
+		p, err := observability.NewPrometheus()
 		if err != nil {
 			os.Exit(1)
 		}
 		core.Receiver.Announce.Prometheus = p
+		core.Receiver.UDP.Prometheus = p
+		if core.ForwarderManager != nil {
+			core.ForwarderManager.Prometheus = p
+		}
 	}
-	if err := http.ListenAndServe(config.Listen, nil); err != nil { // set listen port
+
+	// Start UDP server if configured
+	if cfg.UDPListen != "" {
+		core.Receiver.UDP.TempStorage = tempStorage
+		if err := core.Receiver.UDP.Start(cfg.UDPListen); err != nil {
+			ErrorLog.Fatalln("Failed to start UDP server:", err.Error())
+		}
+		defer core.Receiver.UDP.Close()
+	}
+
+	if err := http.ListenAndServe(cfg.Listen, nil); err != nil { // set listen port
 		ErrorLog.Println(err)
 	}
 }

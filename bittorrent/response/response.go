@@ -1,7 +1,7 @@
 package response
 
 import (
-	"github.com/vvampirius/retracker/bittorrent/common"
+	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
 )
 

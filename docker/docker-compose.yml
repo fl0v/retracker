@@ -1,0 +1,22 @@
+
+services:
+  retracker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: retracker
+    ports:
+      - "6969:6969"
+    volumes:
+      # Mount forwards config file from configs directory
+      - ../configs/forwarders.yml:/app/forwarders.yml:ro
+    # retracker uses command-line flags, not environment variables
+    # Flags: -l (listen), -d (debug), -p (prometheus), -f (forwards), -a (age), -x (x-real-ip), -t (timeout), -i (interval)
+    command: ["./retracker", "-l", ":6969", "-f", "/app/forwarders.yml", "-p", "-d", "-a", "180", "-t", "2", "-i", "30"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6969/favicon.ico"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

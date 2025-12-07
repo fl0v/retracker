@@ -1,8 +1,8 @@
-module github.com/vvampirius/retracker/bittorrent/response
+module github.com/fl0v/retracker/bittorrent/response
 
 go 1.21.0
 
 require (
-	github.com/vvampirius/retracker/bittorrent/common v0.0.0-20240220190647-f55c77b0eb41
+	github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b
 	github.com/zeebo/bencode v1.0.0
 )

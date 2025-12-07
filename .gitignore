@@ -1,2 +1,5 @@
+.cursor
 .idea
 vendor
+configs/*
+/bin/

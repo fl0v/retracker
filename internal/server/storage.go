@@ -1,14 +1,22 @@
-package main
+package server
 
 import (
-	"github.com/vvampirius/retracker/bittorrent/common"
-	"github.com/vvampirius/retracker/bittorrent/tracker"
+	"log"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/fl0v/retracker/bittorrent/common"
+	"github.com/fl0v/retracker/bittorrent/tracker"
+	"github.com/fl0v/retracker/internal/config"
+)
+
+var (
+	DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 )
 
 type Storage struct {
-	Config     *Config
+	Config     *config.Config
 	Requests   map[common.InfoHash]map[common.PeerID]tracker.Request
 	requestsMu sync.Mutex
 }
@@ -75,9 +83,9 @@ func (self *Storage) purgeRoutine() {
 	}
 }
 
-func NewStorage(config *Config) *Storage {
+func NewStorage(cfg *config.Config) *Storage {
 	storage := Storage{
-		Config:   config,
+		Config:   cfg,
 		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
 	}
 	go storage.purgeRoutine()

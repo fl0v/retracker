@@ -1,10 +1,15 @@
-package main
+package server
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"time"
+)
+
+var (
+	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 type TempStorage struct {

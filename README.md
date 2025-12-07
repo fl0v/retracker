@@ -1,18 +1,20 @@
 # retracker
 
-![image](diagram.jpg)
+![Architecture Diagram](docs/diagram.jpg)
 
-Simple HTTP torrent tracker.
+Simple HTTP and UDP torrent tracker.
 
 * Keep all in memory (no persistent; doesn't require a database).
 * Single binary executable (doesn't require a web-backend [apache, php-fpm, uwsgi, etc.])
+* **HTTP and UDP tracker protocol support** (BEP 15 compliant)
+* **Decoupled announce logic** - HTTP and UDP handlers share the same core announce processing
 * Can collect peers from external trackers (HTTP only)
 * Expose some metrics for Prometheus monitoring
 
 ## Installing
 
 ```
-go install 'github.com/vvampirius/retracker@latest'
+go install 'github.com/fl0v/retracker@latest'
 ```
 > Executables are installed in the directory named by the GOBIN environment variable, which defaults to $GOPATH/bin or $HOME/go/bin if the GOPATH environment variable is not set. Executables in $GOROOT are installed in $GOROOT/bin or $GOTOOLDIR instead of $GOBIN.
 
@@ -24,6 +26,24 @@ Start tracker on port 8080 with debug mode.
 retracker -l :8080 -d
 ```
 Add http://\<your ip>:8080/announce to your torrent.
+
+### Standalone with UDP support
+
+Start tracker with both HTTP and UDP support:
+```
+retracker -l :8080 -u :8080 -d
+```
+* `-l :8080` - HTTP tracker on port 8080
+* `-u :8080` - UDP tracker on port 8080
+
+The tracker supports both protocols simultaneously. UDP support includes:
+* **BEP 15 compliant** UDP tracker protocol
+* **IPv4 and IPv6 support** - automatically detects address family
+* **Connection ID management** - secure random connection IDs with automatic cleanup
+* **Connect, Announce, and Scrape** operations
+* **Decoupled architecture** - UDP and HTTP share the same `ProcessAnnounce` logic for consistent behavior
+
+Both HTTP and UDP announce handlers use the same decoupled announce processing logic, ensuring consistent peer management and forwarding behavior regardless of the transport protocol.
 
 ## Behind NGINX
 Configure nginx like:
@@ -75,6 +95,51 @@ forwarders.yml:
   host: retracker.local # external retracker.local (like on picture above)
 ```
 Add http://\<your ip>:8080/announce to your torrent.
+
+## Docker Setup
+
+### Using Dockerfile
+
+Build the Docker image:
+```bash
+cd docker
+docker build -t retracker .
+```
+
+Run the container:
+```bash
+docker run -d -p 6969:6969 retracker
+```
+
+### Using Docker Compose
+
+The easiest way to run retracker with Docker is using the provided `docker-compose.yml`:
+
+```bash
+cd docker
+docker-compose up -d
+```
+
+This will:
+* Build the retracker image
+* Start the container on port 6969
+* Mount the forwarders configuration from `../configs/forwarders.yml`
+* Enable Prometheus metrics, debug mode, and configure timeouts
+
+To customize the configuration, edit `docker/docker-compose.yml` and modify the `command` line with the desired flags:
+* `-l :6969` - HTTP listen address
+* `-u :6969` - UDP listen address (optional)
+* `-d` - Debug mode
+* `-p` - Enable Prometheus metrics
+* `-f /app/forwarders.yml` - Forwarders configuration file
+* `-a 180` - Peer age in minutes
+* `-t 2` - Forward request timeout in seconds
+* `-i 30` - Announce response interval in seconds
+
+Example with UDP support:
+```yaml
+command: ["./retracker", "-l", ":6969", "-u", ":6969", "-f", "/app/forwarders.yml", "-p", "-d"]
+```
 
 ## License
 
