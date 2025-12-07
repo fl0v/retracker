@@ -1,27 +1,22 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"regexp"
-	"time"
-	"unicode/utf8"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vvampirius/retracker/bittorrent/common"
 	Response "github.com/vvampirius/retracker/bittorrent/response"
 	"github.com/vvampirius/retracker/bittorrent/tracker"
-	CoreCommon "github.com/vvampirius/retracker/common"
 )
 
 type ReceiverAnnounce struct {
-	Config      *Config
-	Storage     *Storage
-	Prometheus  *Prometheus
-	TempStorage *TempStorage
+	Config           *Config
+	Storage          *Storage
+	ForwarderStorage *ForwarderStorage
+	ForwarderManager *ForwarderManager
+	Prometheus       *Prometheus
+	TempStorage      *TempStorage
 }
 
 func (ra *ReceiverAnnounce) httpHandler(w http.ResponseWriter, r *http.Request) {
@@ -83,205 +78,159 @@ func (ra *ReceiverAnnounce) parseRemoteAddr(in, def string) string {
 
 func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
 	event string) *Response.Response {
-	if request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-		event, DebugLog); err == nil {
-
-		response := Response.Response{
-			Interval: ra.Config.AnnounceResponseInterval,
-		}
-
-		if request.Event != `stopped` {
-			ra.Storage.Update(*request)
-			response.Peers = ra.Storage.GetPeers(request.InfoHash)
-			response.Peers = append(response.Peers, ra.makeForwards(*request)...)
-		} else {
-			ra.Storage.Delete(*request)
-		}
-
-		return &response
+	request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
+		event, DebugLog)
+	if err != nil {
+		return nil
 	}
 
-	return nil
+	response := Response.Response{}
+
+	switch request.Event {
+	case `stopped`:
+		ra.handleStoppedEvent(request, &response)
+	case `completed`:
+		ra.handleCompletedEvent(request, &response)
+	default:
+		ra.handleRegularAnnounce(request, &response)
+	}
+
+	return &response
 }
 
-func (ra *ReceiverAnnounce) makeForwards(request tracker.Request) []common.Peer {
-	peers := make([]common.Peer, 0)
-	forwardsCount := len(ra.Config.Forwards)
-	if forwardsCount > 0 {
-		hash := fmt.Sprintf("%x", request.InfoHash)
-		DebugLog.Printf("Processing %d forwarder(s) for info_hash %s (timeout: %ds)\n", forwardsCount, hash, ra.Config.ForwardTimeout)
-		startTime := time.Now()
-		ch := make(chan []common.Peer, forwardsCount)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(ra.Config.ForwardTimeout))
-		defer cancel()
-		for _, v := range ra.Config.Forwards {
-			go ra.makeForward(v, request, ch, ctx)
-		}
-		for i := 0; i < forwardsCount; i++ {
-			forwardPeers := <-ch
-			peers = append(peers, forwardPeers...)
-		}
-		duration := time.Since(startTime)
-		peers = CoreCommon.PeersUniq(peers)
-		DebugLog.Printf("Forwarder processing completed for %s: %d unique peers from %d forwarder(s) in %v\n", hash, len(peers), forwardsCount, duration)
+// handleStoppedEvent processes a stopped event: forwards to forwarders, cancels pending jobs, and deletes the peer
+func (ra *ReceiverAnnounce) handleStoppedEvent(request *tracker.Request, response *Response.Response) {
+	// Forward stopped event to forwarders immediately
+	if ra.ForwarderManager != nil {
+		ra.ForwarderManager.ForwardStoppedEvent(request.InfoHash, request.PeerID, *request)
 	}
+
+	// Delete peer from storage
+	ra.Storage.Delete(*request)
+
+	// Clean up forwarder storage when no local peers remain
+	if ra.ForwarderStorage != nil {
+		localPeers := ra.Storage.GetPeers(request.InfoHash)
+		if len(localPeers) == 0 {
+			ra.ForwarderStorage.Cleanup(request.InfoHash)
+		}
+	}
+
+	response.Interval = ra.Config.AnnounceResponseInterval
+}
+
+// handleCompletedEvent processes a completed event: updates storage, forwards event, but continues normal flow
+func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, response *Response.Response) {
+	// Update storage with completed status
+	ra.Storage.Update(*request)
+
+	// Get peers for response
+	response.Peers = ra.getPeersForResponse(request.InfoHash)
+
+	// Calculate interval
+	response.Interval = ra.calculateInterval(request.InfoHash)
+
+	// Forward completed event (one-time notification, but don't cancel jobs)
+	if ra.ForwarderManager != nil {
+		ra.ForwarderManager.ForwardCompletedEvent(request.InfoHash, request.PeerID, *request)
+		// Continue normal announce scheduling
+		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
+		ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
+	}
+}
+
+// handleRegularAnnounce processes regular announces (started event or empty event)
+func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, response *Response.Response) {
+	// Update storage
+	ra.Storage.Update(*request)
+
+	// Get local peers
+	response.Peers = ra.Storage.GetPeers(request.InfoHash)
+
+	// Check if this is first announce for this info_hash
+	if ra.isFirstAnnounce(request.InfoHash) {
+		ra.handleFirstAnnounce(request, response)
+	} else {
+		ra.handleSubsequentAnnounce(request, response)
+	}
+}
+
+// handleFirstAnnounce handles the first announce for an info_hash
+func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, response *Response.Response) {
+	// First announce: return default shorter interval and trigger parallel forwarder announces
+	response.Interval = 15 // Default shorter interval for first announce
+
+	// Get cached forwarder peers (should be empty on first announce)
+	if ra.ForwarderStorage != nil {
+		forwarderPeers := ra.ForwarderStorage.GetAllPeers(request.InfoHash)
+		response.Peers = append(response.Peers, forwarderPeers...)
+	}
+
+	// Trigger parallel decoupled announces to all forwarders
+	if ra.ForwarderManager != nil {
+		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
+		ra.ForwarderManager.TriggerInitialAnnounce(request.InfoHash, *request)
+	}
+}
+
+// handleSubsequentAnnounce handles subsequent announces for an info_hash
+func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, response *Response.Response) {
+	// Get cached forwarder peers
+	if ra.ForwarderStorage != nil {
+		forwarderPeers := ra.ForwarderStorage.GetAllPeers(request.InfoHash)
+		response.Peers = append(response.Peers, forwarderPeers...)
+
+		// Calculate interval
+		response.Interval = ra.calculateInterval(request.InfoHash)
+
+		// Check if we need to re-announce based on interval comparison
+		if ra.ForwarderManager != nil {
+			ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
+			ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
+		}
+	} else {
+		response.Interval = ra.Config.AnnounceResponseInterval
+	}
+}
+
+// getPeersForResponse collects peers from both local storage and forwarder storage
+func (ra *ReceiverAnnounce) getPeersForResponse(infoHash common.InfoHash) []common.Peer {
+	peers := ra.Storage.GetPeers(infoHash)
+
+	if ra.ForwarderStorage != nil {
+		forwarderPeers := ra.ForwarderStorage.GetAllPeers(infoHash)
+		peers = append(peers, forwarderPeers...)
+	}
+
 	return peers
 }
 
-// isPrintableText checks if data is printable text (not binary)
-func isPrintableText(data []byte) bool {
-	if len(data) == 0 {
-		return true
-	}
-	// Check if it's valid UTF-8 and mostly printable
-	if !utf8.Valid(data) {
-		return false
-	}
-	// Check if it contains mostly printable characters
-	printableCount := 0
-	for _, b := range data {
-		if b >= 32 && b < 127 || b == '\n' || b == '\r' || b == '\t' {
-			printableCount++
+// calculateInterval calculates the appropriate interval for the response
+func (ra *ReceiverAnnounce) calculateInterval(infoHash common.InfoHash) int {
+	if ra.ForwarderStorage != nil {
+		avgInterval := ra.ForwarderStorage.GetAverageInterval(infoHash)
+		if avgInterval > 0 {
+			return avgInterval
 		}
 	}
-	// Consider it text if at least 80% is printable
-	return float64(printableCount)/float64(len(data)) >= 0.8
+	// No forwarders responded yet, use default
+	return ra.Config.AnnounceResponseInterval
 }
 
-func (ra *ReceiverAnnounce) makeForward(forward CoreCommon.Forward, request tracker.Request, ch chan<- []common.Peer, ctx context.Context) {
-	startTime := time.Now()
-	peers := make([]common.Peer, 0)
-	uri := fmt.Sprintf("%s?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d", forward.Uri, url.QueryEscape(string(request.InfoHash)),
-		url.QueryEscape(string(request.PeerID)), request.Port, request.Uploaded, request.Downloaded, request.Left)
-	if forward.Ip != `` {
-		uri = fmt.Sprintf("%s&ip=%s&ipv4=%s", uri, forward.Ip, forward.Ip) //TODO: check for IPv4
+// isFirstAnnounce checks if this is the first announce for the given info_hash
+func (ra *ReceiverAnnounce) isFirstAnnounce(infoHash common.InfoHash) bool {
+	if ra.ForwarderStorage != nil {
+		return !ra.ForwarderStorage.HasInfoHash(infoHash)
 	}
-	hash := fmt.Sprintf("%x", request.InfoHash)
-	forwardName := forward.GetName()
-	trackerURL := forward.Uri
-
-	// Normal mode: log hash and tracker URL (without params)
-	fmt.Printf("Forwarding announce %s to %s\n", hash, trackerURL)
-	// Debug mode: log actual Request URI
-	if ra.Config.Debug {
-		DebugLog.Printf("  Request URI: %s\n", uri)
-		if forward.Ip != `` {
-			DebugLog.Printf("  Using IP: %s\n", forward.Ip)
-		}
-		if forward.Host != `` {
-			DebugLog.Printf("  Host header: %s\n", forward.Host)
-		}
-	}
-
-	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		duration := time.Since(startTime)
-		// Normal mode: hash, tracker URL, error
-		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
-		// Debug mode: show duration
-		if ra.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
-		}
-		ch <- peers
-		return
-	}
-	if forward.Host != `` {
-		rqst.Host = forward.Host
-	}
-	client := http.Client{}
-	response, err := client.Do(rqst)
-	duration := time.Since(startTime)
-	if err != nil {
-		// Normal mode: hash, tracker URL, error
-		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
-		// Debug mode: show duration
-		if ra.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
-		}
-		if ra.Prometheus != nil {
-			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
-		}
-		ch <- peers
-		return
-	}
-	defer response.Body.Close()
-
-	if ra.Prometheus != nil {
-		ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
-	}
-	if response.StatusCode != http.StatusOK {
-		// Normal mode: hash, tracker URL, error
-		ErrorLog.Printf("Error forwarding %s to %s: HTTP %d %s\n", hash, trackerURL, response.StatusCode, response.Status)
-		// Debug mode: show duration
-		if ra.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
-		}
-		ch <- peers
-		return
-	}
-	payload, err := io.ReadAll(response.Body)
-	if err != nil {
-		// Normal mode: hash, tracker URL, error
-		ErrorLog.Printf("Error forwarding %s to %s: failed to read response: %s\n", hash, trackerURL, err.Error())
-		// Debug mode: show duration
-		if ra.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
-		}
-		if ra.Prometheus != nil {
-			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
-		}
-		ch <- peers
-		return
-	}
-
-	tempFilename := ``
-	if ra.Config.Debug {
-		tempFilename = ra.TempStorage.SaveBencodeFromForwarder(payload, fmt.Sprintf("%x", request.InfoHash), uri)
-	}
-	bitResponse, err := Response.Load(payload)
-	if err != nil {
-		// Normal mode: hash, tracker URL, error
-		ErrorLog.Printf("Error forwarding %s to %s: failed to parse response: %s\n", hash, trackerURL, err.Error())
-		// Debug mode: show raw received data if not binary
-		if ra.Config.Debug {
-			if isPrintableText(payload) {
-				// Limit to first 500 chars to avoid huge logs
-				payloadStr := string(payload)
-				if len(payloadStr) > 500 {
-					payloadStr = payloadStr[:500] + "... (truncated)"
-				}
-				ErrorLog.Printf("  Raw response data: %s\n", payloadStr)
-			} else {
-				ErrorLog.Printf("  Response is binary (%d bytes)\n", len(payload))
-			}
-			if tempFilename == `` {
-				tempFilename = ra.TempStorage.SaveBencodeFromForwarder(payload, fmt.Sprintf("%x", request.InfoHash), uri)
-			}
-			if tempFilename != `` {
-				ErrorLog.Printf("  Response saved to: %s\n", tempFilename)
-			}
-		}
-		if ra.Prometheus != nil {
-			ra.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
-		}
-		ch <- peers
-		return
-	}
-
-	peers = append(peers, bitResponse.Peers...)
-	// Normal mode: response size + duration
-	fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
-	// Debug mode: decoded response data
-	if ra.Config.Debug {
-		DebugLog.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
-	}
-	ch <- peers
+	return false
 }
 
-func NewReceiverAnnounce(config *Config, storage *Storage) *ReceiverAnnounce {
+func NewReceiverAnnounce(config *Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *ReceiverAnnounce {
 	announce := ReceiverAnnounce{
-		Config:  config,
-		Storage: storage,
+		Config:           config,
+		Storage:          storage,
+		ForwarderStorage: forwarderStorage,
+		ForwarderManager: forwarderManager,
 	}
 	return &announce
 }

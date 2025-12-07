@@ -5,9 +5,9 @@ type Receiver struct {
 	UDP      *ReceiverUDP
 }
 
-func NewReceiver(config *Config, storage *Storage) *Receiver {
+func NewReceiver(config *Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *Receiver {
 	receiver := Receiver{
-		Announce: NewReceiverAnnounce(config, storage),
+		Announce: NewReceiverAnnounce(config, storage, forwarderStorage, forwarderManager),
 		UDP:      NewReceiverUDP(config, storage),
 	}
 	return &receiver

@@ -32,8 +32,10 @@ func main() {
 	xrealip := flag.Bool("x", false, "Get RemoteAddr from X-Real-IP header")
 	forwards := flag.String("f", "", "Load forwards from YAML file")
 	forwardTimeout := flag.Int("t", 30, "Timeout (sec) for forward requests (used with -f)")
+	forwarderWorkers := flag.Int("w", 10, "Number of workers for parallel forwarder processing")
 	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics")
 	announceResponseInterval := flag.Int("i", 30, "Announce response interval (sec)")
+	statsInterval := flag.Int("s", 60, "Statistics print interval (sec)")
 	ver := flag.Bool("v", false, "Show version")
 	help := flag.Bool("h", false, "print this help")
 	flag.Parse()
@@ -58,6 +60,8 @@ func main() {
 		Age:                      *age,
 		XRealIP:                  *xrealip,
 		ForwardTimeout:           *forwardTimeout,
+		ForwarderWorkers:         *forwarderWorkers,
+		StatsInterval:            *statsInterval,
 	}
 
 	if *forwards != `` {
@@ -89,6 +93,9 @@ func main() {
 		}
 		core.Receiver.Announce.Prometheus = p
 		core.Receiver.UDP.Prometheus = p
+		if core.ForwarderManager != nil {
+			core.ForwarderManager.Prometheus = p
+		}
 	}
 
 	// Start UDP server if configured

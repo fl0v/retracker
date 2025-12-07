@@ -17,6 +17,8 @@ type Config struct {
 	XRealIP                  bool
 	Forwards                 []common.Forward
 	ForwardTimeout           int
+	ForwarderWorkers         int
+	StatsInterval            int
 }
 
 func (config *Config) ReloadForwards(fileName string) error {

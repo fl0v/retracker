@@ -48,7 +48,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		}
 		srh := ScrapeResponseHash{}
 		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == `competed` || peerRequest.Left == 0 {
+			if peerRequest.Event == `completed` || peerRequest.Left == 0 {
 				srh.Complete++
 			} else {
 				srh.Incomplete++
