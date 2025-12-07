@@ -25,7 +25,8 @@ func helpText() {
 }
 
 func main() {
-	listen := flag.String("l", ":80", "Listen address:port")
+	listen := flag.String("l", ":80", "Listen address:port for HTTP")
+	udpListen := flag.String("u", "", "Listen address:port for UDP (empty to disable)")
 	age := flag.Float64("a", 180, "Keep 'n' minutes peer in memory")
 	debug := flag.Bool("d", false, "Debug mode")
 	xrealip := flag.Bool("x", false, "Get RemoteAddr from X-Real-IP header")
@@ -52,6 +53,7 @@ func main() {
 	config := Config{
 		AnnounceResponseInterval: *announceResponseInterval,
 		Listen:                   *listen,
+		UDPListen:                *udpListen,
 		Debug:                    *debug,
 		Age:                      *age,
 		XRealIP:                  *xrealip,
@@ -86,7 +88,18 @@ func main() {
 			os.Exit(1)
 		}
 		core.Receiver.Announce.Prometheus = p
+		core.Receiver.UDP.Prometheus = p
 	}
+
+	// Start UDP server if configured
+	if config.UDPListen != "" {
+		core.Receiver.UDP.TempStorage = tempStorage
+		if err := core.Receiver.UDP.Start(config.UDPListen); err != nil {
+			ErrorLog.Fatalln("Failed to start UDP server:", err.Error())
+		}
+		defer core.Receiver.UDP.Close()
+	}
+
 	if err := http.ListenAndServe(config.Listen, nil); err != nil { // set listen port
 		ErrorLog.Println(err)
 	}

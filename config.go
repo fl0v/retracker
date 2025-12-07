@@ -9,6 +9,7 @@ import (
 type Config struct {
 	AnnounceResponseInterval int
 	Listen                   string
+	UDPListen                string
 	Debug                    bool
 	Age                      float64
 	XRealIP                  bool
