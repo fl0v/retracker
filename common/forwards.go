@@ -22,3 +22,13 @@ func (forward *Forward) GetName() string {
 	}
 	return forward.Uri
 }
+
+// GetProtocol returns the protocol scheme for the forwarder URI.
+// Falls back to http if the scheme is missing or unknown.
+func (forward *Forward) GetProtocol() string {
+	u, err := url.Parse(forward.Uri)
+	if err == nil && (u.Scheme == "udp" || u.Scheme == "https" || u.Scheme == "http") {
+		return u.Scheme
+	}
+	return "http"
+}

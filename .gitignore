@@ -2,4 +2,6 @@
 .idea
 vendor
 configs/*
+!configs/forwarders.template.yml
 /bin/
+/scripts/lists/

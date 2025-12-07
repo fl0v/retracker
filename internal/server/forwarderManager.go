@@ -54,6 +54,7 @@ type ForwarderManager struct {
 	pendingMu    sync.Mutex
 	stats        map[string]*ForwarderStats // forwarderName -> stats
 	statsMu      sync.RWMutex
+	udpForwarder *UDPForwarder // UDP forwarder client for UDP trackers
 }
 
 func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
@@ -70,6 +71,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		requestCache: make(map[string]tracker.Request),
 		pendingJobs:  make(map[string]bool),
 		stats:        make(map[string]*ForwarderStats),
+		udpForwarder: NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout),
 	}
 	// Initialize stats for each forwarder
 	for _, forwarder := range cfg.Forwards {
@@ -97,6 +99,9 @@ func (fm *ForwarderManager) Start() {
 func (fm *ForwarderManager) Stop() {
 	close(fm.stopChan)
 	close(fm.jobQueue)
+	if fm.udpForwarder != nil {
+		fm.udpForwarder.Stop()
+	}
 }
 
 // jobKey generates a unique key for a job (infoHash:forwarderName:peerID)
@@ -145,6 +150,72 @@ func (fm *ForwarderManager) worker() {
 }
 
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
+	forward := job.Forwarder
+
+	// Detect protocol and route to appropriate handler
+	protocol := forward.GetProtocol()
+	if protocol == "udp" {
+		fm.executeUDPAnnounce(job)
+	} else {
+		fm.executeHTTPAnnounce(job)
+	}
+}
+
+// executeUDPAnnounce handles UDP tracker announces
+func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
+	startTime := time.Now()
+	forward := job.Forwarder
+	request := job.Request
+	hash := fmt.Sprintf("%x", job.InfoHash)
+	forwardName := forward.GetName()
+	trackerURL := forward.Uri
+
+	// Normal mode: log hash and tracker URL
+	fmt.Printf("Forwarding UDP announce %s to %s\n", hash, trackerURL)
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("  Protocol: UDP (BEP 15)\n")
+		if forward.Ip != `` {
+			DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
+		}
+	}
+
+	// Use UDP forwarder
+	bitResponse, err := fm.udpForwarder.Announce(forward, request)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		ErrorLogFwd.Printf("Error forwarding UDP %s to %s: %s\n", hash, trackerURL, err.Error())
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("  Duration: %v\n", duration)
+		}
+		if fm.Prometheus != nil {
+			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
+		}
+		// Mark as attempted with default interval to avoid immediate retry
+		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
+		return
+	}
+
+	if fm.Prometheus != nil {
+		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `200`}).Inc()
+	}
+
+	// Update storage with peers and interval from response
+	fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
+
+	// Record statistics
+	fm.recordStats(forwardName, duration, bitResponse.Interval)
+
+	// Normal mode: response info + duration
+	fmt.Printf("Received UDP response from %s in %v (interval=%d, peers=%d)\n", trackerURL, duration, bitResponse.Interval, len(bitResponse.Peers))
+	// Debug mode: decoded response data
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
+	}
+}
+
+// executeHTTPAnnounce handles HTTP/HTTPS tracker announces (original logic)
+func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 	startTime := time.Now()
 	forward := job.Forwarder
 	request := job.Request
@@ -377,6 +448,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 				jobsToQueue = append(jobsToQueue, AnnounceJob{
 					InfoHash:      infoHash,
 					ForwarderName: forwarderName,
+					PeerID:        request.PeerID,
 					Forwarder:     forwarder,
 					Request:       request,
 				})
@@ -402,6 +474,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 					jobsToQueue = append(jobsToQueue, AnnounceJob{
 						InfoHash:      infoHash,
 						ForwarderName: forwarderName,
+						PeerID:        request.PeerID,
 						Forwarder:     forwarder,
 						Request:       request,
 					})
@@ -528,6 +601,38 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 
 // executeStoppedAnnounce executes a stopped or completed event announce immediately
 func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward, _ string, infoHash common.InfoHash, peerID common.PeerID, request tracker.Request) {
+	// Detect protocol and route to appropriate handler
+	protocol := forwarder.GetProtocol()
+	if protocol == "udp" {
+		fm.executeUDPStoppedAnnounce(forwarder, infoHash, peerID, request)
+	} else {
+		fm.executeHTTPStoppedAnnounce(forwarder, infoHash, peerID, request)
+	}
+}
+
+// executeUDPStoppedAnnounce handles UDP tracker stopped/completed event announces
+func (fm *ForwarderManager) executeUDPStoppedAnnounce(forwarder CoreCommon.Forward, infoHash common.InfoHash, peerID common.PeerID, request tracker.Request) {
+	hash := fmt.Sprintf("%x", infoHash)
+	trackerURL := forwarder.Uri
+
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("Forwarding UDP %s event for %s (peer %x) to %s\n", request.Event, hash, peerID, trackerURL)
+	}
+
+	// Use UDP forwarder - we don't need to capture the response for stopped/completed events
+	_, err := fm.udpForwarder.Announce(forwarder, request)
+	if err != nil {
+		ErrorLogFwd.Printf("Error forwarding UDP %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
+		return
+	}
+
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("Successfully forwarded UDP %s event for %s to %s\n", request.Event, hash, trackerURL)
+	}
+}
+
+// executeHTTPStoppedAnnounce handles HTTP tracker stopped/completed event announces
+func (fm *ForwarderManager) executeHTTPStoppedAnnounce(forwarder CoreCommon.Forward, infoHash common.InfoHash, peerID common.PeerID, request tracker.Request) {
 	hash := fmt.Sprintf("%x", infoHash)
 	trackerURL := forwarder.Uri
 

@@ -1,0 +1,30 @@
+# Forwarder configuration template for retracker
+# Copy this file to forwarders.yml and customize as needed
+# Or run: scripts/update-forwarders.sh to auto-generate from public tracker lists
+#
+# retracker supports both HTTP and UDP trackers (BEP 15)
+#
+# Format:
+# - uri: <tracker_url>
+#   name: <optional_display_name>
+#   ip: <optional_ip_override>
+#   host: <optional_host_header>
+#
+# Examples:
+
+# HTTP tracker
+- uri: http://tracker.example.com:8080/announce
+
+# HTTPS tracker
+- uri: https://tracker.example.com/announce
+
+# UDP tracker (BEP 15)
+- uri: udp://tracker.example.com:6969/announce
+
+# With optional IP override (useful when behind NAT)
+- uri: http://tracker.example.com/announce
+  ip: 203.0.113.42
+
+# With custom name for logs/stats
+- uri: http://tracker.example.com/announce
+  name: my-tracker
