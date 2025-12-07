@@ -29,8 +29,8 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /build/retracker .
 
-# Copy entrypoint script
-COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+# Copy entrypoint script from builder stage
+COPY --from=builder /build/retracker/docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Expose default ports (HTTP and UDP)
