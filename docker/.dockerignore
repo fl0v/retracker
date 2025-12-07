@@ -3,6 +3,7 @@
 .gitignore
 
 # Documentation
+docs/
 *.md
 LICENSE
 diagram.jpg
@@ -18,9 +19,3 @@ diagram.jpg
 .DS_Store
 Thumbs.db
 
-# Build artifacts (if any)
-*.exe
-*.test
-
-# Downloaded tracker lists
-lists/

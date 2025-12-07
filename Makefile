@@ -20,38 +20,63 @@ help: ## Show this help message
 
 # Docker image commands
 
-docker-build: ## Build the Docker image
-	docker build -t $(IMAGE_NAME) -f docker/Dockerfile .
+docker-build: ## Build the Docker image from local source code
+	docker build -t $(IMAGE_NAME) -f docker/Dockerfile.local .
 
-docker-rebuild: ## Rebuild the Docker image with latest code from GitHub (no cache)
-	docker build --no-cache --pull -t $(IMAGE_NAME) -f docker/Dockerfile .
+docker-build-github: ## Build the Docker image from GitHub master branch (always fetches latest)
+	docker build --build-arg CACHE_BUST=$(shell date +%s) -t $(IMAGE_NAME) -f docker/Dockerfile .
+
+docker-rebuild: ## Rebuild the Docker image from local source code (no cache)
+	docker build --no-cache -t $(IMAGE_NAME) -f docker/Dockerfile.local .
+
+docker-rebuild-github: ## Rebuild the Docker image from GitHub master branch (no cache, always fresh)
+	docker build --no-cache --pull --build-arg CACHE_BUST=$(shell date +%s) -t $(IMAGE_NAME) -f docker/Dockerfile .
 
 
 # Docker compose commands
 
-docker-up: ## Start the container
+docker-up: ## Start the container (builds from GitHub)
 	docker compose -f docker/docker-compose.yml up -d
+
+docker-up-local: ## Start the container (builds from local code)
+	docker compose -f docker/docker-compose.local.yml up -d --build
+
+docker-rebuild-local: ## Rebuild and start the container from local code (no cache, forces rebuild)
+	docker compose -f docker/docker-compose.local.yml down
+	docker compose -f docker/docker-compose.local.yml build --no-cache
+	docker compose -f docker/docker-compose.local.yml up -d
 
 docker-down: ## Stop the container
 	docker compose -f docker/docker-compose.yml down
+	docker compose -f docker/docker-compose.local.yml down || true
+
+docker-down-local: ## Stop the local container
+	docker compose -f docker/docker-compose.local.yml down
 
 docker-restart: ## Restart the container
 	docker compose -f docker/docker-compose.yml restart
 
+docker-restart-local: ## Restart the local container
+	docker compose -f docker/docker-compose.local.yml restart
+
 docker-logs: ## Show container logs
 	docker compose -f docker/docker-compose.yml logs -f
+
+docker-logs-local: ## Show local container logs
+	docker compose -f docker/docker-compose.local.yml logs -f
 
 docker-shell: ## Open a shell in the running container
 	docker exec -it $(CONTAINER_NAME) /bin/sh
 
 docker-clean: ## Remove container and image
 	docker compose -f docker/docker-compose.yml down -v
+	docker compose -f docker/docker-compose.local.yml down -v || true
 	docker rmi $(IMAGE_NAME) || true
 
 
 # Standalone container commands (not using docker-compose)
 
-docker-container-run: docker-build ## Build and run the container (standalone, not using docker compose)
+docker-container-run: docker-build ## Build from local code and run the container (standalone, not using docker compose)
 	docker run -d \
 		--name $(CONTAINER_NAME) \
 		-p $(PORT) \
@@ -63,21 +88,21 @@ docker-container-stop: ## Stop the standalone container
 	docker rm $(CONTAINER_NAME) || true
 
 # Advanced standalone container usage examples
-docker-container-run-debug: docker-build ## Run standalone container with debug mode enabled
+docker-container-run-debug: docker-build ## Build from local code and run standalone container with debug mode enabled
 	docker run -d \
 		--name $(CONTAINER_NAME)-debug \
 		-p 6969:80 \
 		$(IMAGE_NAME) \
 		./retracker -l :6969 -d
 
-docker-container-run-prometheus: docker-build ## Run standalone container with Prometheus metrics enabled
+docker-container-run-prometheus: docker-build ## Build from local code and run standalone container with Prometheus metrics enabled
 	docker run -d \
 		--name $(CONTAINER_NAME)-prom \
 		-p 6969:80 \
 		$(IMAGE_NAME) \
 		./retracker -l :6969 -p
 
-docker-container-run-custom: docker-build ## Run standalone container with custom port (usage: make docker-container-run-custom PORT=9090:80)
+docker-container-run-custom: docker-build ## Build from local code and run standalone container with custom port (usage: make docker-container-run-custom PORT=9090:80)
 	docker run -d \
 		--name $(CONTAINER_NAME)-custom \
 		-p $(PORT) \

@@ -1,4 +1,4 @@
-# Build stage
+# Build stage - builds from GitHub repository
 FROM golang:1.22-alpine AS builder
 
 # Install git for cloning
@@ -6,14 +6,17 @@ RUN apk add --no-cache git
 
 WORKDIR /build
 
-# Clone the repository
+# Clone the repository (always fetch latest)
 ARG REPO_URL=https://github.com/fl0v/retracker.git
 ARG BRANCH=master
-RUN git clone --depth 1 --branch ${BRANCH} ${REPO_URL} retracker
+# CACHE_BUST arg ensures we always get fresh clone (passed from Makefile with timestamp)
+ARG CACHE_BUST=1
+RUN rm -rf retracker && \
+    git clone --depth 1 --branch ${BRANCH} ${REPO_URL} retracker
 
 WORKDIR /build/retracker
 
-# Download dependencies
+# Download dependencies (always fresh)
 RUN go mod download
 
 # Build the application
