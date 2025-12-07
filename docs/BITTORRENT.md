@@ -30,6 +30,120 @@ When a BitTorrent client communicates with a tracker, it sends an HTTP GET or UD
 - [BEP 3 - BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html)
 - [BEP 15 - UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html) (for UDP announces)
 
+## Peer Identification
+
+The `peer_id` field is a 20-byte identifier that uniquely identifies a client in the swarm. Beyond its primary purpose, the `peer_id` also encodes information about the client software and version, which trackers can decode to identify which BitTorrent client is being used.
+
+### Client Identification Methods
+
+Trackers can identify client software through multiple methods:
+
+#### 1. HTTP/HTTPS Trackers
+
+**a) User-Agent Header (Common)**
+- Most BitTorrent clients send an HTTP `User-Agent` header with announce/scrape requests
+- Example: `User-Agent: qBittorrent/4.6.3`
+- Easy to parse but can be spoofed or missing
+- **Note:** UDP trackers do not have HTTP headers, so User-Agent is not available
+
+**b) peer_id Encoding (Always Present, More Reliable)**
+- Every announce request must include a 20-byte `peer_id`
+- The `peer_id` embeds client type and version using conventions from BEP 3 and BEP 20
+- More reliable than User-Agent because it's always present (both HTTP and UDP)
+- Harder to spoof without modifying client code
+
+#### 2. UDP Trackers
+
+- No HTTP headers (no User-Agent available)
+- `peer_id` is still present in the binary packet
+- Client identification relies solely on `peer_id` decoding
+
+### peer_id Encoding Formats
+
+#### Azureus-Style Encoding (Most Common)
+
+The majority of modern BitTorrent clients use Azureus-style encoding (also known as Azureus-style peer ID):
+
+**Format:** `-XX####-xxxxxxxxxxxx`
+
+Where:
+- `-` = Leading dash (required)
+- `XX` = Two-character client identifier
+- `####` = Four-character version encoding
+- `-` = Separator dash
+- `xxxxxxxxxxxx` = Random characters
+
+**Examples:**
+- `-qB4610-xxxxxxxxxxxx` → qBittorrent 4.6.10
+- `-TR300Z-xxxxxxxxxxxx` → Transmission 3.0.0
+- `-LT2210-xxxxxxxxxxxx` → libtorrent 2.2.10
+- `-UT3530-xxxxxxxxxxxx` → µTorrent 3.5.30
+
+**Version Decoding:**
+- Numeric format: `4610` → `4.6.10` (major.minor.patch)
+- Alphanumeric format: `300Z` → `3.0.0` (letters are ignored in version parsing)
+
+**Common Client IDs:**
+| Client ID | Client Name |
+|-----------|-------------|
+| `qB` | qBittorrent |
+| `TR` | Transmission |
+| `LT` | libtorrent |
+| `UT` | µTorrent |
+| `BT` | BitTorrent |
+| `DE` | Deluge |
+| `AZ` | Azureus/Vuze |
+| `BC` | BitComet |
+| `KT` | KTorrent |
+
+#### Shadow-Style Encoding (Older Format)
+
+Some older clients use Shadow-style encoding where the first character(s) identify the client:
+
+- `M` = Mainline BitTorrent
+- `ex` = BitComet
+- `FC` = FileCroc
+- `FD` = Free Download Manager
+
+#### BitComet Style
+
+BitComet also uses a format starting with `exbc`:
+- `exbc...` = BitComet
+
+### Implementation in retracker
+
+The `retracker` implementation decodes client information from `peer_id` using the following priority:
+
+1. **Azureus-style decoding** (checks for leading dash and 2-character client ID)
+2. **Shadow-style decoding** (checks for known prefixes)
+3. **BitComet style** (checks for `exbc` prefix)
+4. **Fallback to User-Agent** (if peer_id decoding fails and User-Agent is available)
+5. **Unknown** (if all methods fail)
+
+This approach ensures:
+- **Reliability:** Works for both HTTP and UDP trackers
+- **Accuracy:** peer_id encoding is standardized and harder to spoof
+- **Compatibility:** Falls back to User-Agent when peer_id cannot be decoded
+
+### Use Cases
+
+**Private Trackers:**
+- Detect banned or unsupported clients
+- Identify client spoofing attempts
+- Enforce client whitelist policies
+- Monitor client distribution in the swarm
+
+**Statistics and Monitoring:**
+- Track which clients are most popular
+- Monitor client version distribution
+- Identify outdated or vulnerable client versions
+- Generate client usage reports
+
+**References:**
+- [BEP 3 - BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html) (peer_id field definition)
+- [BEP 20 - Peer ID Conventions](https://www.bittorrent.org/beps/bep_0020.html) (peer_id encoding conventions)
+- [BEP 15 - UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html) (UDP peer_id format)
+
 ## Announce Response
 
 The tracker responds with a bencoded dictionary (HTTP) or binary packet (UDP) containing:
@@ -173,14 +287,21 @@ If a client sends `started` and then immediately sends `stopped` (within seconds
 
 ## Additional References
 
+### BitTorrent Enhancement Proposals (BEPs)
+
 - [BEP 0 - Index of BitTorrent Enhancement Proposals](https://www.bittorrent.org/beps/bep_0000.html)
-- [BEP 3 - BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html)
-- [BEP 7 - IPv6 Tracker Extension](https://www.bittorrent.org/beps/bep_0007.html)
-- [BEP 12 - Multitracker Metadata Extension](https://www.bittorrent.org/beps/bep_0012.html)
-- [BEP 15 - UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html)
-- [BEP 23 - Tracker Returns Compact Peer Lists](https://www.bittorrent.org/beps/bep_0023.html)
-- [BEP 27 - Private Torrents](https://www.bittorrent.org/beps/bep_0027.html) (for private tracker behavior)
-- [BEP 48 - Tracker Protocol Extension: Scrape](https://www.bittorrent.org/beps/bep_0048.html)
+- [BEP 3 - BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html) (core protocol, peer_id, announce parameters)
+- [BEP 7 - IPv6 Tracker Extension](https://www.bittorrent.org/beps/bep_0007.html) (IPv6 peer lists)
+- [BEP 12 - Multitracker Metadata Extension](https://www.bittorrent.org/beps/bep_0012.html) (tracker tiers)
+- [BEP 15 - UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html) (UDP tracker implementation)
+- [BEP 20 - Peer ID Conventions](https://www.bittorrent.org/beps/bep_0020.html) (peer_id encoding standards)
+- [BEP 23 - Tracker Returns Compact Peer Lists](https://www.bittorrent.org/beps/bep_0023.html) (compact peer format)
+- [BEP 27 - Private Torrents](https://www.bittorrent.org/beps/bep_0027.html) (private tracker behavior)
+- [BEP 48 - Tracker Protocol Extension: Scrape](https://www.bittorrent.org/beps/bep_0048.html) (scrape protocol)
+
+### External Resources
+
 - [qBittorrent GitHub Repository](https://github.com/qbittorrent/qBittorrent/)
 - [qBittorrent Wiki](https://github.com/qbittorrent/qBittorrent/wiki/)
+- [BitTorrent.org BEP Index](https://www.bittorrent.org/beps/)
 

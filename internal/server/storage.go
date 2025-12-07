@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -13,10 +14,13 @@ import (
 
 var DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 
+const unknownClient = "unknown"
+
 type Storage struct {
-	Config     *config.Config
-	Requests   map[common.InfoHash]map[common.PeerID]tracker.Request
-	requestsMu sync.Mutex
+	Config              *config.Config
+	Requests            map[common.InfoHash]map[common.PeerID]tracker.Request
+	requestsMu          sync.Mutex
+	disableStatsRoutine bool // If true, don't start separate stats routine (stats printed by ForwarderManager)
 }
 
 func (self *Storage) Update(request tracker.Request) {
@@ -80,11 +84,107 @@ func (self *Storage) purgeRoutine() {
 	}
 }
 
+func (self *Storage) statsRoutine() {
+	if self.Config.StatsInterval <= 0 {
+		return
+	}
+	// Check if stats are being handled by ForwarderManager
+	if self.disableStatsRoutine {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(self.Config.StatsInterval) * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Double-check in case flag was set after routine started
+		if self.disableStatsRoutine {
+			return
+		}
+		self.printClientStats()
+	}
+}
+
+func (self *Storage) printClientStats() {
+	now := time.Now()
+	self.printClientStatsInline(now)
+}
+
+func (self *Storage) printClientStatsInline(now time.Time) {
+	// Map to track clients: "IP:ClientName" -> {hashCount, lastRequestTime}
+	type clientInfo struct {
+		hashCount       int
+		lastRequest     time.Time
+		announcedHashes map[string]bool // Track unique hashes
+	}
+
+	clients := make(map[string]*clientInfo)
+
+	self.requestsMu.Lock()
+	for hash, requests := range self.Requests {
+		hashStr := fmt.Sprintf("%x", hash)
+		for _, request := range requests {
+			// Use IP from request (Peer() already handles fallback to remoteAddr)
+			peer := request.Peer()
+			clientIP := string(peer.IP)
+			if clientIP == "" {
+				clientIP = unknownClient
+			}
+
+			// Decode client from peer_id (more reliable than User-Agent)
+			clientName := request.PeerID.DecodeClient()
+			if clientName == unknownClient {
+				// Fallback to User-Agent if peer_id decoding fails
+				userAgent := request.UserAgent
+				if userAgent != "" {
+					clientName = userAgent
+				} else {
+					clientName = unknownClient
+				}
+			}
+
+			clientKey := fmt.Sprintf("%s:%s", clientIP, clientName)
+			if _, ok := clients[clientKey]; !ok {
+				clients[clientKey] = &clientInfo{
+					hashCount:       0,
+					lastRequest:     request.Timestamp(),
+					announcedHashes: make(map[string]bool),
+				}
+			}
+
+			client := clients[clientKey]
+			client.announcedHashes[hashStr] = true
+			client.hashCount = len(client.announcedHashes)
+
+			// Update last request time if this request is more recent
+			requestTime := request.Timestamp()
+			if requestTime.After(client.lastRequest) {
+				client.lastRequest = requestTime
+			}
+		}
+	}
+	self.requestsMu.Unlock()
+
+	// Print client statistics inline (without separate header/footer)
+	if len(clients) == 0 {
+		fmt.Printf("Active clients: 0\n")
+	} else {
+		fmt.Printf("Active clients: %d\n", len(clients))
+		for clientKey, info := range clients {
+			secondsSinceLastRequest := int(now.Sub(info.lastRequest).Seconds())
+			fmt.Printf("  %s: %d announced hash(es), %d seconds since last request\n",
+				clientKey, info.hashCount, secondsSinceLastRequest)
+		}
+	}
+}
+
 func NewStorage(cfg *config.Config) *Storage {
 	storage := Storage{
 		Config:   cfg,
 		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
 	}
 	go storage.purgeRoutine()
+	if !storage.disableStatsRoutine {
+		go storage.statsRoutine()
+	}
 	return &storage
 }

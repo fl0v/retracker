@@ -52,6 +52,7 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 		r.URL.Query().Get(`ip`),
 		r.URL.Query().Get(`numwant`),
 		r.URL.Query().Get(`event`),
+		r.UserAgent(),
 	)
 	compacted := false
 	if r.URL.Query().Get(`compact`) == `1` {
@@ -86,9 +87,9 @@ func (ra *ReceiverAnnounce) parseRemoteAddr(in, def string) string {
 	return address
 }
 
-func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event string) *Response.Response {
+func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent string) *Response.Response {
 	request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-		event, DebugLog)
+		event, userAgent, DebugLog)
 	if err != nil {
 		return nil
 	}

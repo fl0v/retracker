@@ -23,6 +23,7 @@ type Request struct {
 	IP         common.Address  `bencode:"ip"`
 	NumWant    uint64          `bencode:"numwant"`
 	Event      string          `bencode:"event"`
+	UserAgent  string          `bencode:"user_agent"`
 }
 
 func (self *Request) Peer() common.Peer {
@@ -45,13 +46,17 @@ func (self *Request) TimeStampDelta() float64 {
 	return time.Now().Sub(self.timestamp).Minutes()
 }
 
+func (self *Request) Timestamp() time.Time {
+	return self.timestamp
+}
+
 func (self *Request) Bencode() (string, error) {
 	return bencode.EncodeString(self)
 }
 
 func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-	event string, logger *log.Logger) (*Request, error) {
-	request := Request{timestamp: time.Now(), remoteAddr: common.Address(remoteAddr)}
+	event, userAgent string, logger *log.Logger) (*Request, error) {
+	request := Request{timestamp: time.Now(), remoteAddr: common.Address(remoteAddr), UserAgent: userAgent}
 
 	if v := common.InfoHash(infoHash); v.Valid() {
 		request.InfoHash = v

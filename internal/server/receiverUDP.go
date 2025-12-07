@@ -418,6 +418,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 		ipStr,
 		numwantStr,
 		eventStr,
+		"", // UDP doesn't have user agent
 	)
 
 	if response == nil {
@@ -521,7 +522,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	ru.sendScrapeResponse(clientAddr, transactionID, scrapeData)
 }
 
-func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event string) *Response.Response {
+func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent string) *Response.Response {
 	// Reuse the existing HTTP announce processing logic
 	// We'll create a temporary ReceiverAnnounce to use its ProcessAnnounce method
 	ra := &ReceiverAnnounce{
@@ -530,7 +531,7 @@ func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploa
 		Prometheus:  ru.Prometheus,
 		TempStorage: ru.TempStorage,
 	}
-	return ra.ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event)
+	return ra.ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent)
 }
 
 func (ru *ReceiverUDP) sendConnectResponse(clientAddr *net.UDPAddr, resp UDPConnectResponse) {

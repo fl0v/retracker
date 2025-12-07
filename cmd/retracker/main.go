@@ -102,6 +102,9 @@ func main() {
 		}
 	}
 
+	// Print configuration (after all setup is complete)
+	cfg.PrintConfigWithPrometheus(*enablePrometheus)
+
 	// Start UDP server if configured
 	if cfg.UDPListen != "" {
 		core.Receiver.UDP.TempStorage = tempStorage
@@ -110,6 +113,10 @@ func main() {
 		}
 		defer core.Receiver.UDP.Close()
 	}
+
+	fmt.Printf("HTTP tracker listening on %s\n", cfg.Listen)
+	fmt.Println("Server ready to accept connections")
+	fmt.Println()
 
 	if err := http.ListenAndServe(cfg.Listen, nil); err != nil { // set listen port
 		ErrorLog.Println(err)

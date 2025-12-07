@@ -41,6 +41,7 @@ type ForwarderStats struct {
 type ForwarderManager struct {
 	Config       *config.Config
 	Storage      *ForwarderStorage
+	MainStorage  *Storage // Reference to main storage for client statistics
 	Forwarders   []CoreCommon.Forward
 	Workers      int
 	jobQueue     chan AnnounceJob
@@ -55,10 +56,11 @@ type ForwarderManager struct {
 	statsMu      sync.RWMutex
 }
 
-func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
+func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
 	fm := &ForwarderManager{
 		Config:       cfg,
 		Storage:      storage,
+		MainStorage:  mainStorage,
 		Forwarders:   cfg.Forwards,
 		Workers:      cfg.ForwarderWorkers,
 		jobQueue:     make(chan AnnounceJob, 100),
@@ -753,5 +755,11 @@ func (fm *ForwarderManager) printStats() {
 			fmt.Printf("  %s: no statistics yet\n", forwarderName)
 		}
 	}
+
+	// Print client statistics
+	if fm.MainStorage != nil {
+		fm.MainStorage.printClientStatsInline(now)
+	}
+
 	fmt.Printf("==================\n\n")
 }

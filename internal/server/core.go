@@ -26,7 +26,10 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 		var prometheus *observability.Prometheus
 		// Prometheus will be set later if enabled
 
-		forwarderManager = NewForwarderManager(cfg, forwarderStorage, prometheus, tempStorage)
+		// Disable Storage's separate stats routine since ForwarderManager will handle it
+		storage.disableStatsRoutine = true
+
+		forwarderManager = NewForwarderManager(cfg, forwarderStorage, storage, prometheus, tempStorage)
 		forwarderManager.Start()
 	}
 
