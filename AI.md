@@ -7,30 +7,38 @@ This file provides guidance for AI agents working on the retracker codebase. It 
 **retracker** is a lightweight BitTorrent tracker written in Go that:
 - Receives and processes BitTorrent announce/scrape requests (HTTP and UDP)
 - Stores peer information in-memory (no database)
-- Can forward announces to external trackers and aggregate peer lists
+- Can forward announces to external trackers (HTTP/HTTPS and UDP) and aggregate peer lists
+- Supports BEP 15 UDP tracker protocol (both server and client)
 - Exposes Prometheus metrics
 - Single binary executable
 
 ## Project Structure
 
+The project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout):
+
 ```
 retracker/
-├── main.go                 # Entry point, CLI flags, HTTP server setup
-├── config.go              # Configuration struct and forwarder loading
-├── core.go                # Core application structure (Storage, ForwarderManager, Receiver)
-├── storage.go             # In-memory peer storage with age-based purging
-├── tempStorage.go         # Temporary storage (likely for UDP connection state)
-├── receiver.go            # Main receiver structure
-├── receiverAnnounce.go    # HTTP announce handler
-├── receiverUDP.go         # UDP announce handler
-├── scrape.go              # Scrape handler
-├── forwarderManager.go    # Manages forwarding announces to external trackers
-├── forwarderStorage.go    # Storage for forwarder-related data
-├── prometheus.go          # Prometheus metrics integration
-└── bittorrent/            # BitTorrent protocol packages
-    ├── common/            # Common types (InfoHash, PeerID, Peer, Address)
-    ├── tracker/           # Tracker request/response types
-    └── response/          # Response encoding (bencode, compact format)
+├── cmd/retracker/         # Application entry point (package main)
+├── internal/              # Private application code
+│   ├── config/           # Configuration handling
+│   ├── server/           # Server implementation
+│   │   ├── core.go       # Core application structure
+│   │   ├── storage.go    # In-memory peer storage
+│   │   ├── receiverAnnounce.go  # HTTP announce handler
+│   │   ├── receiverUDP.go        # UDP announce handler (server-side)
+│   │   ├── scrape.go            # Scrape handler
+│   │   ├── forwarderManager.go  # Manages forwarding to external trackers
+│   │   ├── forwarderStorage.go  # Forwarder state storage
+│   │   └── udpForwarder.go      # UDP forwarder client (for UDP trackers)
+│   └── observability/    # Prometheus metrics
+├── bittorrent/           # BitTorrent protocol modules
+│   ├── common/           # Common types (InfoHash, PeerID, Peer, Address)
+│   ├── tracker/          # Tracker request/response types
+│   └── response/         # Response encoding (bencode, compact format)
+├── common/               # Shared common module (Forward struct)
+├── scripts/              # Build and utility scripts
+├── configs/              # Runtime configuration files
+└── docs/                 # Documentation
 ```
 
 ## Key Architectural Patterns
@@ -54,6 +62,14 @@ retracker/
   - Uses worker pool pattern (`ForwarderWorkers` config)
   - Manages job scheduling and cancellation
   - Handles event types (started, completed, stopped) differently
+  - **Protocol detection**: Automatically detects HTTP/HTTPS vs UDP from forwarder URI
+  - Routes to `executeHTTPAnnounce()` or `executeUDPAnnounce()` based on protocol
+- **UDPForwarder** (`udpForwarder.go`): UDP forwarder client implementation
+  - Implements BEP 15 UDP tracker protocol as a client
+  - Manages connection IDs with 2-minute lifetime (per BEP 15)
+  - Handles connect, announce, and error responses
+  - Supports IPv4 and IPv6 peer formats
+  - Automatic retry with exponential backoff
 - **ForwarderStorage** (`forwarderStorage.go`): Tracks forwarder state and peer mappings
 
 ### 4. Request Handling
@@ -104,6 +120,16 @@ retracker/
 - ForwarderManager uses worker pool for parallel processing
 - Forwarder timeout controlled by `Config.ForwardTimeout` (default 30 seconds)
 - Forwarder responses are aggregated with local peers
+- **Protocol Support**: 
+  - HTTP/HTTPS forwarders: Uses standard HTTP GET requests
+  - UDP forwarders: Uses BEP 15 UDP protocol with connection ID management
+  - Protocol automatically detected from URI scheme (`http://`, `https://`, `udp://`)
+- **UDP Forwarder Features**:
+  - Connection ID caching (2-minute lifetime per BEP 15)
+  - Automatic connection ID refresh on expiration
+  - Transaction ID matching for request/response pairs
+  - IPv4/IPv6 peer format detection
+  - Retry logic with exponential backoff
 
 ## Code Style Guidelines
 
@@ -147,19 +173,24 @@ retracker/
   - Lock/unlock operations
 
 ### Modifying Forwarder Logic
-- Changes should go in `forwarderManager.go`
+- Changes should go in `forwarderManager.go` for HTTP or `udpForwarder.go` for UDP
 - Consider worker pool impact
 - Ensure proper job cancellation for stopped events
-- Test with multiple forwarders
+- Test with multiple forwarders (both HTTP and UDP)
+- For UDP forwarders: Ensure connection ID management follows BEP 15 (2-minute lifetime)
+- Protocol detection is automatic via `Forward.GetProtocol()` method
 
 ## Important Files Reference
 
-- **BITTORRENT.md**: Comprehensive BitTorrent protocol documentation
-- **main.go**: Entry point, server setup, flag parsing
-- **core.go**: Application structure initialization
-- **storage.go**: Peer storage and purging logic
-- **forwarderManager.go**: Complex forwarding logic with job scheduling
-- **receiverAnnounce.go**: HTTP announce request processing
+- **docs/BITTORRENT.md**: Comprehensive BitTorrent protocol documentation
+- **cmd/retracker/main.go**: Entry point, server setup, flag parsing
+- **internal/server/core.go**: Application structure initialization
+- **internal/server/storage.go**: Peer storage and purging logic
+- **internal/server/forwarderManager.go**: Complex forwarding logic with job scheduling (HTTP and UDP)
+- **internal/server/udpForwarder.go**: UDP forwarder client implementation (BEP 15)
+- **internal/server/receiverAnnounce.go**: HTTP announce request processing
+- **internal/server/receiverUDP.go**: UDP announce request processing (server-side)
+- **common/forwards.go**: Forward configuration with protocol detection
 
 ## Version Information
 
@@ -174,7 +205,9 @@ retracker/
 4. **Memory management**: This is an in-memory tracker - no persistence, no database
 5. **Protocol compliance**: Refer to `BITTORRENT.md` for protocol details and BEP references
 6. **Worker pools**: ForwarderManager uses worker pools - be careful with goroutine management
-7. **UDP state**: UDP requires connection state tracking (see `tempStorage.go`)
+7. **UDP state**: UDP requires connection state tracking (see `tempStorage.go` for server-side, `udpForwarder.go` for client-side)
+8. **Protocol detection**: Use `Forward.GetProtocol()` to detect HTTP/HTTPS vs UDP - don't hardcode protocol assumptions
+9. **UDP connection IDs**: UDP forwarders cache connection IDs with 2-minute lifetime - ensure proper cleanup and refresh
 
 ## Quick Reference: Key Types
 

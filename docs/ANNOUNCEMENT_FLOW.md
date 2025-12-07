@@ -68,14 +68,25 @@ flowchart TD
     
     WorkerPool --> Worker[Worker Picks Job]
     Worker --> ExecuteAnnounce[executeAnnounce]
-    ExecuteAnnounce --> BuildURI[Build Forwarder URI<br/>with request params]
+    ExecuteAnnounce --> ProtocolCheck{Forwarder<br/>Protocol?}
+    
+    ProtocolCheck -->|HTTP/HTTPS| BuildURI[Build HTTP URI<br/>with request params]
+    ProtocolCheck -->|UDP| UDPConnect[Get/Refresh<br/>Connection ID]
+    
     BuildURI --> HTTPRequest[HTTP GET Request<br/>to Forwarder<br/>with Timeout]
-    HTTPRequest --> ResponseCheck{Response<br/>Status?}
+    UDPConnect --> UDPAnnounce[Send UDP Announce<br/>Packet (BEP 15)<br/>with Retry]
     
-    ResponseCheck -->|200 OK| ParseResponse[Parse Bencoded<br/>Response]
-    ResponseCheck -->|Error| ErrorHandling[Log Error<br/>Update with Empty Peers<br/>Interval=60s]
+    HTTPRequest --> HTTPResponseCheck{Response<br/>Status?}
+    UDPAnnounce --> UDPResponseCheck{Response<br/>Valid?}
     
-    ParseResponse --> UpdateForwarderStorage[Update ForwarderStorage<br/>with Peers + Interval]
+    HTTPResponseCheck -->|200 OK| ParseHTTPResponse[Parse Bencoded<br/>Response]
+    HTTPResponseCheck -->|Error| ErrorHandling[Log Error<br/>Update with Empty Peers<br/>Interval=60s]
+    
+    UDPResponseCheck -->|Success| ParseUDPResponse[Parse Binary<br/>UDP Response<br/>Extract Peers]
+    UDPResponseCheck -->|Error| ErrorHandling
+    
+    ParseHTTPResponse --> UpdateForwarderStorage[Update ForwarderStorage<br/>with Peers + Interval]
+    ParseUDPResponse --> UpdateForwarderStorage
     UpdateForwarderStorage --> RecordStats[Record Statistics<br/>Response Time, Interval]
     RecordStats --> UnmarkJob[Unmark Job as Pending]
     ErrorHandling --> UnmarkJob
@@ -116,6 +127,13 @@ flowchart TD
 - **Background Purge**: Removes peers older than Config.Age (default 180 minutes)
 
 ### 3. Forwarder System
+- **Protocol Support**: Automatically detects HTTP/HTTPS vs UDP from forwarder URI scheme
+- **HTTP Forwarders**: Uses standard HTTP GET requests with query parameters
+- **UDP Forwarders**: Uses BEP 15 UDP protocol with connection ID management
+  - Connection IDs cached with 2-minute lifetime
+  - Automatic connection ID refresh on expiration
+  - Binary packet encoding/decoding
+  - IPv4/IPv6 peer format detection
 - **Worker Pool**: Parallel processing of forwarder requests (Config.ForwarderWorkers)
 - **Job Queue**: Buffered channel for announce jobs
 - **Re-announcing Logic**:

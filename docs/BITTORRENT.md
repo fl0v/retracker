@@ -238,6 +238,12 @@ qBittorrent exposes libtorrent's tracker strategy via advanced options that affe
   - **Enabled (uTorrent-style):** announce to **one tracker from each tier** in parallel
   - **Disabled (spec-compliant):** only use higher tiers if all trackers in a lower tier have failed
 
+**Multiple Trackers in One Tier:**
+If you place multiple trackers in the same tier and **disable** "Always announce to all trackers in a tier":
+- qBittorrent/libtorrent will choose **one tracker** from that tier for regular announces
+- If that tracker fails or times out, it will try the others in the same tier and promote a working one
+- The other trackers in the tier are effectively **fallbacks/load-balancers**, not all hit on every announce
+
 **Example:**
 ```yaml
 announce-list:
@@ -258,7 +264,23 @@ announce-list:
 - If a client stops very shortly after starting (quick stop), it should still send the stopped event
 - Trackers should forward stopped events to forwarders immediately
 - Pending announce jobs for stopped peers should be canceled
-- **qBittorrent behavior:** When removing an active torrent, it normally sends `event=stopped` to each tracker. The "Stop tracker timeout" advanced option controls how long qBittorrent waits for these stopped announces. If set to 0, qBittorrent will not send stopped announces at all.
+
+**qBittorrent Behavior (via libtorrent):**
+- When you **remove** an active torrent (or stop it from a running state), it normally sends `event=stopped` to each tracker for that torrent
+- The **"Stop tracker timeout"** advanced option controls how long qBittorrent waits for these `stopped` announces
+  - If this timeout is **0**, qBittorrent will **not send `stopped` announces at all** (it just disconnects and lets trackers time out your peer)
+
+**Paused Torrents:**
+- Pausing a torrent in qBittorrent **does not send `event=stopped`**
+- The tracker will keep your peer entry until its normal timeout expires
+- This can cause "ghost peers" on private trackers if you pause/exit on one machine and immediately start seeding the same torrent from another
+
+**Client Exit:**
+- On exit, qBittorrent tries to send `event=stopped` announces for **active (running) torrents**, again controlled by the "Stop tracker timeout"
+- It does **not** send `stopped` for paused torrents
+- From the tracker's perspective, the cleanest behavior is:
+  - On exit, send `event=stopped` to all trackers for all **actively announced** torrents (as long as you can do so quickly)
+  - If you cannot (crash, forced kill, timeout set to 0), trackers will simply time out the peer entry
 
 ### Completed Events
 
@@ -283,7 +305,9 @@ If a client sends `started` and then immediately sends `stopped` (within seconds
 - **Regular announces** respect the tracker's `interval` / `min interval`; **event announces (`started`, `completed`, `stopped`) and scrapes are sent immediately** (subject to local rate limiting)
 - `uploaded`, `downloaded`, and `left` are included on **ALL** announces, including event announces
 - A well-behaved client sends `event=stopped` immediately when a torrent is stopped/removed or on clean exit, so trackers can drop the peer quickly
+- **Paused torrents do not send `stopped` events** - the tracker will keep the peer entry until timeout
 - qBittorrent's multi-tracker behavior depends on the "Always announce to all trackers in a tier" and "Always announce to all tiers" options; disabling them moves it closer to the BEP 12 spec semantics
+- Event announces ignore the normal `interval`, but clients still rate-limit across torrents to avoid spamming trackers
 
 ## Additional References
 

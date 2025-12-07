@@ -8,7 +8,8 @@ Simple HTTP and UDP torrent tracker.
 * Single binary executable (doesn't require a web-backend [apache, php-fpm, uwsgi, etc.])
 * **HTTP and UDP tracker protocol support** (BEP 15 compliant)
 * **Decoupled announce logic** - HTTP and UDP handlers share the same core announce processing
-* Can collect peers from external trackers (HTTP only)
+* **Forward announces to external trackers** - Supports both HTTP and UDP forwarders (BEP 15)
+* **Peer aggregation** - Combines local peers with peers from external trackers
 * Expose some metrics for Prometheus monitoring
 
 ## Installing
@@ -81,19 +82,48 @@ Add http://retracker.local/announce to your torrent.
 
 ### Standalone with announce forwarding
 
-You can forward announce request to some external HTTP trackers and append peers from them to response to your torrent client.
+You can forward announce requests to external trackers (HTTP or UDP) and aggregate peers from them with your local peers.
+
 ```
 retracker -l :8080 -d -f forwarders.yml
 ```
-forwarders.yml:
-```
+
+**forwarders.yml** format:
+```yaml
+# HTTP trackers
 - uri: http://1.2.3.4:8080/announce
+- uri: https://tracker.example.com/announce
+
+# UDP trackers (BEP 15)
+- uri: udp://tracker.example.com:6969/announce
+
+# With optional IP override (useful when behind NAT)
 - uri: http://5.6.7.8:8080/announce
-- uri: http://5.6.7.8:8080/announce
-  ip: 192.168.1.15 # announce different torrent client IP to this forwarder
+  ip: 192.168.1.15
+
+# With custom host header
 - uri: http://192.168.1.1:8080/announce
-  host: retracker.local # external retracker.local (like on picture above)
+  host: retracker.local
+
+# With custom name for logs/stats
+- uri: http://tracker.example.com/announce
+  name: my-tracker
 ```
+
+**Features:**
+- Supports both HTTP/HTTPS and UDP forwarders (BEP 15 compliant)
+- Automatic protocol detection from URI scheme
+- Peer aggregation from multiple forwarders
+- Connection ID management for UDP forwarders
+- Automatic retry with exponential backoff
+- Worker pool for parallel forwarding
+
+**Auto-generating forwarders.yml:**
+```bash
+scripts/update-forwarders.sh
+```
+This script downloads tracker lists from public sources and generates a `forwarders.yml` file with both HTTP and UDP trackers.
+
 Add http://\<your ip>:8080/announce to your torrent.
 
 ## Docker Setup
