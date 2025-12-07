@@ -7,7 +7,7 @@ RUN apk add --no-cache git
 WORKDIR /build
 
 # Clone the repository
-ARG REPO_URL=https://github.com/vvampirius/retracker.git
+ARG REPO_URL=https://github.com/fl0v/retracker.git
 ARG BRANCH=master
 RUN git clone --depth 1 --branch ${BRANCH} ${REPO_URL} retracker
 

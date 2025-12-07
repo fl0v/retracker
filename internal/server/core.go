@@ -1,8 +1,8 @@
 package server
 
 import (
-	"github.com/vvampirius/retracker/internal/config"
-	"github.com/vvampirius/retracker/internal/observability"
+	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
 )
 
 type Core struct {

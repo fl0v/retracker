@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/vvampirius/retracker/common"
+	"github.com/fl0v/retracker/common"
 	"gopkg.in/yaml.v2"
 )
 

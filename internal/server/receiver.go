@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/vvampirius/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/config"
 )
 
 type Receiver struct {

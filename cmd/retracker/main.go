@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/vvampirius/retracker/internal/config"
-	"github.com/vvampirius/retracker/internal/observability"
-	"github.com/vvampirius/retracker/internal/server"
+	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
+	"github.com/fl0v/retracker/internal/server"
 )
 
 const VERSION = `0.10.0`
@@ -24,7 +24,7 @@ var (
 )
 
 func helpText() {
-	fmt.Println("# https://github.com/vvampirius/retracker\n")
+	fmt.Println("# https://github.com/fl0v/retracker\n")
 	flag.PrintDefaults()
 }
 

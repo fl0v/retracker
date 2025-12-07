@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vvampirius/retracker/bittorrent/common"
-	"github.com/vvampirius/retracker/bittorrent/tracker"
-	"github.com/vvampirius/retracker/internal/config"
+	"github.com/fl0v/retracker/bittorrent/common"
+	"github.com/fl0v/retracker/bittorrent/tracker"
+	"github.com/fl0v/retracker/internal/config"
 )
 
 var (

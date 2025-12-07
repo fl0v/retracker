@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vvampirius/retracker/bittorrent/common"
-	Response "github.com/vvampirius/retracker/bittorrent/response"
-	"github.com/vvampirius/retracker/internal/config"
-	"github.com/vvampirius/retracker/internal/observability"
+	"github.com/fl0v/retracker/bittorrent/common"
+	Response "github.com/fl0v/retracker/bittorrent/response"
+	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
 )
 
 var (

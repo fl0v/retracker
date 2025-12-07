@@ -8,8 +8,8 @@ services:
     ports:
       - "6969:6969"
     volumes:
-      # Mount forwards config file from lists directory
-      - ../lists/forwarders.yml:/app/forwarders.yml:ro
+      # Mount forwards config file from configs directory
+      - ../configs/forwarders.yml:/app/forwarders.yml:ro
     # retracker uses command-line flags, not environment variables
     # Flags: -l (listen), -d (debug), -p (prometheus), -f (forwards), -a (age), -x (x-real-ip), -t (timeout), -i (interval)
     command: ["./retracker", "-l", ":6969", "-f", "/app/forwarders.yml", "-p", "-d", "-a", "180", "-t", "2", "-i", "30"]

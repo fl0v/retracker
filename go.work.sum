@@ -4,6 +4,10 @@ github.com/alecthomas/kingpin/v2 v2.4.0/go.mod h1:0gyi0zQnjuFk8xrkNKamJoyUo382HR
 github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137 h1:s6gZFSlWYmbqAuRjVTiNNhvNRfY2Wxp9nhfyel4rklc=
 github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137/go.mod h1:OMCwj8VM1Kc9e19TLln2VL61YJF0x1XFtfdL4JdbSyE=
 github.com/creack/pty v1.1.9 h1:uDmaGzcdjhF4i/plgjmEsriH11Y0o7RKapEf/LDaM3w=
+github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b/go.mod h1:U5uBLU9mvpW6+wSJGgtF2JwWeP3JBs6c71d3nOcnZtc=
+github.com/fl0v/retracker/bittorrent/response v0.0.0-20241018131108-6661250eb98b/go.mod h1:Sg8fmGQMOVXgOhtPWfdrpTeN+WkU+tvYtm02bGev7q4=
+github.com/fl0v/retracker/bittorrent/tracker v0.0.0-20241018131108-6661250eb98b/go.mod h1:6aqMAJ3UXaFR1AcFrMIG+jiDCw6AdMXEh5psFxUnVnw=
+github.com/fl0v/retracker/common v0.0.0-20241018131108-6661250eb98b/go.mod h1:BLHj6lQ135X0htdasSS7rAWjVjwXTLWbfKuZbnZ6oCQ=
 github.com/go-kit/log v0.2.1 h1:MRVx0/zhvdseW+Gza6N9rVzU/IVzaeE1SFI4raAhmBU=
 github.com/go-kit/log v0.2.1/go.mod h1:NwTd00d/i8cPZ3xOwwiv2PO5MOcx78fFErGNcVmBjv0=
 github.com/go-logfmt/logfmt v0.5.1 h1:otpy5pqBCBZ1ng9RQ0dPu4PN7ba75Y/aA+UpowDyNVA=

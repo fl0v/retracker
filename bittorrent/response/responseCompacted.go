@@ -3,9 +3,10 @@ package response
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/vvampirius/retracker/bittorrent/common"
-	"github.com/zeebo/bencode"
 	"net"
+
+	"github.com/fl0v/retracker/bittorrent/common"
+	"github.com/zeebo/bencode"
 )
 
 type ResponseCompacted struct {

@@ -4,9 +4,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vvampirius/retracker/bittorrent/common"
-	"github.com/vvampirius/retracker/bittorrent/tracker"
-	CoreCommon "github.com/vvampirius/retracker/common"
+	"github.com/fl0v/retracker/bittorrent/common"
+	"github.com/fl0v/retracker/bittorrent/tracker"
+	CoreCommon "github.com/fl0v/retracker/common"
 )
 
 type ForwarderPeerEntry struct {

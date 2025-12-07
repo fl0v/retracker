@@ -1,4 +1,4 @@
-module github.com/vvampirius/retracker
+module github.com/fl0v/retracker
 
 go 1.22.0
 
@@ -6,10 +6,10 @@ toolchain go1.22.4
 
 require (
 	github.com/prometheus/client_golang v1.20.5
-	github.com/vvampirius/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b
-	github.com/vvampirius/retracker/bittorrent/response v0.0.0-20241018131108-6661250eb98b
-	github.com/vvampirius/retracker/bittorrent/tracker v0.0.0-20241018131108-6661250eb98b
-	github.com/vvampirius/retracker/common v0.0.0-20241018131108-6661250eb98b
+	github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b
+	github.com/fl0v/retracker/bittorrent/response v0.0.0-20241018131108-6661250eb98b
+	github.com/fl0v/retracker/bittorrent/tracker v0.0.0-20241018131108-6661250eb98b
+	github.com/fl0v/retracker/common v0.0.0-20241018131108-6661250eb98b
 	github.com/zeebo/bencode v1.0.0
 	gopkg.in/yaml.v2 v2.4.0
 )

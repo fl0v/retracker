@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fl0v/retracker/bittorrent/common"
+	Response "github.com/fl0v/retracker/bittorrent/response"
+	"github.com/fl0v/retracker/bittorrent/tracker"
+	CoreCommon "github.com/fl0v/retracker/common"
+	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/vvampirius/retracker/bittorrent/common"
-	Response "github.com/vvampirius/retracker/bittorrent/response"
-	"github.com/vvampirius/retracker/bittorrent/tracker"
-	CoreCommon "github.com/vvampirius/retracker/common"
-	"github.com/vvampirius/retracker/internal/config"
-	"github.com/vvampirius/retracker/internal/observability"
 )
 
 var (
