@@ -24,7 +24,7 @@ var (
 )
 
 func helpText() {
-	fmt.Println("# https://github.com/fl0v/retracker\n")
+	fmt.Println("# https://github.com/fl0v/retracker")
 	flag.PrintDefaults()
 }
 

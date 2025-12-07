@@ -4,6 +4,7 @@ github.com/alecthomas/kingpin/v2 v2.4.0/go.mod h1:0gyi0zQnjuFk8xrkNKamJoyUo382HR
 github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137 h1:s6gZFSlWYmbqAuRjVTiNNhvNRfY2Wxp9nhfyel4rklc=
 github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137/go.mod h1:OMCwj8VM1Kc9e19TLln2VL61YJF0x1XFtfdL4JdbSyE=
 github.com/creack/pty v1.1.9 h1:uDmaGzcdjhF4i/plgjmEsriH11Y0o7RKapEf/LDaM3w=
+github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b h1:QG2ZvSOiOnmVvdsHXoGvzIhxgze4Mis7Y8P0DWIN+4I=
 github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b/go.mod h1:U5uBLU9mvpW6+wSJGgtF2JwWeP3JBs6c71d3nOcnZtc=
 github.com/fl0v/retracker/bittorrent/response v0.0.0-20241018131108-6661250eb98b/go.mod h1:Sg8fmGQMOVXgOhtPWfdrpTeN+WkU+tvYtm02bGev7q4=
 github.com/fl0v/retracker/bittorrent/tracker v0.0.0-20241018131108-6661250eb98b/go.mod h1:6aqMAJ3UXaFR1AcFrMIG+jiDCw6AdMXEh5psFxUnVnw=

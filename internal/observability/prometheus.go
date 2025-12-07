@@ -9,9 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-var (
-	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
-)
+var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
 type Prometheus struct {
 	Requests        prometheus.Counter

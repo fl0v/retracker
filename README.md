@@ -141,6 +141,73 @@ Example with UDP support:
 command: ["./retracker", "-l", ":6969", "-u", ":6969", "-f", "/app/forwarders.yml", "-p", "-d"]
 ```
 
+## Development
+
+### Code Formatting and Linting
+
+This project uses:
+- **gofumpt** - Stricter gofmt for code formatting
+- **golangci-lint** - Comprehensive Go linter
+
+#### Setup
+
+Install the tools:
+```bash
+# Install gofumpt
+go install mvdan.cc/gofumpt@latest
+
+# Install golangci-lint
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+```
+
+#### Usage
+
+Format code:
+```bash
+make fmt
+```
+
+Check formatting:
+```bash
+make fmt-check
+```
+
+Run linter:
+```bash
+make lint
+```
+
+Run linter with auto-fix:
+```bash
+make lint-fix
+```
+
+Run all checks:
+```bash
+make check
+```
+
+### Project Structure
+
+The project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout):
+
+```
+retracker/
+├── cmd/retracker/          # Application entry point
+├── internal/               # Private application code
+│   ├── config/            # Configuration handling
+│   ├── server/            # Server implementation
+│   └── observability/     # Metrics and monitoring
+├── bittorrent/            # BitTorrent protocol modules
+│   ├── common/            # Common types
+│   ├── response/          # Response handling
+│   └── tracker/           # Tracker protocol
+├── common/                # Shared common module
+├── scripts/               # Build and utility scripts
+├── configs/               # Runtime configuration files
+└── docs/                  # Documentation
+```
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details

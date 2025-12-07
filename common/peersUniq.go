@@ -1,6 +1,6 @@
 package common
 
-import "github.com/vvampirius/retracker/bittorrent/common"
+import "github.com/fl0v/retracker/bittorrent/common"
 
 func PeerInPeers(peers []common.Peer, peer common.Peer) bool {
 	for _, p := range peers {

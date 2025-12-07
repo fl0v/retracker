@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
+
+	"github.com/fl0v/retracker/bittorrent/common"
 )
 
 var (
@@ -33,8 +34,8 @@ type ScrapeResponse struct {
 }
 
 func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error) {
-	if infoHashes == nil || len(infoHashes) == 0 {
-		ErrorLog.Println(ErrNoInfohashes.Error())
+	if len(infoHashes) == 0 {
+		ErrorLogScrape.Println(ErrNoInfohashes.Error())
 		return ScrapeResponse{}, ErrNoInfohashes
 	}
 	scrapeResponse := ScrapeResponse{
@@ -46,23 +47,23 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		infoHash := common.InfoHash(infoHashString)
 		infoHashHex := strings.ToUpper(hex.EncodeToString([]byte(infoHashString)))
 		if !infoHash.Valid() {
-			ErrorLog.Println(infoHashString, ErrBadInfohash.Error())
+			ErrorLogScrape.Println(infoHashString, ErrBadInfohash.Error())
 			return ScrapeResponse{}, ErrBadInfohash
 		}
 		requestInfoHash, found := core.Storage.Requests[infoHash]
 		if !found {
-			DebugLog.Printf("%s not found in storage", infoHashHex)
+			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
 			continue
 		}
 		srh := ScrapeResponseHash{}
 		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == `completed` || peerRequest.Left == 0 {
+			if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
 				srh.Complete++
 			} else {
 				srh.Incomplete++
 			}
 		}
-		DebugLog.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, srh.Complete, srh.Incomplete)
+		DebugLogScrape.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, srh.Complete, srh.Incomplete)
 		srh.Downloaded = srh.Complete // Unfortunately, we do not collect statistics to present the actual value.
 
 		scrapeResponse.Files[infoHashString] = srh
@@ -81,6 +82,6 @@ func (core *Core) HTTPScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	encoder := bencode.NewEncoder(w)
 	if err := encoder.Encode(scrapeResponse); err != nil {
-		ErrorLog.Println(err.Error())
+		ErrorLogScrape.Println(err.Error())
 	}
 }

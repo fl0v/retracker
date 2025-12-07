@@ -5,13 +5,20 @@ go 1.22.0
 toolchain go1.22.4
 
 require (
+	github.com/fl0v/retracker/bittorrent/common v0.0.0
+	github.com/fl0v/retracker/bittorrent/response v0.0.0
+	github.com/fl0v/retracker/bittorrent/tracker v0.0.0
+	github.com/fl0v/retracker/common v0.0.0
 	github.com/prometheus/client_golang v1.20.5
-	github.com/fl0v/retracker/bittorrent/common v0.0.0-20241018131108-6661250eb98b
-	github.com/fl0v/retracker/bittorrent/response v0.0.0-20241018131108-6661250eb98b
-	github.com/fl0v/retracker/bittorrent/tracker v0.0.0-20241018131108-6661250eb98b
-	github.com/fl0v/retracker/common v0.0.0-20241018131108-6661250eb98b
 	github.com/zeebo/bencode v1.0.0
 	gopkg.in/yaml.v2 v2.4.0
+)
+
+replace (
+	github.com/fl0v/retracker/bittorrent/common => ./bittorrent/common
+	github.com/fl0v/retracker/bittorrent/response => ./bittorrent/response
+	github.com/fl0v/retracker/bittorrent/tracker => ./bittorrent/tracker
+	github.com/fl0v/retracker/common => ./common
 )
 
 require (

@@ -5,8 +5,9 @@ import (
 	"log"
 	"os"
 
+	gopkginyaml "gopkg.in/yaml.v2"
+
 	"github.com/fl0v/retracker/common"
-	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -35,7 +36,7 @@ func (config *Config) ReloadForwards(fileName string) error {
 	}
 	defer f.Close()
 	forwards := make([]common.Forward, 0)
-	decoder := yaml.NewDecoder(f)
+	decoder := gopkginyaml.NewDecoder(f)
 	if err := decoder.Decode(&forwards); err != nil {
 		ErrorLog.Printf("Failed to parse forwarders file '%s': %s\n", fileName, err.Error())
 		return err

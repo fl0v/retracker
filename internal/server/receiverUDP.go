@@ -271,7 +271,7 @@ func (ru *ReceiverUDP) handleConnect(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	if ru.Config.Debug {
-		DebugLog.Printf("UDP Connect request from %s, transaction_id: %d\n", clientAddr.String(), req.TransactionID)
+		DebugLogUDP.Printf("UDP Connect request from %s, transaction_id: %d\n", clientAddr.String(), req.TransactionID)
 	}
 
 	// Generate connection ID - BEP 15: Connection IDs should not be guessable by the client
@@ -402,7 +402,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	if ru.Config.Debug {
-		DebugLog.Printf("UDP Announce from %s, hash: %x, peer_id: %x, port: %d, event: %s\n",
+		DebugLogUDP.Printf("UDP Announce from %s, hash: %x, peer_id: %x, port: %d, event: %s\n",
 			remoteAddr, req.InfoHash, req.PeerID, req.Port, eventStr)
 	}
 
@@ -482,7 +482,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	if ru.Config.Debug {
-		DebugLog.Printf("UDP Scrape from %s, transaction_id: %d, hashes: %d\n",
+		DebugLogUDP.Printf("UDP Scrape from %s, transaction_id: %d, hashes: %d\n",
 			clientAddr.String(), transactionID, len(infoHashes))
 	}
 
@@ -502,7 +502,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 		leechers := uint32(0)
 		if found {
 			for _, peerRequest := range requestInfoHash {
-				if peerRequest.Event == "completed" || peerRequest.Left == 0 {
+				if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
 					seeders++
 				} else {
 					leechers++
@@ -550,7 +550,7 @@ func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transaction
 	ru.Storage.requestsMu.Lock()
 	if requestInfoHash, found := ru.Storage.Requests[infoHash]; found {
 		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == "completed" || peerRequest.Left == 0 {
+			if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
 				seeders++
 			} else {
 				leechers++
@@ -604,7 +604,7 @@ func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transaction
 	ru.conn.WriteToUDP(buf.Bytes(), clientAddr)
 
 	if ru.Config.Debug {
-		DebugLog.Printf("UDP Announce response sent (%s): interval=%d, seeders=%d, leechers=%d, peers=%d\n",
+		DebugLogUDP.Printf("UDP Announce response sent (%s): interval=%d, seeders=%d, leechers=%d, peers=%d\n",
 			map[bool]string{true: "IPv6", false: "IPv4"}[isIPv6], response.Interval, seeders, leechers, peerCount)
 	}
 }

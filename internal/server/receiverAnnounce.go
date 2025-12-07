@@ -10,6 +10,7 @@ import (
 	"github.com/fl0v/retracker/bittorrent/common"
 	Response "github.com/fl0v/retracker/bittorrent/response"
 	"github.com/fl0v/retracker/bittorrent/tracker"
+
 	"github.com/fl0v/retracker/internal/config"
 	"github.com/fl0v/retracker/internal/observability"
 )
@@ -33,12 +34,12 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 		ra.Prometheus.Requests.Inc()
 	}
 	xrealip := r.Header.Get(`X-Real-IP`)
-	DebugLog.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
+	DebugLogAnnounce.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
 	remoteAddr := ra.getRemoteAddr(r, xrealip)
 	remotePort := r.URL.Query().Get(`port`)
 	infoHash := r.URL.Query().Get(`info_hash`)
 	if ra.Config.Debug {
-		DebugLog.Printf("hash: '%x', remote addr: %s:%s", infoHash, remoteAddr, remotePort)
+		DebugLogAnnounce.Printf("hash: '%x', remote addr: %s:%s", infoHash, remoteAddr, remotePort)
 	}
 	response := ra.ProcessAnnounce(
 		remoteAddr,
@@ -58,7 +59,7 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	d, err := response.Bencode(compacted)
 	if err != nil {
-		ErrorLog.Println(err.Error())
+		ErrorLogAnnounce.Println(err.Error())
 		return
 	}
 	fmt.Fprint(w, d)
@@ -85,8 +86,7 @@ func (ra *ReceiverAnnounce) parseRemoteAddr(in, def string) string {
 	return address
 }
 
-func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-	event string) *Response.Response {
+func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event string) *Response.Response {
 	request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
 		event, DebugLog)
 	if err != nil {
@@ -96,9 +96,9 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 	response := Response.Response{}
 
 	switch request.Event {
-	case `stopped`:
+	case EventStopped:
 		ra.handleStoppedEvent(request, &response)
-	case `completed`:
+	case EventCompleted:
 		ra.handleCompletedEvent(request, &response)
 	default:
 		ra.handleRegularAnnounce(request, &response)

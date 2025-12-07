@@ -15,9 +15,16 @@ import (
 	Response "github.com/fl0v/retracker/bittorrent/response"
 	"github.com/fl0v/retracker/bittorrent/tracker"
 	CoreCommon "github.com/fl0v/retracker/common"
+
 	"github.com/fl0v/retracker/internal/config"
 	"github.com/fl0v/retracker/internal/observability"
+
 	"github.com/prometheus/client_golang/prometheus"
+)
+
+const (
+	EventStopped   = "stopped"
+	EventCompleted = "completed"
 )
 
 var (
@@ -454,7 +461,7 @@ func (fm *ForwarderManager) ForwardStoppedEvent(infoHash common.InfoHash, peerID
 
 		// Create a stopped event request
 		stoppedRequest := request
-		stoppedRequest.Event = "stopped"
+		stoppedRequest.Event = EventStopped
 
 		// Execute immediately in parallel (don't queue, send synchronously for stopped events)
 		wg.Add(1)
@@ -491,7 +498,7 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 
 		// Create a completed event request
 		completedRequest := request
-		completedRequest.Event = "completed"
+		completedRequest.Event = EventCompleted
 
 		// Execute immediately in parallel (don't queue, send synchronously for completed events)
 		wg.Add(1)
@@ -518,7 +525,7 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 }
 
 // executeStoppedAnnounce executes a stopped or completed event announce immediately
-func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward, forwarderName string, infoHash common.InfoHash, peerID common.PeerID, request tracker.Request) {
+func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward, _ string, infoHash common.InfoHash, peerID common.PeerID, request tracker.Request) {
 	hash := fmt.Sprintf("%x", infoHash)
 	trackerURL := forwarder.Uri
 

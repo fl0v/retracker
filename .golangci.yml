@@ -1,0 +1,126 @@
+# golangci-lint configuration file
+# See https://golangci-lint.run/usage/configuration/ for more details
+
+run:
+  # Timeout for analysis
+  timeout: 5m
+  
+  # Include test files
+  tests: true
+
+# Output configuration
+output:
+  # Colored output
+  colored: true
+  
+  # Print linter name in issue line
+  print-issued-lines: true
+  
+  # Print linter name in unused line
+  print-linter-name: true
+
+# Linters configuration
+linters:
+  # Enable all linters
+  enable-all: false
+  
+  # Disable specific linters
+  disable:
+    - errcheck          # Too strict for this project
+    - gosec             # Security checks (optional, enable if needed)
+    - funlen            # Function length (optional)
+    - gocognit          # Cognitive complexity (optional)
+    - cyclop            # Cyclomatic complexity (optional)
+  
+  # Enable recommended linters
+  enable:
+    - gofmt             # Format code
+    - goimports         # Format imports
+    - govet             # Go vet
+    - staticcheck       # Static analysis
+    - unused            # Check for unused code
+    - ineffassign       # Detect ineffectual assignments
+    - typecheck         # Type checking
+    - gosimple          # Simplify code
+    - misspell          # Find misspellings
+    - unconvert         # Remove unnecessary type conversions
+    - unparam           # Find unused function parameters
+    - nakedret          # Find naked returns
+    - prealloc          # Find slice declarations that could be pre-allocated
+    - copyloopvar       # Check for loop variable references (replaces exportloopref)
+    - goconst           # Find repeated strings that could be replaced by a constant
+    - gocritic          # Opinionated code analyzer
+    - errname           # Check that error names follow convention
+    - errorlint         # Error handling linting
+    - gofumpt           # Stricter gofmt
+
+# Linters settings
+linters-settings:
+  gofmt:
+    # Use gofumpt instead of gofmt
+    use-gofumpt: true
+  
+  goimports:
+    # Put imports beginning with prefix after 3rd-party packages
+    local-prefixes: github.com/fl0v/retracker
+  
+  govet:
+    # Enable all analyzers
+    enable-all: true
+  
+  staticcheck:
+    # Enable all checks
+    checks: ["all"]
+  
+  
+  errname:
+    # Check error variable names
+    require-error-name: false
+  
+  misspell:
+    # Locale for spell checking
+    locale: US
+
+# Issues configuration
+issues:
+  # Maximum issues count per one linter
+  max-issues-per-linter: 0
+  
+  # Maximum count of issues with the same text
+  max-same-issues: 0
+  
+  # Show only new issues created after git revision
+  new: false
+  
+  # Exclude directories
+  exclude-dirs:
+    - bin
+    - vendor
+    - .git
+  
+  # Exclude files
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*_generated\\.go$"
+  
+  # Exclude issues
+  exclude-rules:
+    # Exclude some linters from some files
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - goconst
+  
+  # Exclude some issues
+  exclude:
+    # Error: "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*printf?|os\\.(Un)?Setenv). is not checked"
+    - 'Error return value of .* is not checked'
+    # Error: "exported function .* should have comment or be unexported"
+    - 'exported function .* should have comment'
+    # Error: "comment on exported .* should be of the form"
+    - 'comment on exported .* should be of the form'
+    # Field alignment warnings (optimization suggestions, not errors)
+    - 'fieldalignment: struct .* could be'
+    # Field alignment warnings (optimization suggestions, not errors)
+    - 'fieldalignment: struct .* could be'

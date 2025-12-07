@@ -11,9 +11,7 @@ import (
 	"github.com/fl0v/retracker/internal/config"
 )
 
-var (
-	DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
-)
+var DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 
 type Storage struct {
 	Config     *config.Config
@@ -28,13 +26,12 @@ func (self *Storage) Update(request tracker.Request) {
 		self.Requests[request.InfoHash] = make(map[common.PeerID]tracker.Request)
 	}
 	self.Requests[request.InfoHash][request.PeerID] = request
-
 }
 
 func (self *Storage) Delete(request tracker.Request) {
 	self.requestsMu.Lock()
 	defer self.requestsMu.Unlock()
-	delete(self.Requests[request.InfoHash], request.PeerID) //TODO: test this
+	delete(self.Requests[request.InfoHash], request.PeerID) // TODO: test this
 }
 
 func (self *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
@@ -50,7 +47,7 @@ func (self *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
 }
 
 func (self *Storage) purgeRoutine() {
-	for true {
+	for {
 		time.Sleep(1 * time.Minute)
 		if self.Config.Debug {
 			DebugLog.Printf("In memory %d hashes\n", len(self.Requests))

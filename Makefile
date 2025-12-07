@@ -1,4 +1,4 @@
-.PHONY: build rebuild up down restart logs shell clean help update-forwarders build-local run-local run-local-udp run-local-udp-debug run-local-udp-prometheus run-local-custom clean-local
+.PHONY: build rebuild up down restart logs shell clean help update-forwarders build-local run-local run-local-udp run-local-udp-debug run-local-udp-prometheus run-local-custom clean-local lint lint-fix fmt fmt-check check
 
 # Docker image name
 IMAGE_NAME := retracker
@@ -99,4 +99,64 @@ run-local-custom: build-local ## Run with custom ports (usage: make run-local-cu
 
 clean-local: ## Remove the local build directory
 	rm -rf $(BUILD_DIR)
+
+# Linting and formatting
+# Find golangci-lint in PATH or common Go bin locations
+GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || \
+	command -v $$(go env GOPATH)/bin/golangci-lint 2>/dev/null || \
+	command -v $$HOME/go/bin/golangci-lint 2>/dev/null || \
+	echo "")
+
+lint: ## Run golangci-lint
+	@if [ -z "$(GOLANGCI_LINT)" ]; then \
+		echo "golangci-lint not found in PATH."; \
+		echo "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
+		exit 1; \
+	else \
+		echo "Downloading dependencies..."; \
+		go mod download && \
+		$(GOLANGCI_LINT) run; \
+	fi
+
+lint-fix: ## Run golangci-lint with auto-fix
+	@if [ -z "$(GOLANGCI_LINT)" ]; then \
+		echo "golangci-lint not found in PATH."; \
+		echo "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
+		exit 1; \
+	else \
+		$(GOLANGCI_LINT) run --fix; \
+	fi
+
+# Find gofumpt or gofmt
+GOFUMPT := $(shell command -v gofumpt 2>/dev/null || \
+	command -v $$(go env GOPATH)/bin/gofumpt 2>/dev/null || \
+	command -v $$HOME/go/bin/gofumpt 2>/dev/null || \
+	echo "")
+GOFMT := $(shell command -v gofmt 2>/dev/null || echo "")
+
+fmt: ## Format code with gofumpt (or gofmt if gofumpt not available)
+	@if [ -n "$(GOFUMPT)" ]; then \
+		$(GOFUMPT) -l -w .; \
+	elif [ -n "$(GOFMT)" ]; then \
+		$(GOFMT) -s -w .; \
+	else \
+		echo "Neither gofumpt nor gofmt found"; \
+		echo "Install gofumpt with: go install mvdan.cc/gofumpt@latest"; \
+		exit 1; \
+	fi
+
+fmt-check: ## Check if code is formatted correctly
+	@if [ -n "$(GOFUMPT)" ]; then \
+		! $(GOFUMPT) -l . | grep -q . || (echo "Code is not formatted. Run 'make fmt' to fix." && exit 1); \
+	elif [ -n "$(GOFMT)" ]; then \
+		! $(GOFMT) -l . | grep -q . || (echo "Code is not formatted. Run 'make fmt' to fix." && exit 1); \
+	else \
+		echo "Neither gofumpt nor gofmt found"; \
+		echo "Install gofumpt with: go install mvdan.cc/gofumpt@latest"; \
+		exit 1; \
+	fi
+
+check: fmt-check lint ## Run all checks (formatting and linting)
 

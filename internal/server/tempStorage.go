@@ -8,9 +8,7 @@ import (
 	"time"
 )
 
-var (
-	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
-)
+var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
 type TempStorage struct {
 	path string
@@ -35,7 +33,7 @@ func (ts *TempStorage) cleanRoutine() {
 				continue
 			}
 			if info.ModTime().Before(deadline) {
-				if os.Remove(path.Join(ts.path, entry.Name())); err != nil {
+				if err := os.Remove(path.Join(ts.path, entry.Name())); err != nil {
 					ErrorLog.Println(err.Error())
 				}
 			}
@@ -68,7 +66,7 @@ func NewTempStorage(_path string) (*TempStorage, error) {
 	if ts.path == `` {
 		ts.path = path.Join(os.TempDir(), `retracker`)
 	}
-	if err := os.MkdirAll(ts.path, 0755); err != nil {
+	if err := os.MkdirAll(ts.path, 0o755); err != nil {
 		ErrorLog.Println(err.Error())
 		return nil, err
 	}
