@@ -6,13 +6,34 @@ services:
       dockerfile: docker/Dockerfile
     container_name: retracker
     ports:
-      - "6969:6969"
+      - "6969:6969"      # HTTP port
+      - "6969:6969/udp"  # UDP port
     volumes:
       # Mount forwards config file from configs directory
       - ../configs/forwarders.yml:/app/forwarders.yml:ro
-    # retracker uses command-line flags, not environment variables
-    # Flags: -l (listen), -d (debug), -p (prometheus), -f (forwards), -a (age), -x (x-real-ip), -t (timeout), -i (interval)
-    command: ["./retracker", "-l", ":6969", "-f", "/app/forwarders.yml", "-p", "-d", "-a", "180", "-t", "2", "-i", "30"]
+    environment:
+      # HTTP listen address:port (default: :6969)
+      - RETRACKER_LISTEN=:6969
+      # UDP listen address:port (empty to disable, default: empty)
+      - RETRACKER_UDP_LISTEN=:6969
+      # Keep 'n' minutes peer in memory (default: 180)
+      - RETRACKER_AGE=180
+      # Debug mode (default: false)
+      - RETRACKER_DEBUG=false
+      # Get RemoteAddr from X-Real-IP header (default: false)
+      # - RETRACKER_X_REAL_IP=false
+      # Load forwards from YAML file
+      - RETRACKER_FORWARDS=/app/forwarders.yml
+      # Timeout (sec) for forward requests (default: 30)
+      - RETRACKER_FORWARD_TIMEOUT=30
+      # Number of workers for parallel forwarder processing (default: 10)
+      - RETRACKER_FORWARDER_WORKERS=10
+      # Enable Prometheus metrics (default: false)
+      - RETRACKER_PROMETHEUS=false
+      # Announce response interval (sec) (default: 30)
+      - RETRACKER_ANNOUNCE_INTERVAL=30
+      # Statistics print interval (sec) (default: 60)
+      - RETRACKER_STATS_INTERVAL=60
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6969/favicon.ico"]

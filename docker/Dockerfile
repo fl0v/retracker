@@ -29,8 +29,12 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /build/retracker .
 
-# Expose default port
-EXPOSE 80
+# Copy entrypoint script
+COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
-# Run the application
-CMD ["./retracker", "-l", ":6969"]
+# Expose default ports (HTTP and UDP)
+EXPOSE 6969 6969/udp
+
+# Use entrypoint script
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
