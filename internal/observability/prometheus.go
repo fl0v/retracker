@@ -1,9 +1,16 @@
-package main
+package observability
 
 import (
+	"log"
+	"net/http"
+	"os"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
+)
+
+var (
+	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 type Prometheus struct {

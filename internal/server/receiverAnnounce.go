@@ -1,25 +1,34 @@
-package main
+package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 
 	"github.com/vvampirius/retracker/bittorrent/common"
 	Response "github.com/vvampirius/retracker/bittorrent/response"
 	"github.com/vvampirius/retracker/bittorrent/tracker"
+	"github.com/vvampirius/retracker/internal/config"
+	"github.com/vvampirius/retracker/internal/observability"
+)
+
+var (
+	DebugLogAnnounce = log.New(os.Stdout, `debug#`, log.Lshortfile)
+	ErrorLogAnnounce = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 type ReceiverAnnounce struct {
-	Config           *Config
+	Config           *config.Config
 	Storage          *Storage
 	ForwarderStorage *ForwarderStorage
 	ForwarderManager *ForwarderManager
-	Prometheus       *Prometheus
+	Prometheus       *observability.Prometheus
 	TempStorage      *TempStorage
 }
 
-func (ra *ReceiverAnnounce) httpHandler(w http.ResponseWriter, r *http.Request) {
+func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) {
 	if ra.Prometheus != nil {
 		ra.Prometheus.Requests.Inc()
 	}
@@ -225,9 +234,9 @@ func (ra *ReceiverAnnounce) isFirstAnnounce(infoHash common.InfoHash) bool {
 	return false
 }
 
-func NewReceiverAnnounce(config *Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *ReceiverAnnounce {
+func NewReceiverAnnounce(cfg *config.Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *ReceiverAnnounce {
 	announce := ReceiverAnnounce{
-		Config:           config,
+		Config:           cfg,
 		Storage:          storage,
 		ForwarderStorage: forwarderStorage,
 		ForwarderManager: forwarderManager,

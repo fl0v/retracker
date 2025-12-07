@@ -1,36 +1,41 @@
-package main
+package server
+
+import (
+	"github.com/vvampirius/retracker/internal/config"
+	"github.com/vvampirius/retracker/internal/observability"
+)
 
 type Core struct {
-	Config           *Config
+	Config           *config.Config
 	Storage          *Storage
 	ForwarderStorage *ForwarderStorage
 	ForwarderManager *ForwarderManager
 	Receiver         *Receiver
 }
 
-func NewCore(config *Config, tempStorage *TempStorage) *Core {
-	storage := NewStorage(config)
+func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
+	storage := NewStorage(cfg)
 
 	var forwarderStorage *ForwarderStorage
 	var forwarderManager *ForwarderManager
 
 	// Initialize forwarder system if forwards are configured
-	if len(config.Forwards) > 0 {
+	if len(cfg.Forwards) > 0 {
 		forwarderStorage = NewForwarderStorage()
 
-		var prometheus *Prometheus
+		var prometheus *observability.Prometheus
 		// Prometheus will be set later if enabled
 
-		forwarderManager = NewForwarderManager(config, forwarderStorage, prometheus, tempStorage)
+		forwarderManager = NewForwarderManager(cfg, forwarderStorage, prometheus, tempStorage)
 		forwarderManager.Start()
 	}
 
 	core := Core{
-		Config:           config,
+		Config:           cfg,
 		Storage:          storage,
 		ForwarderStorage: forwarderStorage,
 		ForwarderManager: forwarderManager,
-		Receiver:         NewReceiver(config, storage, forwarderStorage, forwarderManager),
+		Receiver:         NewReceiver(cfg, storage, forwarderStorage, forwarderManager),
 	}
 	core.Receiver.Announce.TempStorage = tempStorage
 	return &core

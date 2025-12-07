@@ -7,6 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/vvampirius/retracker/internal/config"
+	"github.com/vvampirius/retracker/internal/observability"
+	"github.com/vvampirius/retracker/internal/server"
 )
 
 const VERSION = `0.10.0`
@@ -52,7 +56,7 @@ func main() {
 
 	fmt.Printf("Starting version %s\n", VERSION)
 
-	config := Config{
+	cfg := config.Config{
 		AnnounceResponseInterval: *announceResponseInterval,
 		Listen:                   *listen,
 		UDPListen:                *udpListen,
@@ -65,17 +69,17 @@ func main() {
 	}
 
 	if *forwards != `` {
-		if err := config.ReloadForwards(*forwards); err != nil {
+		if err := cfg.ReloadForwards(*forwards); err != nil {
 			ErrorLog.Fatalln(err.Error())
 		}
 	}
 
-	tempStorage, err := NewTempStorage(``)
+	tempStorage, err := server.NewTempStorage(``)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	core := NewCore(&config, tempStorage)
+	core := server.NewCore(&cfg, tempStorage)
 
 	// https://github.com/vvampirius/retracker/issues/7
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
@@ -84,10 +88,10 @@ func main() {
 		w.Write(faviconIco)
 	})
 
-	http.HandleFunc("/scrape", core.httpScrapeHandler)
-	http.HandleFunc("/announce", core.Receiver.Announce.httpHandler)
+	http.HandleFunc("/scrape", core.HTTPScrapeHandler)
+	http.HandleFunc("/announce", core.Receiver.Announce.HTTPHandler)
 	if *enablePrometheus {
-		p, err := NewPrometheus()
+		p, err := observability.NewPrometheus()
 		if err != nil {
 			os.Exit(1)
 		}
@@ -99,15 +103,15 @@ func main() {
 	}
 
 	// Start UDP server if configured
-	if config.UDPListen != "" {
+	if cfg.UDPListen != "" {
 		core.Receiver.UDP.TempStorage = tempStorage
-		if err := core.Receiver.UDP.Start(config.UDPListen); err != nil {
+		if err := core.Receiver.UDP.Start(cfg.UDPListen); err != nil {
 			ErrorLog.Fatalln("Failed to start UDP server:", err.Error())
 		}
 		defer core.Receiver.UDP.Close()
 	}
 
-	if err := http.ListenAndServe(config.Listen, nil); err != nil { // set listen port
+	if err := http.ListenAndServe(cfg.Listen, nil); err != nil { // set listen port
 		ErrorLog.Println(err)
 	}
 }

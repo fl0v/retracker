@@ -1,11 +1,13 @@
-package main
+package server
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +16,13 @@ import (
 	Response "github.com/vvampirius/retracker/bittorrent/response"
 	"github.com/vvampirius/retracker/bittorrent/tracker"
 	CoreCommon "github.com/vvampirius/retracker/common"
+	"github.com/vvampirius/retracker/internal/config"
+	"github.com/vvampirius/retracker/internal/observability"
+)
+
+var (
+	DebugLogFwd = log.New(os.Stdout, `debug#`, log.Lshortfile)
+	ErrorLogFwd = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 type ForwarderStats struct {
@@ -23,13 +32,13 @@ type ForwarderStats struct {
 }
 
 type ForwarderManager struct {
-	Config       *Config
+	Config       *config.Config
 	Storage      *ForwarderStorage
 	Forwarders   []CoreCommon.Forward
 	Workers      int
 	jobQueue     chan AnnounceJob
 	stopChan     chan struct{}
-	Prometheus   *Prometheus
+	Prometheus   *observability.Prometheus
 	TempStorage  *TempStorage
 	requestCache map[string]tracker.Request // cache of last request per info_hash for re-announcing
 	cacheMu      sync.RWMutex
@@ -39,22 +48,22 @@ type ForwarderManager struct {
 	statsMu      sync.RWMutex
 }
 
-func NewForwarderManager(config *Config, storage *ForwarderStorage, prometheus *Prometheus, tempStorage *TempStorage) *ForwarderManager {
+func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
 	fm := &ForwarderManager{
-		Config:       config,
+		Config:       cfg,
 		Storage:      storage,
-		Forwarders:   config.Forwards,
-		Workers:      config.ForwarderWorkers,
+		Forwarders:   cfg.Forwards,
+		Workers:      cfg.ForwarderWorkers,
 		jobQueue:     make(chan AnnounceJob, 100),
 		stopChan:     make(chan struct{}),
-		Prometheus:   prometheus,
+		Prometheus:   prom,
 		TempStorage:  tempStorage,
 		requestCache: make(map[string]tracker.Request),
 		pendingJobs:  make(map[string]bool),
 		stats:        make(map[string]*ForwarderStats),
 	}
 	// Initialize stats for each forwarder
-	for _, forwarder := range config.Forwards {
+	for _, forwarder := range cfg.Forwards {
 		fm.stats[forwarder.GetName()] = &ForwarderStats{
 			ResponseTimes: make([]time.Duration, 0),
 			Intervals:     make([]int, 0),
@@ -145,12 +154,12 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	fmt.Printf("Forwarding announce %s to %s\n", hash, trackerURL)
 	// Debug mode: log actual Request URI
 	if fm.Config.Debug {
-		DebugLog.Printf("  Request URI: %s\n", uri)
+		DebugLogFwd.Printf("  Request URI: %s\n", uri)
 		if forward.Ip != `` {
-			DebugLog.Printf("  Using IP: %s\n", forward.Ip)
+			DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
 		}
 		if forward.Host != `` {
-			DebugLog.Printf("  Host header: %s\n", forward.Host)
+			DebugLogFwd.Printf("  Host header: %s\n", forward.Host)
 		}
 	}
 
@@ -160,9 +169,9 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		duration := time.Since(startTime)
-		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
 		if fm.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
+			ErrorLogFwd.Printf("  Duration: %v\n", duration)
 		}
 		// Mark as attempted with default interval to avoid immediate retry
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
@@ -177,9 +186,9 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	response, err := client.Do(rqst)
 	duration := time.Since(startTime)
 	if err != nil {
-		ErrorLog.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
 		if fm.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
+			ErrorLogFwd.Printf("  Duration: %v\n", duration)
 		}
 		if fm.Prometheus != nil {
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
@@ -195,9 +204,9 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	}
 
 	if response.StatusCode != http.StatusOK {
-		ErrorLog.Printf("Error forwarding %s to %s: HTTP %d %s\n", hash, trackerURL, response.StatusCode, response.Status)
+		ErrorLogFwd.Printf("Error forwarding %s to %s: HTTP %d %s\n", hash, trackerURL, response.StatusCode, response.Status)
 		if fm.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
+			ErrorLogFwd.Printf("  Duration: %v\n", duration)
 		}
 		// Mark as attempted with default interval
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
@@ -206,9 +215,9 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		ErrorLog.Printf("Error forwarding %s to %s: failed to read response: %s\n", hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s to %s: failed to read response: %s\n", hash, trackerURL, err.Error())
 		if fm.Config.Debug {
-			ErrorLog.Printf("  Duration: %v\n", duration)
+			ErrorLogFwd.Printf("  Duration: %v\n", duration)
 		}
 		if fm.Prometheus != nil {
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
@@ -225,7 +234,7 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 
 	bitResponse, err := Response.Load(payload)
 	if err != nil {
-		ErrorLog.Printf("Error forwarding %s to %s: failed to parse response: %s\n", hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s to %s: failed to parse response: %s\n", hash, trackerURL, err.Error())
 		if fm.Config.Debug {
 			// Check if payload is printable text
 			isText := true
@@ -243,15 +252,15 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 				if len(payloadStr) > 500 {
 					payloadStr = payloadStr[:500] + "... (truncated)"
 				}
-				ErrorLog.Printf("  Raw response data: %s\n", payloadStr)
+				ErrorLogFwd.Printf("  Raw response data: %s\n", payloadStr)
 			} else {
-				ErrorLog.Printf("  Response is binary (%d bytes)\n", len(payload))
+				ErrorLogFwd.Printf("  Response is binary (%d bytes)\n", len(payload))
 			}
 			if tempFilename == `` {
 				tempFilename = fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
 			}
 			if tempFilename != `` {
-				ErrorLog.Printf("  Response saved to: %s\n", tempFilename)
+				ErrorLogFwd.Printf("  Response saved to: %s\n", tempFilename)
 			}
 		}
 		if fm.Prometheus != nil {
@@ -272,7 +281,7 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
 	// Debug mode: decoded response data
 	if fm.Config.Debug {
-		DebugLog.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
+		DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
 	}
 }
 
@@ -290,7 +299,7 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 		// Check if job is already pending
 		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
 			if fm.Config.Debug {
-				DebugLog.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+				DebugLogFwd.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
 			}
 			continue
 		}
@@ -309,13 +318,13 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 		select {
 		case fm.jobQueue <- job:
 			if fm.Config.Debug {
-				DebugLog.Printf("Queued initial announce for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+				DebugLogFwd.Printf("Queued initial announce for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
 			}
 		default:
 			// Queue full, unmark and skip
 			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
 			if fm.Config.Debug {
-				DebugLog.Printf("Job queue full, skipping initial announce for %x to %s\n", infoHash, forwarderName)
+				DebugLogFwd.Printf("Job queue full, skipping initial announce for %x to %s\n", infoHash, forwarderName)
 			}
 		}
 	}
@@ -339,7 +348,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 				// Re-announce immediately
 				if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
 					if fm.Config.Debug {
-						DebugLog.Printf("Re-announce job already pending for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+						DebugLogFwd.Printf("Re-announce job already pending for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
 					}
 					continue
 				}
@@ -402,7 +411,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 			if fm.Config.Debug {
 				hash := fmt.Sprintf("%x", job.InfoHash)
 				if nextAnnounce, ok := nextAnnounces[job.ForwarderName]; ok {
-					DebugLog.Printf("Queued scheduled re-announce for %s to %s (following forwarder interval)\n",
+					DebugLogFwd.Printf("Queued scheduled re-announce for %s to %s (following forwarder interval)\n",
 						hash, job.ForwarderName)
 					// Update NextAnnounce time
 					fm.Storage.mu.Lock()
@@ -418,7 +427,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 					fm.Storage.mu.RLock()
 					entry := fm.Storage.Entries[job.InfoHash][job.ForwarderName]
 					fm.Storage.mu.RUnlock()
-					DebugLog.Printf("Queued immediate re-announce for %s to %s (client interval %d > forwarder interval %d)\n",
+					DebugLogFwd.Printf("Queued immediate re-announce for %s to %s (client interval %d > forwarder interval %d)\n",
 						hash, job.ForwarderName, clientInterval, entry.Interval)
 				}
 			}
@@ -426,7 +435,7 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 			fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
 			if fm.Config.Debug {
 				hash := fmt.Sprintf("%x", job.InfoHash)
-				DebugLog.Printf("Job queue full, skipping re-announce for %s to %s\n", hash, job.ForwarderName)
+				DebugLogFwd.Printf("Job queue full, skipping re-announce for %s to %s\n", hash, job.ForwarderName)
 			}
 		}
 	}
@@ -466,7 +475,7 @@ func (fm *ForwarderManager) ForwardStoppedEvent(infoHash common.InfoHash, peerID
 	case <-time.After(time.Second * time.Duration(fm.Config.ForwardTimeout)):
 		// Timeout reached, but we don't block the handler - forwarders continue in background
 		if fm.Config.Debug {
-			DebugLog.Printf("Timeout waiting for stopped event forwards to complete for %x\n", infoHash)
+			DebugLogFwd.Printf("Timeout waiting for stopped event forwards to complete for %x\n", infoHash)
 		}
 	}
 }
@@ -503,7 +512,7 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 	case <-time.After(time.Second * time.Duration(fm.Config.ForwardTimeout)):
 		// Timeout reached, but we don't block the handler - forwarders continue in background
 		if fm.Config.Debug {
-			DebugLog.Printf("Timeout waiting for completed event forwards to complete for %x\n", infoHash)
+			DebugLogFwd.Printf("Timeout waiting for completed event forwards to complete for %x\n", infoHash)
 		}
 	}
 }
@@ -522,8 +531,8 @@ func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward,
 	}
 
 	if fm.Config.Debug {
-		DebugLog.Printf("Forwarding %s event for %s (peer %x) to %s\n", request.Event, hash, peerID, trackerURL)
-		DebugLog.Printf("  Request URI: %s\n", uri)
+		DebugLogFwd.Printf("Forwarding %s event for %s (peer %x) to %s\n", request.Event, hash, peerID, trackerURL)
+		DebugLogFwd.Printf("  Request URI: %s\n", uri)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(fm.Config.ForwardTimeout))
@@ -531,7 +540,7 @@ func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward,
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		ErrorLog.Printf("Error forwarding %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
 		return
 	}
 
@@ -542,25 +551,25 @@ func (fm *ForwarderManager) executeStoppedAnnounce(forwarder CoreCommon.Forward,
 	client := http.Client{}
 	response, err := client.Do(rqst)
 	if err != nil {
-		ErrorLog.Printf("Error forwarding %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error forwarding %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
 		return
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		ErrorLog.Printf("Error forwarding %s event for %s to %s: HTTP %d %s\n", request.Event, hash, trackerURL, response.StatusCode, response.Status)
+		ErrorLogFwd.Printf("Error forwarding %s event for %s to %s: HTTP %d %s\n", request.Event, hash, trackerURL, response.StatusCode, response.Status)
 		return
 	}
 
 	// Read response but don't update storage for stopped/completed events
 	_, err = io.ReadAll(response.Body)
 	if err != nil {
-		ErrorLog.Printf("Error reading response for %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("Error reading response for %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
 		return
 	}
 
 	if fm.Config.Debug {
-		DebugLog.Printf("Successfully forwarded %s event for %s to %s\n", request.Event, hash, trackerURL)
+		DebugLogFwd.Printf("Successfully forwarded %s event for %s to %s\n", request.Event, hash, trackerURL)
 	}
 }
 
@@ -586,12 +595,12 @@ func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID c
 	for _, key := range keysToRemove {
 		delete(fm.pendingJobs, key)
 		if fm.Config.Debug {
-			DebugLog.Printf("Canceled pending job: %s\n", key)
+			DebugLogFwd.Printf("Canceled pending job: %s\n", key)
 		}
 	}
 
 	if len(keysToRemove) > 0 && fm.Config.Debug {
-		DebugLog.Printf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID)
+		DebugLogFwd.Printf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID)
 	}
 }
 

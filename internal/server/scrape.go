@@ -1,12 +1,20 @@
-package main
+package server
 
 import (
 	"encoding/hex"
 	"errors"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+
 	"github.com/vvampirius/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
-	"net/http"
-	"strings"
+)
+
+var (
+	DebugLogScrape = log.New(os.Stdout, `debug#`, log.Lshortfile)
+	ErrorLogScrape = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 var (
@@ -62,9 +70,9 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 	return scrapeResponse, nil
 }
 
-func (core *Core) httpScrapeHandler(w http.ResponseWriter, r *http.Request) {
+func (core *Core) HTTPScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	xrealip := r.Header.Get(`X-Real-IP`)
-	DebugLog.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
+	DebugLogScrape.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
 	query := r.URL.Query()
 	scrapeResponse, err := core.getScrapeResponse(query["info_hash"])
 	if err != nil {

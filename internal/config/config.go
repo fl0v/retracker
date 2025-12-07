@@ -1,11 +1,17 @@
-package main
+package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/vvampirius/retracker/common"
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
+	DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 )
 
 type Config struct {
