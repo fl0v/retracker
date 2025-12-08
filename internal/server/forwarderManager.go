@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -237,7 +238,6 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	// Normal mode: log hash and tracker URL
 	fmt.Printf("Forwarding UDP announce %s to %s\n", hash, trackerURL)
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("  Protocol: UDP (BEP 15)\n")
 		if forward.Ip != `` {
 			DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
 		}
@@ -882,7 +882,7 @@ func (fm *ForwarderManager) printStats() {
 		TimeToExec    time.Duration
 	}, 0)
 
-	trackedHashes := len(fm.Storage.Entries)
+	trackedHashSet := make(map[string]struct{})
 	// Collect per-hash IP statistics
 	type hashStats struct {
 		LocalUnique     int
@@ -894,6 +894,7 @@ func (fm *ForwarderManager) printStats() {
 	for infoHash, forwarders := range fm.Storage.Entries {
 		seenLocal := make(map[string]struct{})
 		seenForwarder := make(map[string]struct{})
+		trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
 
 		// Count local peers (unique by IP)
 		if fm.MainStorage != nil {
@@ -951,6 +952,17 @@ func (fm *ForwarderManager) printStats() {
 	}
 	fm.Storage.mu.RUnlock()
 
+	// Include hashes tracked only in main storage (even if no forwarder entries)
+	if fm.MainStorage != nil {
+		fm.MainStorage.requestsMu.Lock()
+		for infoHash := range fm.MainStorage.Requests {
+			trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
+		}
+		fm.MainStorage.requestsMu.Unlock()
+	}
+
+	trackedHashes := len(trackedHashSet)
+
 	// Get forwarder statistics
 	fm.statsMu.RLock()
 	forwarderStats := make(map[string]struct {
@@ -996,8 +1008,15 @@ func (fm *ForwarderManager) printStats() {
 	fmt.Printf("Scheduled announcements: %d\n", pendingCount)
 
 	if len(scheduledAnnounces) > 0 {
-		fmt.Printf("Scheduled announces (time to execution):\n")
-		for _, sa := range scheduledAnnounces {
+		sort.Slice(scheduledAnnounces, func(i, j int) bool {
+			return scheduledAnnounces[i].TimeToExec < scheduledAnnounces[j].TimeToExec
+		})
+		limit := len(scheduledAnnounces)
+		if limit > 10 {
+			limit = 10
+		}
+		fmt.Printf("Scheduled announces (next %d):\n", limit)
+		for _, sa := range scheduledAnnounces[:limit] {
 			hashDisplay := sa.InfoHash
 			if len(hashDisplay) > 16 {
 				hashDisplay = hashDisplay[:16] + "..."
@@ -1007,13 +1026,13 @@ func (fm *ForwarderManager) printStats() {
 	}
 
 	fmt.Printf("Tracked hashes: %d\n", trackedHashes)
-	fmt.Printf("Forwarders: %d\n", len(fm.Forwarders))
-	if len(fm.disabled) > 0 {
-		fmt.Printf("Disabled forwarders: %d\n", len(fm.disabled))
-		for name := range fm.disabled {
-			fmt.Printf("  %s (disabled)\n", name)
-		}
+	disabledCount := len(fm.disabled)
+	activeCount := len(fm.Forwarders) - disabledCount
+	if activeCount < 0 {
+		activeCount = 0
 	}
+	fmt.Printf("Disabled forwarders: %d\n", disabledCount)
+	fmt.Printf("Active forwarders: %d\n", activeCount)
 
 	for _, forwarder := range fm.Forwarders {
 		forwarderName := forwarder.GetName()

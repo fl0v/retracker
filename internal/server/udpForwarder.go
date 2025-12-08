@@ -32,10 +32,10 @@ const (
 	udpActionError    = 3
 
 	// Connection ID lifetime per BEP 15 (2 minutes)
-	connectionIDLifetime = 2 * time.Minute
+	connectionIDLifetime = 5 * time.Minute
 
 	// Default timeout for UDP operations
-	defaultUDPTimeout = 15 * time.Second
+	defaultUDPTimeout = 30 * time.Second
 )
 
 // connectionEntry stores a connection ID with its timestamp
