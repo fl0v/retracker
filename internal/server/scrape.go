@@ -60,7 +60,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		// Local peers from in-memory storage
 		if requestInfoHash, found := core.Storage.Requests[infoHash]; found {
 			for _, peerRequest := range requestInfoHash {
-				ipStr := peerRequest.Peer().IP.String()
+				ipStr := string(peerRequest.Peer().IP)
 				if ipStr == "" {
 					continue
 				}
@@ -82,7 +82,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		// Forwarder peers (unique by IP, counted as seeders because we lack state)
 		if core.ForwarderStorage != nil {
 			for _, peer := range core.ForwarderStorage.GetAllPeers(infoHash) {
-				ipStr := peer.IP.String()
+				ipStr := string(peer.IP)
 				if ipStr == "" {
 					continue
 				}

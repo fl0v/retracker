@@ -791,7 +791,7 @@ func (fm *ForwarderManager) printStats() {
 		if fm.MainStorage != nil {
 			localPeers := fm.MainStorage.GetPeers(infoHash)
 			for _, peer := range localPeers {
-				ip := peer.IP.String()
+				ip := string(peer.IP)
 				if ip == "" {
 					continue
 				}
@@ -802,7 +802,7 @@ func (fm *ForwarderManager) printStats() {
 		// Count forwarder peers (unique by IP)
 		for _, entry := range forwarders {
 			for _, peer := range entry.Peers {
-				ip := peer.IP.String()
+				ip := string(peer.IP)
 				if ip == "" {
 					continue
 				}
