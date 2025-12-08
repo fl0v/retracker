@@ -3,12 +3,11 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /build
 
-# Copy go.mod & go.sum first for better caching
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy the rest of the source from the build context (provided by GitHub Actions)
+# Copy everything so local replace paths exist
 COPY . .
+
+# Download dependencies
+RUN go mod download
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o retracker ./cmd/retracker

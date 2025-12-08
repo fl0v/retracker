@@ -1,10 +1,7 @@
 .PHONY: help \
-	docker-build docker-build-github docker-rebuild docker-rebuild-github \
-	docker-up docker-up-local docker-rebuild-local docker-down docker-down-local \
-	docker-restart docker-restart-local docker-logs docker-logs-local docker-shell \
-	docker-clean \
-	docker-container-run docker-container-stop docker-container-run-debug docker-container-run-prometheus docker-container-run-custom \
-	update-forwarders build-local clean-local run-local run-local-debug run-local-prometheus \
+	docker-build docker-rebuild docker-clean \
+	docker-up docker-down docker-restart docker-logs docker-shell \
+	update-forwarders local-build local-clean local-run local-run-debug local-run-prometheus \
 	lint lint-fix fmt fmt-check check
 
 .DEFAULT_GOAL := help
@@ -22,7 +19,6 @@ BINARY := $(BUILD_DIR)/retracker
 
 # Compose files
 COMPOSE_MAIN := docker/docker-compose.yml
-COMPOSE_LOCAL := docker/docker-compose.local.yml
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -34,58 +30,34 @@ help: ## Show this help message
 # Docker image commands
 
 docker-build: ## Build the Docker image from local source code
-	docker build -t $(IMAGE_NAME) -f docker/Dockerfile.local .
-
-docker-build-github: ## Build the Docker image from GitHub master branch (always fetches latest)
-	docker build --build-arg CACHE_BUST=$(shell date +%s) -t $(IMAGE_NAME) -f docker/Dockerfile .
+	docker build -t $(IMAGE_NAME) -f docker/Dockerfile .
 
 docker-rebuild: ## Rebuild the Docker image from local source code (no cache)
-	docker build --no-cache -t $(IMAGE_NAME) -f docker/Dockerfile.local .
-
-docker-rebuild-github: ## Rebuild the Docker image from GitHub master branch (no cache, always fresh)
-	docker build --no-cache --pull --build-arg CACHE_BUST=$(shell date +%s) -t $(IMAGE_NAME) -f docker/Dockerfile .
-
+	docker compose -f $(COMPOSE_MAIN) down
+	docker build --no-cache -t $(IMAGE_NAME) -f docker/Dockerfile .
+	docker compose -f $(COMPOSE_MAIN) up -d
 
 # Docker compose commands
 
 docker-up: ## Start the container (builds from GitHub)
 	docker compose -f $(COMPOSE_MAIN) up -d
 
-docker-up-local: ## Start the container (builds from local code)
-	docker compose -f $(COMPOSE_LOCAL) up -d --build
-
-docker-rebuild-local: ## Rebuild and start the container from local code (no cache, forces rebuild)
-	docker compose -f $(COMPOSE_LOCAL) down
-	docker compose -f $(COMPOSE_LOCAL) build --no-cache
-	docker compose -f $(COMPOSE_LOCAL) up -d
 
 docker-down: ## Stop the container
 	docker compose -f $(COMPOSE_MAIN) down
-	docker compose -f $(COMPOSE_LOCAL) down || true
-
-docker-down-local: ## Stop the local container
-	docker compose -f $(COMPOSE_LOCAL) down
 
 docker-restart: ## Restart the container
 	docker compose -f $(COMPOSE_MAIN) restart
 
-docker-restart-local: ## Restart the local container
-	docker compose -f $(COMPOSE_LOCAL) restart
-
 docker-logs: ## Show container logs
 	docker compose -f $(COMPOSE_MAIN) logs -f
-
-docker-logs-local: ## Show local container logs
-	docker compose -f $(COMPOSE_LOCAL) logs -f
 
 docker-shell: ## Open a shell in the running container
 	docker exec -it $(CONTAINER_NAME) /bin/sh
 
 docker-clean: ## Remove container and image
-	docker compose -f $(COMPOSE_MAIN) down -v
-	docker compose -f $(COMPOSE_LOCAL) down -v || true
+	docker compose -f $(COMPOSE_MAIN) down -v || true
 	docker rmi $(IMAGE_NAME) || true
-
 
 # Standalone container commands (not using docker-compose)
 
@@ -127,19 +99,19 @@ docker-container-run-custom: docker-build ## Build from local code and run stand
 update-forwarders: ## Update forwarders.yml from online lists and local curated list
 	./scripts/update-forwarders.sh
 
-build-local: ## Build the Go binary locally
+local-build: ## Build the Go binary locally
 	mkdir -p $(BUILD_DIR) && go build -o $(BINARY) ./cmd/retracker
 
-clean-local: ## Remove the local build directory
+local-clean: ## Remove the local build directory
 	rm -rf $(BUILD_DIR)
 
-run-local: build-local ## Run retracker locally with both HTTP and UDP (ports 6969)
+local-run: local-build ## Run retracker locally with both HTTP and UDP (ports 6969)
 	$(BINARY) -l :6969 -u :6969 -f ./configs/forwarders.yml
 
-run-local-debug: build-local ## Run retracker locally with HTTP, UDP, and debug mode
+local-run-debug: local-build ## Run retracker locally with HTTP, UDP, and debug mode
 	$(BINARY) -l :6969 -u :6969 -d -f ./configs/forwarders.yml
 
-run-local-prometheus: build-local ## Run retracker locally with HTTP, UDP, and Prometheus
+local-run-prometheus: local-build ## Run retracker locally with HTTP, UDP, and Prometheus
 	$(BINARY) -l :6969 -u :6969 -p -f ./configs/forwarders.yml
 
 
