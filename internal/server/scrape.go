@@ -41,6 +41,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 	scrapeResponse := ScrapeResponse{
 		Files: make(map[string]ScrapeResponseHash),
 	}
+
 	core.Storage.requestsMu.Lock()
 	defer core.Storage.requestsMu.Unlock()
 	for _, infoHashString := range infoHashes {
@@ -50,17 +51,46 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 			ErrorLogScrape.Println(infoHashString, ErrBadInfohash.Error())
 			return ScrapeResponse{}, ErrBadInfohash
 		}
-		requestInfoHash, found := core.Storage.Requests[infoHash]
-		if !found {
-			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
-			continue
-		}
+
 		srh := ScrapeResponseHash{}
-		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
-				srh.Complete++
-			} else {
-				srh.Incomplete++
+
+		// Track unique IPs across local and forwarder peers
+		seenIPs := make(map[string]struct{})
+
+		// Local peers from in-memory storage
+		if requestInfoHash, found := core.Storage.Requests[infoHash]; found {
+			for _, peerRequest := range requestInfoHash {
+				ipStr := peerRequest.Peer().IP.String()
+				if ipStr == "" {
+					continue
+				}
+				if _, exists := seenIPs[ipStr]; exists {
+					continue
+				}
+				seenIPs[ipStr] = struct{}{}
+
+				if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
+					srh.Complete++
+				} else {
+					srh.Incomplete++
+				}
+			}
+		} else {
+			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
+		}
+
+		// Forwarder peers (unique by IP, counted as seeders because we lack state)
+		if core.ForwarderStorage != nil {
+			for _, peer := range core.ForwarderStorage.GetAllPeers(infoHash) {
+				ipStr := peer.IP.String()
+				if ipStr == "" {
+					continue
+				}
+				if _, exists := seenIPs[ipStr]; exists {
+					continue
+				}
+				seenIPs[ipStr] = struct{}{}
+				srh.Complete++ // assume forwarder peers are seeders
 			}
 		}
 		DebugLogScrape.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, srh.Complete, srh.Incomplete)

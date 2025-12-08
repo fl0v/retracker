@@ -775,7 +775,57 @@ func (fm *ForwarderManager) printStats() {
 	}, 0)
 
 	trackedHashes := len(fm.Storage.Entries)
+	// Collect per-hash IP statistics
+	type hashStats struct {
+		LocalUnique     int
+		ForwarderUnique int
+		TotalUnique     int
+	}
+	hashPeerStats := make(map[string]hashStats)
+
 	for infoHash, forwarders := range fm.Storage.Entries {
+		seenLocal := make(map[string]struct{})
+		seenForwarder := make(map[string]struct{})
+
+		// Count local peers (unique by IP)
+		if fm.MainStorage != nil {
+			localPeers := fm.MainStorage.GetPeers(infoHash)
+			for _, peer := range localPeers {
+				ip := peer.IP.String()
+				if ip == "" {
+					continue
+				}
+				seenLocal[ip] = struct{}{}
+			}
+		}
+
+		// Count forwarder peers (unique by IP)
+		for _, entry := range forwarders {
+			for _, peer := range entry.Peers {
+				ip := peer.IP.String()
+				if ip == "" {
+					continue
+				}
+				seenForwarder[ip] = struct{}{}
+			}
+		}
+
+		// Build totals
+		totalSeen := make(map[string]struct{})
+		for ip := range seenLocal {
+			totalSeen[ip] = struct{}{}
+		}
+		for ip := range seenForwarder {
+			totalSeen[ip] = struct{}{}
+		}
+
+		hashKey := fmt.Sprintf("%x", infoHash)
+		hashPeerStats[hashKey] = hashStats{
+			LocalUnique:     len(seenLocal),
+			ForwarderUnique: len(seenForwarder),
+			TotalUnique:     len(totalSeen),
+		}
+
 		for forwarderName, entry := range forwarders {
 			if entry.NextAnnounce.After(now) {
 				timeToExec := entry.NextAnnounce.Sub(now)
@@ -858,6 +908,18 @@ func (fm *ForwarderManager) printStats() {
 				forwarderName, stats.AvgResponseTime.Round(time.Millisecond), stats.AvgInterval, stats.Count)
 		} else {
 			fmt.Printf("  %s: no statistics yet\n", forwarderName)
+		}
+	}
+
+	// Print per-hash unique IP counts
+	if len(hashPeerStats) > 0 {
+		fmt.Printf("Hash unique IPs (local/forwarders/total):\n")
+		for hash, stats := range hashPeerStats {
+			hashDisplay := hash
+			if len(hashDisplay) > 16 {
+				hashDisplay = hashDisplay[:16] + "..."
+			}
+			fmt.Printf("  %s: %d/%d/%d\n", hashDisplay, stats.LocalUnique, stats.ForwarderUnique, stats.TotalUnique)
 		}
 	}
 
