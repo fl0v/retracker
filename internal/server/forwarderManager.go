@@ -507,9 +507,6 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 	if forwarders, ok := fm.Storage.Entries[infoHash]; ok {
 		for forwarderName, entry := range forwarders {
 			if fm.isDisabled(forwarderName) {
-				if fm.Config.Debug {
-					DebugLogFwd.Printf("Skipping disabled forwarder %s for %x", forwarderName, infoHash)
-				}
 				continue
 			}
 			// Skip if no interval yet (forwarder hasn't responded)
@@ -629,9 +626,6 @@ func (fm *ForwarderManager) ForwardStoppedEvent(infoHash common.InfoHash, peerID
 		forwarderName := forwarder.GetName()
 
 		if fm.isDisabled(forwarderName) {
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping disabled forwarder %s for stopped event %x", forwarderName, infoHash)
-			}
 			continue
 		}
 
@@ -673,9 +667,6 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 		forwarderName := forwarder.GetName()
 
 		if fm.isDisabled(forwarderName) {
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping disabled forwarder %s for completed event %x", forwarderName, infoHash)
-			}
 			continue
 		}
 
