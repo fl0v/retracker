@@ -36,10 +36,6 @@ const (
 
 	// Default timeout for UDP operations
 	defaultUDPTimeout = 15 * time.Second
-
-	// Retry settings
-	maxRetries    = 3
-	retryInterval = 500 * time.Millisecond
 )
 
 // connectionEntry stores a connection ID with its timestamp
@@ -52,19 +48,29 @@ type connectionEntry struct {
 type UDPForwarder struct {
 	debug       bool
 	timeout     time.Duration
+	maxRetries  int
+	retryBase   time.Duration
 	connections map[string]connectionEntry // forwarderName -> connection entry
 	connMu      sync.Mutex
 	stopChan    chan struct{}
 }
 
 // NewUDPForwarder creates a new UDP forwarder client
-func NewUDPForwarder(debug bool, timeout int) *UDPForwarder {
+func NewUDPForwarder(debug bool, timeout int, retries int, retryBaseMs int) *UDPForwarder {
 	if timeout <= 0 {
 		timeout = int(defaultUDPTimeout.Seconds())
+	}
+	if retries <= 0 {
+		retries = 5
+	}
+	if retryBaseMs <= 0 {
+		retryBaseMs = 500
 	}
 	uf := &UDPForwarder{
 		debug:       debug,
 		timeout:     time.Duration(timeout) * time.Second,
+		maxRetries:  retries,
+		retryBase:   time.Duration(retryBaseMs) * time.Millisecond,
 		connections: make(map[string]connectionEntry),
 		stopChan:    make(chan struct{}),
 	}
@@ -176,9 +182,9 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 
 	// Send connect request with retries
 	var connectionID uint64
-	for retry := 0; retry < maxRetries; retry++ {
+	for retry := 0; retry < uf.maxRetries; retry++ {
 		if retry > 0 {
-			time.Sleep(retryInterval * time.Duration(1<<retry)) // Exponential backoff
+			time.Sleep(uf.retryBase * time.Duration(1<<retry)) // Exponential backoff
 		}
 
 		// Reset deadline for each retry attempt
@@ -186,7 +192,11 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 
 		_, err = conn.Write(buf.Bytes())
 		if err != nil {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
+				conn.Close()
+				return 0, nil, fmt.Errorf("failed to send connect request: %w", err)
+			}
+			if !isTimeoutErr(err) {
 				conn.Close()
 				return 0, nil, fmt.Errorf("failed to send connect request: %w", err)
 			}
@@ -197,7 +207,11 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 		respBuf := make([]byte, 16)
 		n, err := conn.Read(respBuf)
 		if err != nil {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
+				conn.Close()
+				return 0, nil, fmt.Errorf("failed to read connect response: %w", err)
+			}
+			if !isTimeoutErr(err) {
 				conn.Close()
 				return 0, nil, fmt.Errorf("failed to read connect response: %w", err)
 			}
@@ -205,7 +219,7 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 		}
 
 		if n < 16 {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				conn.Close()
 				return 0, nil, fmt.Errorf("connect response too short: %d bytes", n)
 			}
@@ -227,7 +241,7 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 		}
 
 		if respAction != udpActionConnect {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				conn.Close()
 				return 0, nil, fmt.Errorf("unexpected action in connect response: %d", respAction)
 			}
@@ -235,7 +249,7 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 		}
 
 		if respTransactionID != transactionID {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				conn.Close()
 				return 0, nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
 			}
@@ -320,9 +334,9 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 
 	// Send announce request with retries
 	var response *Response.Response
-	for retry := 0; retry < maxRetries; retry++ {
+	for retry := 0; retry < uf.maxRetries; retry++ {
 		if retry > 0 {
-			time.Sleep(retryInterval * time.Duration(1<<retry))
+			time.Sleep(uf.retryBase * time.Duration(1<<retry))
 		}
 
 		// Reset deadline for each retry attempt
@@ -330,7 +344,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 
 		_, err = conn.Write(buf.Bytes())
 		if err != nil {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				return nil, fmt.Errorf("failed to send announce request: %w", err)
 			}
 			continue
@@ -340,15 +354,17 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		respBuf := make([]byte, 4096)
 		n, err := conn.Read(respBuf)
 		if err != nil {
-			// Check if connection ID expired
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
+				return nil, fmt.Errorf("failed to read announce response: %w", err)
+			}
+			if !isTimeoutErr(err) {
 				return nil, fmt.Errorf("failed to read announce response: %w", err)
 			}
 			continue
 		}
 
 		if n < 20 {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				return nil, fmt.Errorf("announce response too short: %d bytes", n)
 			}
 			continue
@@ -379,14 +395,14 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		}
 
 		if respAction != udpActionAnnounce {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				return nil, fmt.Errorf("unexpected action in announce response: %d", respAction)
 			}
 			continue
 		}
 
 		if respTransactionID != transactionID {
-			if retry == maxRetries-1 {
+			if retry == uf.maxRetries-1 {
 				return nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
 			}
 			continue
@@ -440,7 +456,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 	}
 
 	if response == nil {
-		return nil, fmt.Errorf("failed to get announce response after %d retries", maxRetries)
+		return nil, fmt.Errorf("failed to get announce response after %d retries", uf.maxRetries)
 	}
 
 	return response, nil

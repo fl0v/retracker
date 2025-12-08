@@ -17,6 +17,8 @@ var (
 
 type Config struct {
 	AnnounceResponseInterval int
+	MinAnnounceInterval      int
+	TrackerID                string
 	Listen                   string
 	UDPListen                string
 	Debug                    bool
@@ -26,6 +28,10 @@ type Config struct {
 	ForwardsFile             string // Path to forwards YAML file (if loaded)
 	ForwardTimeout           int
 	ForwarderWorkers         int
+	ForwarderQueueSize       int
+	ForwarderFailThreshold   int
+	ForwarderRetryAttempts   int
+	ForwarderRetryBaseMs     int
 	StatsInterval            int
 }
 
@@ -82,6 +88,10 @@ func (config *Config) PrintConfigWithPrometheus(enablePrometheus bool) {
 	fmt.Printf("Prometheus Metrics: %v\n", enablePrometheus)
 	fmt.Printf("Peer Age (minutes): %.1f\n", config.Age)
 	fmt.Printf("Announce Response Interval: %d seconds\n", config.AnnounceResponseInterval)
+	fmt.Printf("Minimum Announce Interval: %d seconds\n", config.MinAnnounceInterval)
+	if config.TrackerID != "" {
+		fmt.Printf("Tracker ID: %s\n", config.TrackerID)
+	}
 	fmt.Printf("Statistics Interval: %d seconds\n", config.StatsInterval)
 
 	if len(config.Forwards) > 0 {
@@ -91,6 +101,10 @@ func (config *Config) PrintConfigWithPrometheus(enablePrometheus bool) {
 		}
 		fmt.Printf("  Forward Timeout: %d seconds\n", config.ForwardTimeout)
 		fmt.Printf("  Forwarder Workers: %d\n", config.ForwarderWorkers)
+		fmt.Printf("  Forwarder Queue Size: %d\n", config.ForwarderQueueSize)
+		fmt.Printf("  Forwarder Fail Threshold: %d\n", config.ForwarderFailThreshold)
+		fmt.Printf("  Forwarder Retry Attempts: %d\n", config.ForwarderRetryAttempts)
+		fmt.Printf("  Forwarder Retry Base (ms): %d\n", config.ForwarderRetryBaseMs)
 		fmt.Println("  Forwarder List:")
 		for i, forward := range config.Forwards {
 			forwardName := forward.GetName()

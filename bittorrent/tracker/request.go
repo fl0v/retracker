@@ -11,6 +11,24 @@ import (
 	"github.com/zeebo/bencode"
 )
 
+const (
+	// DefaultNumWant is the fallback number of peers a client requests when numwant is omitted.
+	DefaultNumWant = 50
+	// MaxNumWant caps the number of peers returned to avoid oversized responses.
+	MaxNumWant = 200
+)
+
+func normalizeNumWant(value uint64) uint64 {
+	switch {
+	case value == 0:
+		return DefaultNumWant
+	case value > MaxNumWant:
+		return MaxNumWant
+	default:
+		return value
+	}
+}
+
 type Request struct {
 	timestamp  time.Time
 	remoteAddr common.Address
@@ -22,6 +40,8 @@ type Request struct {
 	Left       uint64          `bencode:"left"`
 	IP         common.Address  `bencode:"ip"`
 	NumWant    uint64          `bencode:"numwant"`
+	Compact    bool            `bencode:"compact"`
+	NoPeerID   bool            `bencode:"no_peer_id"`
 	Event      string          `bencode:"event"`
 	UserAgent  string          `bencode:"user_agent"`
 }
@@ -55,7 +75,7 @@ func (self *Request) Bencode() (string, error) {
 }
 
 func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-	event, userAgent string, logger *log.Logger) (*Request, error) {
+	event, userAgent string, compactFlag string, noPeerIDFlag string, logger *log.Logger) (*Request, error) {
 	request := Request{timestamp: time.Now(), remoteAddr: common.Address(remoteAddr), UserAgent: userAgent}
 
 	if v := common.InfoHash(infoHash); v.Valid() {
@@ -96,9 +116,13 @@ func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left,
 
 	request.IP = common.Address(ip)
 
-	if d, err := strconv.ParseUint(numwant, 10, 64); err == nil {
-		request.NumWant = d
+	if numwant != `` {
+		if d, err := strconv.ParseUint(numwant, 10, 64); err == nil {
+			request.NumWant = d
+		}
 	}
+
+	request.NumWant = normalizeNumWant(request.NumWant)
 
 	if event := event; event == `` || event == `started` || event == `stopped` || event == `completed` {
 		request.Event = event
@@ -107,6 +131,9 @@ func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left,
 			logger.Printf("WARNING! Got '%s' event in announce.\n", event)
 		}
 	}
+
+	request.Compact = compactFlag == "1"
+	request.NoPeerID = noPeerIDFlag == "1"
 
 	return &request, nil
 }

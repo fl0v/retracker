@@ -41,5 +41,6 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 		Receiver:         NewReceiver(cfg, storage, forwarderStorage, forwarderManager),
 	}
 	core.Receiver.Announce.TempStorage = tempStorage
+	core.Receiver.UDP.TempStorage = tempStorage
 	return &core
 }

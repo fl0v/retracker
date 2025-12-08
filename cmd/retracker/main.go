@@ -37,9 +37,15 @@ func main() {
 	forwards := flag.String("f", "", "Load forwards from YAML file")
 	forwardTimeout := flag.Int("t", 30, "Timeout (sec) for forward requests (used with -f)")
 	forwarderWorkers := flag.Int("w", 10, "Number of workers for parallel forwarder processing")
+	forwarderQueueSize := flag.Int("Q", 1000, "Forwarder announce job queue size")
+	forwarderFailThreshold := flag.Int("F", 10, "Forwarder fail threshold before disabling")
+	forwarderRetryAttempts := flag.Int("R", 5, "Forwarder retry attempts (UDP/HTTP)")
+	forwarderRetryBaseMs := flag.Int("B", 500, "Forwarder retry base backoff in ms (exponential)")
 	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics")
 	announceResponseInterval := flag.Int("i", 30, "Announce response interval (sec)")
+	minAnnounceInterval := flag.Int("m", 15, "Minimum announce interval (sec)")
 	statsInterval := flag.Int("s", 60, "Statistics print interval (sec)")
+	trackerID := flag.String("tracker-id", "", "Tracker ID to include in announce responses")
 	ver := flag.Bool("v", false, "Show version")
 	help := flag.Bool("h", false, "print this help")
 	flag.Parse()
@@ -56,8 +62,17 @@ func main() {
 
 	fmt.Printf("Starting version %s\n", VERSION)
 
+	if *minAnnounceInterval <= 0 {
+		*minAnnounceInterval = *announceResponseInterval
+	}
+	if *minAnnounceInterval > *announceResponseInterval {
+		*minAnnounceInterval = *announceResponseInterval
+	}
+
 	cfg := config.Config{
 		AnnounceResponseInterval: *announceResponseInterval,
+		MinAnnounceInterval:      *minAnnounceInterval,
+		TrackerID:                *trackerID,
 		Listen:                   *listen,
 		UDPListen:                *udpListen,
 		Debug:                    *debug,
@@ -65,6 +80,10 @@ func main() {
 		XRealIP:                  *xrealip,
 		ForwardTimeout:           *forwardTimeout,
 		ForwarderWorkers:         *forwarderWorkers,
+		ForwarderQueueSize:       *forwarderQueueSize,
+		ForwarderFailThreshold:   *forwarderFailThreshold,
+		ForwarderRetryAttempts:   *forwarderRetryAttempts,
+		ForwarderRetryBaseMs:     *forwarderRetryBaseMs,
 		StatsInterval:            *statsInterval,
 	}
 

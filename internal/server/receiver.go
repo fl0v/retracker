@@ -12,7 +12,7 @@ type Receiver struct {
 func NewReceiver(cfg *config.Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *Receiver {
 	receiver := Receiver{
 		Announce: NewReceiverAnnounce(cfg, storage, forwarderStorage, forwarderManager),
-		UDP:      NewReceiverUDP(cfg, storage),
+		UDP:      NewReceiverUDP(cfg, storage, forwarderStorage, forwarderManager),
 	}
 	return &receiver
 }

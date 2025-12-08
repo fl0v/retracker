@@ -1,4 +1,13 @@
-.PHONY: docker-build docker-rebuild docker-up docker-down docker-restart docker-logs docker-shell docker-clean docker-container-run docker-container-stop docker-container-run-debug docker-container-run-prometheus docker-container-run-custom help update-forwarders build-local run-local run-local-udp run-local-udp-debug run-local-udp-prometheus run-local-custom clean-local lint lint-fix fmt fmt-check check
+.PHONY: help \
+	docker-build docker-build-github docker-rebuild docker-rebuild-github \
+	docker-up docker-up-local docker-rebuild-local docker-down docker-down-local \
+	docker-restart docker-restart-local docker-logs docker-logs-local docker-shell \
+	docker-clean \
+	docker-container-run docker-container-stop docker-container-run-debug docker-container-run-prometheus docker-container-run-custom \
+	update-forwarders build-local clean-local run-local run-local-debug run-local-prometheus \
+	lint lint-fix fmt fmt-check check
+
+.DEFAULT_GOAL := help
 
 # Docker image name
 IMAGE_NAME := retracker
@@ -10,6 +19,10 @@ PORT := 6969:6969
 # Build directory and binary path
 BUILD_DIR := bin
 BINARY := $(BUILD_DIR)/retracker
+
+# Compose files
+COMPOSE_MAIN := docker/docker-compose.yml
+COMPOSE_LOCAL := docker/docker-compose.local.yml
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -36,41 +49,41 @@ docker-rebuild-github: ## Rebuild the Docker image from GitHub master branch (no
 # Docker compose commands
 
 docker-up: ## Start the container (builds from GitHub)
-	docker compose -f docker/docker-compose.yml up -d
+	docker compose -f $(COMPOSE_MAIN) up -d
 
 docker-up-local: ## Start the container (builds from local code)
-	docker compose -f docker/docker-compose.local.yml up -d --build
+	docker compose -f $(COMPOSE_LOCAL) up -d --build
 
 docker-rebuild-local: ## Rebuild and start the container from local code (no cache, forces rebuild)
-	docker compose -f docker/docker-compose.local.yml down
-	docker compose -f docker/docker-compose.local.yml build --no-cache
-	docker compose -f docker/docker-compose.local.yml up -d
+	docker compose -f $(COMPOSE_LOCAL) down
+	docker compose -f $(COMPOSE_LOCAL) build --no-cache
+	docker compose -f $(COMPOSE_LOCAL) up -d
 
 docker-down: ## Stop the container
-	docker compose -f docker/docker-compose.yml down
-	docker compose -f docker/docker-compose.local.yml down || true
+	docker compose -f $(COMPOSE_MAIN) down
+	docker compose -f $(COMPOSE_LOCAL) down || true
 
 docker-down-local: ## Stop the local container
-	docker compose -f docker/docker-compose.local.yml down
+	docker compose -f $(COMPOSE_LOCAL) down
 
 docker-restart: ## Restart the container
-	docker compose -f docker/docker-compose.yml restart
+	docker compose -f $(COMPOSE_MAIN) restart
 
 docker-restart-local: ## Restart the local container
-	docker compose -f docker/docker-compose.local.yml restart
+	docker compose -f $(COMPOSE_LOCAL) restart
 
 docker-logs: ## Show container logs
-	docker compose -f docker/docker-compose.yml logs -f
+	docker compose -f $(COMPOSE_MAIN) logs -f
 
 docker-logs-local: ## Show local container logs
-	docker compose -f docker/docker-compose.local.yml logs -f
+	docker compose -f $(COMPOSE_LOCAL) logs -f
 
 docker-shell: ## Open a shell in the running container
 	docker exec -it $(CONTAINER_NAME) /bin/sh
 
 docker-clean: ## Remove container and image
-	docker compose -f docker/docker-compose.yml down -v
-	docker compose -f docker/docker-compose.local.yml down -v || true
+	docker compose -f $(COMPOSE_MAIN) down -v
+	docker compose -f $(COMPOSE_LOCAL) down -v || true
 	docker rmi $(IMAGE_NAME) || true
 
 
@@ -112,7 +125,7 @@ docker-container-run-custom: docker-build ## Build from local code and run stand
 # Local development (non-Docker) commands
 
 update-forwarders: ## Update forwarders.yml from online lists and local curated list
-	./update-forwarders.sh
+	./scripts/update-forwarders.sh
 
 build-local: ## Build the Go binary locally
 	mkdir -p $(BUILD_DIR) && go build -o $(BINARY) ./cmd/retracker

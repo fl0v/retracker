@@ -33,13 +33,15 @@ const (
 )
 
 type ReceiverUDP struct {
-	Config      *config.Config
-	Storage     *Storage
-	Prometheus  *observability.Prometheus
-	TempStorage *TempStorage
-	conn        *net.UDPConn
-	connections map[uint64]time.Time // connection_id -> timestamp
-	connMu      sync.Mutex
+	Config           *config.Config
+	Storage          *Storage
+	ForwarderStorage *ForwarderStorage
+	ForwarderManager *ForwarderManager
+	Prometheus       *observability.Prometheus
+	TempStorage      *TempStorage
+	conn             *net.UDPConn
+	connections      map[uint64]time.Time // connection_id -> timestamp
+	connMu           sync.Mutex
 }
 
 type UDPConnectRequest struct {
@@ -103,11 +105,13 @@ type UDPScrapeData struct {
 	Leechers  uint32
 }
 
-func NewReceiverUDP(cfg *config.Config, storage *Storage) *ReceiverUDP {
+func NewReceiverUDP(cfg *config.Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *ReceiverUDP {
 	receiver := ReceiverUDP{
-		Config:      cfg,
-		Storage:     storage,
-		connections: make(map[uint64]time.Time),
+		Config:           cfg,
+		Storage:          storage,
+		ForwarderStorage: forwarderStorage,
+		ForwarderManager: forwarderManager,
+		connections:      make(map[uint64]time.Time),
 	}
 	return &receiver
 }
@@ -407,7 +411,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	// Use existing ProcessAnnounce logic
-	response := ru.ProcessAnnounce(
+	response, failure := ru.ProcessAnnounce(
 		remoteAddr,
 		infoHashStr,
 		peerIDStr,
@@ -419,16 +423,20 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 		numwantStr,
 		eventStr,
 		"", // UDP doesn't have user agent
+		"", // UDP compact flag (unused)
+		"", // UDP no_peer_id flag (unused)
 	)
 
 	if response == nil {
-		ru.sendError(clientAddr, req.TransactionID, "Invalid announce request")
+		message := "Invalid announce request"
+		if failure != "" {
+			message = failure
+		}
+		ru.sendError(clientAddr, req.TransactionID, message)
 		return
 	}
 
-	// Convert response to UDP format
-	infoHash := common.InfoHash(infoHashStr)
-	ru.sendAnnounceResponse(clientAddr, req.TransactionID, response, infoHash)
+	ru.sendAnnounceResponse(clientAddr, req.TransactionID, response)
 }
 
 func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
@@ -522,16 +530,18 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	ru.sendScrapeResponse(clientAddr, transactionID, scrapeData)
 }
 
-func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent string) *Response.Response {
+func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent, compactFlag, noPeerIDFlag string) (*Response.Response, string) {
 	// Reuse the existing HTTP announce processing logic
 	// We'll create a temporary ReceiverAnnounce to use its ProcessAnnounce method
 	ra := &ReceiverAnnounce{
-		Config:      ru.Config,
-		Storage:     ru.Storage,
-		Prometheus:  ru.Prometheus,
-		TempStorage: ru.TempStorage,
+		Config:           ru.Config,
+		Storage:          ru.Storage,
+		ForwarderStorage: ru.ForwarderStorage,
+		ForwarderManager: ru.ForwarderManager,
+		Prometheus:       ru.Prometheus,
+		TempStorage:      ru.TempStorage,
 	}
-	return ra.ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent)
+	return ra.ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent, compactFlag, noPeerIDFlag)
 }
 
 func (ru *ReceiverUDP) sendConnectResponse(clientAddr *net.UDPAddr, resp UDPConnectResponse) {
@@ -543,22 +553,9 @@ func (ru *ReceiverUDP) sendConnectResponse(clientAddr *net.UDPAddr, resp UDPConn
 	ru.conn.WriteToUDP(buf.Bytes(), clientAddr)
 }
 
-func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transactionID uint32, response *Response.Response, infoHash common.InfoHash) {
-	// Count seeders and leechers from storage
-	seeders := uint32(0)
-	leechers := uint32(0)
-
-	ru.Storage.requestsMu.Lock()
-	if requestInfoHash, found := ru.Storage.Requests[infoHash]; found {
-		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
-				seeders++
-			} else {
-				leechers++
-			}
-		}
-	}
-	ru.Storage.requestsMu.Unlock()
+func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transactionID uint32, response *Response.Response) {
+	seeders := uint32(response.Complete)
+	leechers := uint32(response.Incomplete)
 
 	// Build response buffer
 	buf := new(bytes.Buffer)

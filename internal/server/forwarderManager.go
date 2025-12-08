@@ -55,23 +55,31 @@ type ForwarderManager struct {
 	stats        map[string]*ForwarderStats // forwarderName -> stats
 	statsMu      sync.RWMutex
 	udpForwarder *UDPForwarder // UDP forwarder client for UDP trackers
+	failCounts   map[string]int
+	disabled     map[string]struct{}
 }
 
 func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
+	queueSize := cfg.ForwarderQueueSize
+	if queueSize <= 0 {
+		queueSize = 1000
+	}
 	fm := &ForwarderManager{
 		Config:       cfg,
 		Storage:      storage,
 		MainStorage:  mainStorage,
 		Forwarders:   cfg.Forwards,
 		Workers:      cfg.ForwarderWorkers,
-		jobQueue:     make(chan AnnounceJob, 100),
+		jobQueue:     make(chan AnnounceJob, queueSize),
 		stopChan:     make(chan struct{}),
 		Prometheus:   prom,
 		TempStorage:  tempStorage,
 		requestCache: make(map[string]tracker.Request),
 		pendingJobs:  make(map[string]bool),
 		stats:        make(map[string]*ForwarderStats),
-		udpForwarder: NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout),
+		udpForwarder: NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs),
+		failCounts:   make(map[string]int),
+		disabled:     make(map[string]struct{}),
 	}
 	// Initialize stats for each forwarder
 	for _, forwarder := range cfg.Forwards {
@@ -149,8 +157,64 @@ func (fm *ForwarderManager) worker() {
 	}
 }
 
+func (fm *ForwarderManager) registerFailure(forwarderName string) {
+	if fm.Config.ForwarderFailThreshold <= 0 {
+		return
+	}
+	fm.pendingMu.Lock()
+	fm.failCounts[forwarderName]++
+	count := fm.failCounts[forwarderName]
+	threshold := fm.Config.ForwarderFailThreshold
+	fm.pendingMu.Unlock()
+
+	if count >= threshold {
+		fm.disableForwarder(forwarderName)
+	}
+}
+
+func (fm *ForwarderManager) resetFailure(forwarderName string) {
+	fm.pendingMu.Lock()
+	delete(fm.failCounts, forwarderName)
+	fm.pendingMu.Unlock()
+}
+
+func (fm *ForwarderManager) disableForwarder(forwarderName string) {
+	fm.pendingMu.Lock()
+	fm.disabled[forwarderName] = struct{}{}
+	delete(fm.failCounts, forwarderName)
+	fm.pendingMu.Unlock()
+
+	// Drop from storage
+	fm.Storage.mu.Lock()
+	for infoHash := range fm.Storage.Entries {
+		delete(fm.Storage.Entries[infoHash], forwarderName)
+		if len(fm.Storage.Entries[infoHash]) == 0 {
+			delete(fm.Storage.Entries, infoHash)
+		}
+	}
+	fm.Storage.mu.Unlock()
+
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("Disabled forwarder %s after repeated failures", forwarderName)
+	}
+}
+
+func (fm *ForwarderManager) isDisabled(forwarderName string) bool {
+	fm.pendingMu.Lock()
+	_, disabled := fm.disabled[forwarderName]
+	fm.pendingMu.Unlock()
+	return disabled
+}
+
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	forward := job.Forwarder
+
+	if fm.isDisabled(forward.GetName()) {
+		if fm.Config.Debug {
+			DebugLogFwd.Printf("Forwarder %s is disabled; dropping job for %x", forward.GetName(), job.InfoHash)
+		}
+		return
+	}
 
 	// Detect protocol and route to appropriate handler
 	protocol := forward.GetProtocol()
@@ -191,6 +255,11 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 		if fm.Prometheus != nil {
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
 		}
+		if isTimeoutErr(err) {
+			fm.registerFailure(forwardName)
+		} else {
+			fm.disableForwarder(forwardName)
+		}
 		// Mark as attempted with default interval to avoid immediate retry
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
 		return
@@ -230,9 +299,7 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		uri = fmt.Sprintf("%s&ip=%s&ipv4=%s", uri, forward.Ip, forward.Ip)
 	}
 
-	// Normal mode: log hash and tracker URL
 	fmt.Printf("Forwarding announce %s to %s\n", hash, trackerURL)
-	// Debug mode: log actual Request URI
 	if fm.Config.Debug {
 		DebugLogFwd.Printf("  Request URI: %s\n", uri)
 		if forward.Ip != `` {
@@ -243,125 +310,136 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(fm.Config.ForwardTimeout))
-	defer cancel()
+	attempts := fm.Config.ForwarderRetryAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	backoff := time.Duration(fm.Config.ForwarderRetryBaseMs) * time.Millisecond
+	if backoff <= 0 {
+		backoff = 500 * time.Millisecond
+	}
 
-	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
+	var lastErr error
+	for retry := 0; retry < attempts; retry++ {
+		if retry > 0 {
+			time.Sleep(backoff * time.Duration(1<<retry))
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(fm.Config.ForwardTimeout))
+		rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		if forward.Host != `` {
+			rqst.Host = forward.Host
+		}
+
+		client := http.Client{}
+		response, err := client.Do(rqst)
 		duration := time.Since(startTime)
-		ErrorLogFwd.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
-		if fm.Config.Debug {
-			ErrorLogFwd.Printf("  Duration: %v\n", duration)
+		if err != nil {
+			lastErr = err
+			cancel()
+			if !isTimeoutErr(err) {
+				fm.disableForwarder(forwardName)
+				return
+			}
+			continue
 		}
-		// Mark as attempted with default interval to avoid immediate retry
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
-		return
-	}
 
-	if forward.Host != `` {
-		rqst.Host = forward.Host
-	}
+		// From here on, ensure body is closed
+		body := response.Body
+		defer body.Close()
 
-	client := http.Client{}
-	response, err := client.Do(rqst)
-	duration := time.Since(startTime)
-	if err != nil {
-		ErrorLogFwd.Printf("Error forwarding %s to %s: %s\n", hash, trackerURL, err.Error())
-		if fm.Config.Debug {
-			ErrorLogFwd.Printf("  Duration: %v\n", duration)
-		}
-		if fm.Prometheus != nil {
-			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
-		}
-		// Mark as attempted with default interval to avoid immediate retry
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60) // Use 60s default on error
-		return
-	}
-	defer response.Body.Close()
-
-	if fm.Prometheus != nil {
-		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
-	}
-
-	if response.StatusCode != http.StatusOK {
-		ErrorLogFwd.Printf("Error forwarding %s to %s: HTTP %d %s\n", hash, trackerURL, response.StatusCode, response.Status)
-		if fm.Config.Debug {
-			ErrorLogFwd.Printf("  Duration: %v\n", duration)
-		}
-		// Mark as attempted with default interval
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
-		return
-	}
-
-	payload, err := io.ReadAll(response.Body)
-	if err != nil {
-		ErrorLogFwd.Printf("Error forwarding %s to %s: failed to read response: %s\n", hash, trackerURL, err.Error())
-		if fm.Config.Debug {
-			ErrorLogFwd.Printf("  Duration: %v\n", duration)
-		}
 		if fm.Prometheus != nil {
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
 		}
-		// Mark as attempted with default interval
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
-		return
-	}
 
-	tempFilename := ``
-	if fm.Config.Debug {
-		tempFilename = fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
-	}
+		if response.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("HTTP %d %s", response.StatusCode, response.Status)
+			cancel()
+			fm.disableForwarder(forwardName)
+			return
+		}
 
-	bitResponse, err := Response.Load(payload)
-	if err != nil {
-		ErrorLogFwd.Printf("Error forwarding %s to %s: failed to parse response: %s\n", hash, trackerURL, err.Error())
+		payload, err := io.ReadAll(body)
+		cancel()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			if !isTimeoutErr(err) {
+				fm.disableForwarder(forwardName)
+				return
+			}
+			continue
+		}
+
+		tempFilename := ``
 		if fm.Config.Debug {
-			// Check if payload is printable text
-			isText := true
-			if len(payload) > 0 {
-				printableCount := 0
-				for _, b := range payload {
-					if b >= 32 && b < 127 || b == '\n' || b == '\r' || b == '\t' {
-						printableCount++
+			tempFilename = fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
+		}
+
+		bitResponse, err := Response.Load(payload)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to parse response: %w", err)
+			if fm.Config.Debug {
+				isText := true
+				if len(payload) > 0 {
+					printableCount := 0
+					for _, b := range payload {
+						if b >= 32 && b < 127 || b == '\n' || b == '\r' || b == '\t' {
+							printableCount++
+						}
 					}
+					isText = float64(printableCount)/float64(len(payload)) >= 0.8
 				}
-				isText = float64(printableCount)/float64(len(payload)) >= 0.8
-			}
-			if isText {
-				payloadStr := string(payload)
-				if len(payloadStr) > 500 {
-					payloadStr = payloadStr[:500] + "... (truncated)"
+				if isText {
+					payloadStr := string(payload)
+					if len(payloadStr) > 500 {
+						payloadStr = payloadStr[:500] + "... (truncated)"
+					}
+					ErrorLogFwd.Printf("  Raw response data: %s\n", payloadStr)
+				} else {
+					ErrorLogFwd.Printf("  Response is binary (%d bytes)\n", len(payload))
 				}
-				ErrorLogFwd.Printf("  Raw response data: %s\n", payloadStr)
-			} else {
-				ErrorLogFwd.Printf("  Response is binary (%d bytes)\n", len(payload))
+				if tempFilename == `` {
+					tempFilename = fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
+				}
+				if tempFilename != `` {
+					ErrorLogFwd.Printf("  Response saved to: %s\n", tempFilename)
+				}
 			}
-			if tempFilename == `` {
-				tempFilename = fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
-			}
-			if tempFilename != `` {
-				ErrorLogFwd.Printf("  Response saved to: %s\n", tempFilename)
-			}
+			fm.disableForwarder(forwardName)
+			return
 		}
-		if fm.Prometheus != nil {
-			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: fmt.Sprintf("%d", response.StatusCode)}).Inc()
+
+		// Success
+		fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
+		fm.resetFailure(forwardName)
+		fm.recordStats(forwardName, duration, bitResponse.Interval)
+		fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
+		if fm.Config.Debug {
+			DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
 		}
-		// Mark as attempted with default interval
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
 		return
 	}
 
-	// Update storage with peers and interval from response
-	fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
-
-	// Record statistics
-	fm.recordStats(forwardName, duration, bitResponse.Interval)
-
-	// Normal mode: response size + duration
-	fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
-	// Debug mode: decoded response data
+	// All retries failed
+	duration := time.Since(startTime)
+	ErrorLogFwd.Printf("Error forwarding %s to %s: %v\n", hash, trackerURL, lastErr)
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
+		ErrorLogFwd.Printf("  Duration: %v\n", duration)
+	}
+	if fm.Prometheus != nil {
+		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
+	}
+	fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
+	if isTimeoutErr(lastErr) {
+		fm.registerFailure(forwardName)
+	} else {
+		fm.disableForwarder(forwardName)
 	}
 }
 
@@ -372,9 +450,21 @@ func (fm *ForwarderManager) CacheRequest(infoHash common.InfoHash, request track
 }
 
 func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, request tracker.Request) {
+	if len(fm.Forwarders) == 0 {
+		ErrorLogFwd.Printf("No forwarders available; skipping initial announce for %x", infoHash)
+		return
+	}
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("Triggering initial announce for %x to %d forwarder(s)", infoHash, len(fm.Forwarders))
+	}
+
 	// Trigger parallel decoupled announces to all forwarders
 	for _, forwarder := range fm.Forwarders {
 		forwarderName := forwarder.GetName()
+
+		if fm.isDisabled(forwarderName) {
+			continue
+		}
 
 		// Check if job is already pending
 		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
@@ -403,9 +493,7 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 		default:
 			// Queue full, unmark and skip
 			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Job queue full, skipping initial announce for %x to %s\n", infoHash, forwarderName)
-			}
+			ErrorLogFwd.Printf("Job queue full, skipping initial announce for %x to %s", infoHash, forwarderName)
 		}
 	}
 }
@@ -418,6 +506,12 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 	fm.Storage.mu.RLock()
 	if forwarders, ok := fm.Storage.Entries[infoHash]; ok {
 		for forwarderName, entry := range forwarders {
+			if fm.isDisabled(forwarderName) {
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Skipping disabled forwarder %s for %x", forwarderName, infoHash)
+				}
+				continue
+			}
 			// Skip if no interval yet (forwarder hasn't responded)
 			if entry.Interval <= 0 {
 				continue
@@ -534,6 +628,13 @@ func (fm *ForwarderManager) ForwardStoppedEvent(infoHash common.InfoHash, peerID
 	for _, forwarder := range fm.Forwarders {
 		forwarderName := forwarder.GetName()
 
+		if fm.isDisabled(forwarderName) {
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping disabled forwarder %s for stopped event %x", forwarderName, infoHash)
+			}
+			continue
+		}
+
 		// Create a stopped event request
 		stoppedRequest := request
 		stoppedRequest.Event = EventStopped
@@ -570,6 +671,13 @@ func (fm *ForwarderManager) ForwardCompletedEvent(infoHash common.InfoHash, peer
 	var wg sync.WaitGroup
 	for _, forwarder := range fm.Forwarders {
 		forwarderName := forwarder.GetName()
+
+		if fm.isDisabled(forwarderName) {
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping disabled forwarder %s for completed event %x", forwarderName, infoHash)
+			}
+			continue
+		}
 
 		// Create a completed event request
 		completedRequest := request
@@ -900,6 +1008,12 @@ func (fm *ForwarderManager) printStats() {
 
 	fmt.Printf("Tracked hashes: %d\n", trackedHashes)
 	fmt.Printf("Forwarders: %d\n", len(fm.Forwarders))
+	if len(fm.disabled) > 0 {
+		fmt.Printf("Disabled forwarders: %d\n", len(fm.disabled))
+		for name := range fm.disabled {
+			fmt.Printf("  %s (disabled)\n", name)
+		}
+	}
 
 	for _, forwarder := range fm.Forwarders {
 		forwarderName := forwarder.GetName()
