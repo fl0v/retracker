@@ -4,96 +4,96 @@ This document contains a Mermaid diagram illustrating how retracker handles BitT
 
 ```mermaid
 flowchart TD
-    Start([BitTorrent Client<br/>HTTP Announce Request]) --> Parse[Parse Request<br/>info_hash, peer_id, event, etc.]
+    Start([BitTorrent Client HTTP Announce Request]) --> Parse[Parse Request: info_hash, peer_id, event, etc.]
     Parse --> EventCheck{Event Type?}
     
     %% Stopped Event Path
     EventCheck -->|stopped| StoppedPath[handleStoppedEvent]
-    StoppedPath --> CancelJobs[Cancel Pending Jobs<br/>for this peer]
-    CancelJobs --> ForwardStopped[Forward Stopped Event<br/>to All Forwarders<br/>Parallel Execution]
-    ForwardStopped --> DeletePeer[Delete Peer from<br/>Local Storage]
-    DeletePeer --> CheckLocal{Local Peers<br/>Remaining?}
-    CheckLocal -->|No| CleanupForwarder[Cleanup ForwarderStorage<br/>for info_hash]
-    CheckLocal -->|Yes| StoppedResponse[Return Response<br/>with interval]
+    StoppedPath --> CancelJobs[Cancel Pending Jobs for this peer]
+    CancelJobs --> ForwardStopped[Forward Stopped Event to All Forwarders - Parallel]
+    ForwardStopped --> DeletePeer[Delete Peer from Local Storage]
+    DeletePeer --> CheckLocal{Local Peers Remaining?}
+    CheckLocal -->|No| CleanupForwarder[Cleanup ForwarderStorage for info_hash]
+    CheckLocal -->|Yes| StoppedResponse[Return Response with interval]
     CleanupForwarder --> StoppedResponse
     StoppedResponse --> End1([Response to Client])
     
     %% Completed Event Path
     EventCheck -->|completed| CompletedPath[handleCompletedEvent]
     CompletedPath --> UpdateStorage1[Update Local Storage]
-    UpdateStorage1 --> GetPeers1[Get Peers from<br/>Local + Forwarder Storage]
-    GetPeers1 --> CalcInterval1[Calculate Interval<br/>from Forwarder Avg]
-    CalcInterval1 --> ForwardCompleted[Forward Completed Event<br/>to All Forwarders<br/>Parallel Execution]
+    UpdateStorage1 --> GetPeers1[Get Peers from Local + Forwarder Storage]
+    GetPeers1 --> CalcInterval1[Calculate Interval from Forwarder Average]
+    CalcInterval1 --> ForwardCompleted[Forward Completed Event to All Forwarders - Parallel]
     ForwardCompleted --> CacheRequest1[Cache Request]
-    CacheRequest1 --> CheckReannounce1[Check and Re-announce<br/>if needed]
-    CheckReannounce1 --> CompletedResponse[Return Response<br/>with peers + interval]
+    CacheRequest1 --> CheckReannounce1[Check and Re-announce if needed]
+    CheckReannounce1 --> CompletedResponse[Return Response with peers + interval]
     CompletedResponse --> End2([Response to Client])
     
     %% Regular/Started Event Path
     EventCheck -->|started/empty| RegularPath[handleRegularAnnounce]
     RegularPath --> UpdateStorage2[Update Local Storage]
     UpdateStorage2 --> GetLocalPeers[Get Local Peers]
-    GetLocalPeers --> FirstCheck{First Announce<br/>for info_hash?}
+    GetLocalPeers --> FirstCheck{First Announce for info_hash?}
     
     %% First Announce Path
     FirstCheck -->|Yes| FirstAnnounce[handleFirstAnnounce]
-    FirstAnnounce --> GetCachedPeers1[Get Cached Forwarder Peers<br/>usually empty]
+    FirstAnnounce --> GetCachedPeers1[Get Cached Forwarder Peers - usually empty]
     GetCachedPeers1 --> CacheRequest2[Cache Request]
-    CacheRequest2 --> TriggerInitial[Trigger Initial Announce<br/>to All Forwarders]
-    TriggerInitial --> QueueJobs1[Queue Jobs to<br/>Worker Pool]
-    QueueJobs1 --> FirstResponse[Return Response<br/>interval=15s]
+    CacheRequest2 --> TriggerInitial[Trigger Initial Announce to All Forwarders]
+    TriggerInitial --> QueueJobs1[Queue Jobs to Worker Pool]
+    QueueJobs1 --> FirstResponse[Return Response - interval 15s]
     FirstResponse --> End3([Response to Client])
     
     %% Subsequent Announce Path
     FirstCheck -->|No| SubsequentAnnounce[handleSubsequentAnnounce]
     SubsequentAnnounce --> GetCachedPeers2[Get Cached Forwarder Peers]
-    GetCachedPeers2 --> CalcInterval2[Calculate Interval<br/>from Forwarder Avg]
+    GetCachedPeers2 --> CalcInterval2[Calculate Interval from Forwarder Average]
     CalcInterval2 --> CacheRequest3[Cache Request]
-    CacheRequest3 --> CheckReannounce2[Check and Re-announce<br/>Compare Intervals]
-    CheckReannounce2 --> IntervalCheck{Client Interval<br/>vs Forwarder Interval?}
+    CacheRequest3 --> CheckReannounce2[Check and Re-announce - Compare Intervals]
+    CheckReannounce2 --> IntervalCheck{Client Interval vs Forwarder Interval?}
     
-    IntervalCheck -->|Client > Forwarder| ImmediateReannounce[Queue Immediate<br/>Re-announce Jobs]
-    IntervalCheck -->|Client < Forwarder| ScheduledReannounce[Queue Scheduled<br/>Re-announce Jobs]
-    IntervalCheck -->|Equal| NoReannounce[No Re-announce<br/>Needed]
+    IntervalCheck -->|Client > Forwarder| ImmediateReannounce[Queue Immediate Re-announce Jobs]
+    IntervalCheck -->|Client < Forwarder| ScheduledReannounce[Queue Scheduled Re-announce Jobs]
+    IntervalCheck -->|Equal| NoReannounce[No Re-announce Needed]
     
-    ImmediateReannounce --> QueueJobs2[Queue Jobs to<br/>Worker Pool]
+    ImmediateReannounce --> QueueJobs2[Queue Jobs to Worker Pool]
     ScheduledReannounce --> QueueJobs2
-    NoReannounce --> SubsequentResponse[Return Response<br/>with peers + interval]
+    NoReannounce --> SubsequentResponse[Return Response with peers + interval]
     QueueJobs2 --> SubsequentResponse
     SubsequentResponse --> End4([Response to Client])
     
     %% Forwarder Worker Pool Processing
-    QueueJobs1 -.->|Job Queue| WorkerPool[Worker Pool<br/>N Workers]
+    QueueJobs1 -.->|Job Queue| WorkerPool[Worker Pool - N workers]
     QueueJobs2 -.->|Job Queue| WorkerPool
     
     WorkerPool --> Worker[Worker Picks Job]
     Worker --> ExecuteAnnounce[executeAnnounce]
-    ExecuteAnnounce --> ProtocolCheck{Forwarder<br/>Protocol?}
+    ExecuteAnnounce --> ProtocolCheck{Forwarder Protocol?}
     
-    ProtocolCheck -->|HTTP/HTTPS| BuildURI[Build HTTP URI<br/>with request params]
-    ProtocolCheck -->|UDP| UDPConnect[Get/Refresh<br/>Connection ID]
+    ProtocolCheck -->|HTTP/HTTPS| BuildURI[Build HTTP URI with request params]
+    ProtocolCheck -->|UDP| UDPConnect[Get or Refresh Connection ID]
     
-    BuildURI --> HTTPRequest[HTTP GET Request<br/>to Forwarder<br/>with Timeout]
-    UDPConnect --> UDPAnnounce[Send UDP Announce<br/>Packet (BEP 15)<br/>with Retry]
+    BuildURI --> HTTPRequest[HTTP GET Request to Forwarder with Timeout]
+    UDPConnect --> UDPAnnounce[Send UDP Announce Packet - BEP 15 - with Retry]
     
-    HTTPRequest --> HTTPResponseCheck{Response<br/>Status?}
-    UDPAnnounce --> UDPResponseCheck{Response<br/>Valid?}
+    HTTPRequest --> HTTPResponseCheck{Response Status?}
+    UDPAnnounce --> UDPResponseCheck{Response Valid?}
     
-    HTTPResponseCheck -->|200 OK| ParseHTTPResponse[Parse Bencoded<br/>Response]
-    HTTPResponseCheck -->|Error| ErrorHandling[Log Error<br/>Update with Empty Peers<br/>Interval=60s]
+    HTTPResponseCheck -->|200 OK| ParseHTTPResponse[Parse Bencoded Response]
+    HTTPResponseCheck -->|Error| ErrorHandling[Log Error, Use Empty Peers, Interval 60s]
     
-    UDPResponseCheck -->|Success| ParseUDPResponse[Parse Binary<br/>UDP Response<br/>Extract Peers]
+    UDPResponseCheck -->|Success| ParseUDPResponse[Parse Binary UDP Response, Extract Peers]
     UDPResponseCheck -->|Error| ErrorHandling
     
-    ParseHTTPResponse --> UpdateForwarderStorage[Update ForwarderStorage<br/>with Peers + Interval]
+    ParseHTTPResponse --> UpdateForwarderStorage[Update ForwarderStorage with Peers and Interval]
     ParseUDPResponse --> UpdateForwarderStorage
-    UpdateForwarderStorage --> RecordStats[Record Statistics<br/>Response Time, Interval]
+    UpdateForwarderStorage --> RecordStats[Record Statistics: Response Time, Interval]
     RecordStats --> UnmarkJob[Unmark Job as Pending]
     ErrorHandling --> UnmarkJob
-    UnmarkJob --> WorkerDone([Worker Ready<br/>for Next Job])
+    UnmarkJob --> WorkerDone([Worker Ready for Next Job])
     
     %% Background Processes
-    StoragePurge[Background Purge Routine<br/>Every 1 Minute] --> CheckAge{Peer Age<br/>> Config.Age?}
+    StoragePurge[Background Purge Routine - Every 1 Minute] --> CheckAge{Peer Age > Config.Age?}
     CheckAge -->|Yes| RemovePeer[Remove Stale Peer]
     CheckAge -->|No| KeepPeer[Keep Peer]
     RemovePeer --> CheckEmpty{Hash Empty?}
@@ -111,7 +111,7 @@ flowchart TD
     class StoppedPath,CompletedPath,RegularPath eventPath
     class UpdateStorage1,UpdateStorage2,DeletePeer,StoragePurge storagePath
     class ForwardStopped,ForwardCompleted,TriggerInitial,ExecuteAnnounce,WorkerPool forwarderPath
-    class EventCheck,FirstCheck,IntervalCheck,ResponseCheck,CheckAge decision
+    class EventCheck,FirstCheck,IntervalCheck,CheckAge decision
 ```
 
 ## Key Components
