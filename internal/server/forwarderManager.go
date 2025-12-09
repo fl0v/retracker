@@ -938,39 +938,165 @@ func (fm *ForwarderManager) statsRoutine() {
 	}
 }
 
-func (fm *ForwarderManager) printStats() {
-	now := time.Now()
+// forwarderStatsProvider implements observability.StatsDataProvider
+type forwarderStatsProvider struct {
+	fm  *ForwarderManager
+	now time.Time
+}
 
-	// Count scheduled announcements
-	fm.pendingMu.Lock()
-	pendingCount := len(fm.pendingJobs)
-	fm.pendingMu.Unlock()
+func (p *forwarderStatsProvider) GetPendingCount() int {
+	p.fm.pendingMu.Lock()
+	defer p.fm.pendingMu.Unlock()
+	return len(p.fm.pendingJobs)
+}
 
-	// Get scheduled announcements with time to execution
-	fm.Storage.mu.RLock()
-	scheduledAnnounces := make([]struct {
-		InfoHash      string
-		ForwarderName string
-		TimeToExec    time.Duration
-	}, 0)
+func (p *forwarderStatsProvider) GetScheduledAnnounces() []observability.ScheduledAnnounce {
+	p.fm.Storage.mu.RLock()
+	defer p.fm.Storage.mu.RUnlock()
 
-	trackedHashSet := make(map[string]struct{})
-	// Collect per-hash IP statistics
-	type hashStats struct {
-		LocalUnique     int
-		ForwarderUnique int
-		TotalUnique     int
+	scheduledAnnounces := make([]observability.ScheduledAnnounce, 0)
+	for infoHash, forwarders := range p.fm.Storage.Entries {
+		for forwarderName, entry := range forwarders {
+			if entry.NextAnnounce.After(p.now) {
+				timeToExec := entry.NextAnnounce.Sub(p.now)
+				scheduledAnnounces = append(scheduledAnnounces, observability.ScheduledAnnounce{
+					InfoHash:      fmt.Sprintf("%x", infoHash),
+					ForwarderName: forwarderName,
+					TimeToExec:    timeToExec,
+				})
+			}
+		}
 	}
-	hashPeerStats := make(map[string]hashStats)
 
-	for infoHash, forwarders := range fm.Storage.Entries {
+	// Sort by time to execution
+	sort.Slice(scheduledAnnounces, func(i, j int) bool {
+		return scheduledAnnounces[i].TimeToExec < scheduledAnnounces[j].TimeToExec
+	})
+
+	// Limit to 10
+	limit := len(scheduledAnnounces)
+	if limit > 10 {
+		limit = 10
+	}
+	if limit > 0 {
+		return scheduledAnnounces[:limit]
+	}
+	return scheduledAnnounces
+}
+
+func (p *forwarderStatsProvider) GetTrackedHashes() int {
+	trackedHashSet := make(map[string]struct{})
+
+	p.fm.Storage.mu.RLock()
+	for infoHash := range p.fm.Storage.Entries {
+		trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
+	}
+	p.fm.Storage.mu.RUnlock()
+
+	// Include hashes tracked only in main storage (even if no forwarder entries)
+	if p.fm.MainStorage != nil {
+		p.fm.MainStorage.requestsMu.Lock()
+		for infoHash := range p.fm.MainStorage.Requests {
+			trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
+		}
+		p.fm.MainStorage.requestsMu.Unlock()
+	}
+
+	return len(trackedHashSet)
+}
+
+func (p *forwarderStatsProvider) GetDisabledForwarders() int {
+	p.fm.pendingMu.Lock()
+	defer p.fm.pendingMu.Unlock()
+	return len(p.fm.disabledForwarders)
+}
+
+func (p *forwarderStatsProvider) GetActiveForwarders() int {
+	p.fm.forwardersMu.RLock()
+	defer p.fm.forwardersMu.RUnlock()
+	return len(p.fm.Forwarders)
+}
+
+func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
+	p.fm.forwardersMu.RLock()
+	forwarders := make([]CoreCommon.Forward, len(p.fm.Forwarders))
+	copy(forwarders, p.fm.Forwarders)
+	p.fm.forwardersMu.RUnlock()
+
+	p.fm.statsMu.RLock()
+	forwarderStats := make(map[string]struct {
+		AvgResponseTime time.Duration
+		AvgInterval     int
+		Count           int
+	})
+
+	for forwarderName, stats := range p.fm.stats {
+		stats.mu.RLock()
+		if len(stats.ResponseTimes) > 0 {
+			var totalTime time.Duration
+			for _, rt := range stats.ResponseTimes {
+				totalTime += rt
+			}
+			avgResponseTime := totalTime / time.Duration(len(stats.ResponseTimes))
+
+			var totalInterval int
+			for _, interval := range stats.Intervals {
+				totalInterval += interval
+			}
+			avgInterval := 0
+			if len(stats.Intervals) > 0 {
+				avgInterval = totalInterval / len(stats.Intervals)
+			}
+
+			forwarderStats[forwarderName] = struct {
+				AvgResponseTime time.Duration
+				AvgInterval     int
+				Count           int
+			}{
+				AvgResponseTime: avgResponseTime,
+				AvgInterval:     avgInterval,
+				Count:           len(stats.ResponseTimes),
+			}
+		}
+		stats.mu.RUnlock()
+	}
+	p.fm.statsMu.RUnlock()
+
+	result := make([]observability.ForwarderStat, len(forwarders))
+	for i, forwarder := range forwarders {
+		forwarderName := forwarder.GetName()
+		if stats, ok := forwarderStats[forwarderName]; ok {
+			result[i] = observability.ForwarderStat{
+				Name:            forwarderName,
+				AvgResponseTime: stats.AvgResponseTime,
+				AvgInterval:     stats.AvgInterval,
+				SampleCount:     stats.Count,
+				HasStats:        true,
+			}
+		} else {
+			result[i] = observability.ForwarderStat{
+				Name:     forwarderName,
+				HasStats: false,
+			}
+		}
+	}
+
+	return result
+}
+
+func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.HashPeerStat {
+	p.fm.Storage.mu.RLock()
+	defer p.fm.Storage.mu.RUnlock()
+
+	hashPeerStats := make(map[string]observability.HashPeerStat)
+
+	for infoHash, forwarders := range p.fm.Storage.Entries {
 		seenLocal := make(map[string]struct{})
 		seenForwarder := make(map[string]struct{})
-		trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
 
 		// Count local peers (unique by IP)
-		if fm.MainStorage != nil {
-			localPeers := fm.MainStorage.GetPeers(infoHash)
+		if p.fm.MainStorage != nil {
+			localPeers := p.fm.MainStorage.GetPeers(infoHash)
 			for _, peer := range localPeers {
 				ip := string(peer.IP)
 				if ip == "" {
@@ -1001,140 +1127,97 @@ func (fm *ForwarderManager) printStats() {
 		}
 
 		hashKey := fmt.Sprintf("%x", infoHash)
-		hashPeerStats[hashKey] = hashStats{
+		hashPeerStats[hashKey] = observability.HashPeerStat{
 			LocalUnique:     len(seenLocal),
 			ForwarderUnique: len(seenForwarder),
 			TotalUnique:     len(totalSeen),
 		}
+	}
 
-		for forwarderName, entry := range forwarders {
-			if entry.NextAnnounce.After(now) {
-				timeToExec := entry.NextAnnounce.Sub(now)
-				scheduledAnnounces = append(scheduledAnnounces, struct {
-					InfoHash      string
-					ForwarderName string
-					TimeToExec    time.Duration
-				}{
-					InfoHash:      fmt.Sprintf("%x", infoHash),
-					ForwarderName: forwarderName,
-					TimeToExec:    timeToExec,
-				})
+	return hashPeerStats
+}
+
+func (p *forwarderStatsProvider) GetClientStats() *observability.ClientStats {
+	if p.fm.MainStorage == nil {
+		return nil
+	}
+
+	// Map to track clients: "IP:ClientName" -> {hashCount, lastRequestTime}
+	type clientInfo struct {
+		hashCount       int
+		lastRequest     time.Time
+		announcedHashes map[string]bool // Track unique hashes
+	}
+
+	clients := make(map[string]*clientInfo)
+
+	p.fm.MainStorage.requestsMu.Lock()
+	for hash, requests := range p.fm.MainStorage.Requests {
+		hashStr := fmt.Sprintf("%x", hash)
+		for _, request := range requests {
+			// Use IP from request (Peer() already handles fallback to remoteAddr)
+			peer := request.Peer()
+			clientIP := string(peer.IP)
+			if clientIP == "" {
+				clientIP = unknownClient
+			}
+
+			// Decode client from peer_id (more reliable than User-Agent)
+			clientName := request.PeerID.DecodeClient()
+			if clientName == unknownClient {
+				// Fallback to User-Agent if peer_id decoding fails
+				userAgent := request.UserAgent
+				if userAgent != "" {
+					clientName = userAgent
+				} else {
+					clientName = unknownClient
+				}
+			}
+
+			clientKey := fmt.Sprintf("%s:%s", clientIP, clientName)
+			if _, ok := clients[clientKey]; !ok {
+				clients[clientKey] = &clientInfo{
+					hashCount:       0,
+					lastRequest:     request.Timestamp(),
+					announcedHashes: make(map[string]bool),
+				}
+			}
+
+			client := clients[clientKey]
+			client.announcedHashes[hashStr] = true
+			client.hashCount = len(client.announcedHashes)
+
+			// Update last request time if this request is more recent
+			requestTime := request.Timestamp()
+			if requestTime.After(client.lastRequest) {
+				client.lastRequest = requestTime
 			}
 		}
 	}
-	fm.Storage.mu.RUnlock()
+	p.fm.MainStorage.requestsMu.Unlock()
 
-	// Include hashes tracked only in main storage (even if no forwarder entries)
-	if fm.MainStorage != nil {
-		fm.MainStorage.requestsMu.Lock()
-		for infoHash := range fm.MainStorage.Requests {
-			trackedHashSet[fmt.Sprintf("%x", infoHash)] = struct{}{}
-		}
-		fm.MainStorage.requestsMu.Unlock()
+	clientStats := &observability.ClientStats{
+		ActiveClients: len(clients),
+		Clients:       make([]observability.ClientInfo, 0, len(clients)),
 	}
 
-	trackedHashes := len(trackedHashSet)
-
-	// Get forwarder statistics
-	fm.statsMu.RLock()
-	forwarderStats := make(map[string]struct {
-		AvgResponseTime time.Duration
-		AvgInterval     int
-		Count           int
-	})
-
-	for forwarderName, stats := range fm.stats {
-		stats.mu.RLock()
-		if len(stats.ResponseTimes) > 0 {
-			var totalTime time.Duration
-			for _, rt := range stats.ResponseTimes {
-				totalTime += rt
-			}
-			avgResponseTime := totalTime / time.Duration(len(stats.ResponseTimes))
-
-			var totalInterval int
-			for _, interval := range stats.Intervals {
-				totalInterval += interval
-			}
-			avgInterval := 0
-			if len(stats.Intervals) > 0 {
-				avgInterval = totalInterval / len(stats.Intervals)
-			}
-
-			forwarderStats[forwarderName] = struct {
-				AvgResponseTime time.Duration
-				AvgInterval     int
-				Count           int
-			}{
-				AvgResponseTime: avgResponseTime,
-				AvgInterval:     avgInterval,
-				Count:           len(stats.ResponseTimes),
-			}
-		}
-		stats.mu.RUnlock()
-	}
-	fm.statsMu.RUnlock()
-
-	// Print statistics
-	fmt.Printf("\n=== Statistics ===\n")
-	fmt.Printf("Scheduled announcements: %d\n", pendingCount)
-
-	if len(scheduledAnnounces) > 0 {
-		sort.Slice(scheduledAnnounces, func(i, j int) bool {
-			return scheduledAnnounces[i].TimeToExec < scheduledAnnounces[j].TimeToExec
+	for clientKey, info := range clients {
+		secondsSinceLastRequest := int(p.now.Sub(info.lastRequest).Seconds())
+		clientStats.Clients = append(clientStats.Clients, observability.ClientInfo{
+			Key:                 clientKey,
+			AnnouncedHashes:     info.hashCount,
+			SecondsSinceLastReq: secondsSinceLastRequest,
 		})
-		limit := len(scheduledAnnounces)
-		if limit > 10 {
-			limit = 10
-		}
-		fmt.Printf("Scheduled announces (next %d):\n", limit)
-		for _, sa := range scheduledAnnounces[:limit] {
-			hashDisplay := sa.InfoHash
-			if len(hashDisplay) > 16 {
-				hashDisplay = hashDisplay[:16] + "..."
-			}
-			fmt.Printf("  %s -> %s: %v\n", hashDisplay, sa.ForwarderName, sa.TimeToExec.Round(time.Second))
-		}
 	}
 
-	fmt.Printf("Tracked hashes: %d\n", trackedHashes)
-	fm.pendingMu.Lock()
-	disabledCount := len(fm.disabledForwarders)
-	fm.pendingMu.Unlock()
-	fm.forwardersMu.RLock()
-	activeCount := len(fm.Forwarders)
-	forwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
-	copy(forwarders, fm.Forwarders)
-	fm.forwardersMu.RUnlock()
-	fmt.Printf("Disabled forwarders: %d\n", disabledCount)
-	fmt.Printf("Active forwarders: %d\n", activeCount)
+	return clientStats
+}
 
-	for _, forwarder := range forwarders {
-		forwarderName := forwarder.GetName()
-		if stats, ok := forwarderStats[forwarderName]; ok {
-			fmt.Printf("  %s: avg response time %v, avg interval %ds (from %d samples)\n",
-				forwarderName, stats.AvgResponseTime.Round(time.Millisecond), stats.AvgInterval, stats.Count)
-		} else {
-			fmt.Printf("  %s: no statistics yet\n", forwarderName)
-		}
-	}
-
-	// Print per-hash unique IP counts
-	if len(hashPeerStats) > 0 {
-		fmt.Printf("Hash unique IPs (local/forwarders/total):\n")
-		for hash, stats := range hashPeerStats {
-			hashDisplay := hash
-			if len(hashDisplay) > 16 {
-				hashDisplay = hashDisplay[:16] + "..."
-			}
-			fmt.Printf("  %s: %d/%d/%d\n", hashDisplay, stats.LocalUnique, stats.ForwarderUnique, stats.TotalUnique)
-		}
-	}
-
-	// Print client statistics
-	if fm.MainStorage != nil {
-		fm.MainStorage.printClientStatsInline(now)
-	}
-
-	fmt.Printf("==================\n\n")
+func (fm *ForwarderManager) printStats() {
+	now := time.Now()
+	collector := observability.NewStatsCollector()
+	provider := &forwarderStatsProvider{fm: fm, now: now}
+	stats := collector.CollectStats(provider)
+	text := collector.FormatText(stats)
+	fmt.Print(text)
 }

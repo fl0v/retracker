@@ -109,6 +109,7 @@ func main() {
 
 	http.HandleFunc("/scrape", core.HTTPScrapeHandler)
 	http.HandleFunc("/announce", core.Receiver.Announce.HTTPHandler)
+	http.HandleFunc("/stats", core.HTTPStatsHandler)
 	if *enablePrometheus {
 		p, err := observability.NewPrometheus()
 		if err != nil {
