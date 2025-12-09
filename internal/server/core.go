@@ -188,3 +188,15 @@ func (p *simpleStatsProvider) GetClientStats() *observability.ClientStats {
 
 	return clientStats
 }
+
+func (p *simpleStatsProvider) GetQueueMetrics() (depth, capacity, fillPct int) {
+	return 0, 0, 0
+}
+
+func (p *simpleStatsProvider) GetWorkerMetrics() (active, max int) {
+	return 0, 0
+}
+
+func (p *simpleStatsProvider) GetDropCounters() (droppedFull, rateLimited, throttled uint64) {
+	return 0, 0, 0
+}

@@ -29,6 +29,14 @@ type Config struct {
 	ForwardTimeout           int
 	ForwarderWorkers         int
 	ForwarderQueueSize       int
+	MaxForwarderWorkers      int
+	QueueScaleThresholdPct   int
+	QueueRateLimitThreshold  int
+	QueueThrottleThreshold   int
+	QueueThrottleTopN        int
+	RateLimitInitialPerSec   int
+	RateLimitInitialBurst    int
+	ForwarderSuspendSeconds  int
 	ForwarderFailThreshold   int
 	ForwarderRetryAttempts   int
 	ForwarderRetryBaseMs     int
@@ -100,8 +108,13 @@ func (config *Config) PrintConfigWithPrometheus(enablePrometheus bool) {
 			fmt.Printf("  Forwards File: %s\n", config.ForwardsFile)
 		}
 		fmt.Printf("  Forward Timeout: %d seconds\n", config.ForwardTimeout)
-		fmt.Printf("  Forwarder Workers: %d\n", config.ForwarderWorkers)
+		fmt.Printf("  Forwarder Workers: %d (max %d)\n", config.ForwarderWorkers, config.MaxForwarderWorkers)
 		fmt.Printf("  Forwarder Queue Size: %d\n", config.ForwarderQueueSize)
+		fmt.Printf("  Queue Scale Threshold: %d%%\n", config.QueueScaleThresholdPct)
+		fmt.Printf("  Queue Rate Limit Threshold: %d%%\n", config.QueueRateLimitThreshold)
+		fmt.Printf("  Queue Throttle Threshold: %d%% (top %d forwarders)\n", config.QueueThrottleThreshold, config.QueueThrottleTopN)
+		fmt.Printf("  Rate Limit Initial: %d/sec (burst %d)\n", config.RateLimitInitialPerSec, config.RateLimitInitialBurst)
+		fmt.Printf("  Forwarder suspend: %d seconds\n", config.ForwarderSuspendSeconds)
 		fmt.Printf("  Forwarder Fail Threshold: %d\n", config.ForwarderFailThreshold)
 		fmt.Printf("  Forwarder Retry Attempts: %d\n", config.ForwarderRetryAttempts)
 		fmt.Printf("  Forwarder Retry Base (ms): %d\n", config.ForwarderRetryBaseMs)

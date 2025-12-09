@@ -21,6 +21,14 @@ type Stats struct {
 	Forwarders             []ForwarderStat         `json:"forwarders,omitempty"`
 	HashPeerStats          map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
 	ClientStats            *ClientStats            `json:"client_stats,omitempty"`
+	QueueDepth             int                     `json:"queue_depth"`
+	QueueCapacity          int                     `json:"queue_capacity"`
+	QueueFillPct           int                     `json:"queue_fill_pct"`
+	ActiveWorkers          int                     `json:"active_workers"`
+	MaxWorkers             int                     `json:"max_workers"`
+	DroppedFull            uint64                  `json:"dropped_full"`
+	RateLimited            uint64                  `json:"rate_limited"`
+	ThrottledForwarders    uint64                  `json:"throttled_forwarders"`
 }
 
 // ScheduledAnnounce represents a scheduled announcement
@@ -69,6 +77,9 @@ type StatsDataProvider interface {
 	GetForwarders() []ForwarderStat
 	GetHashPeerStats() map[string]HashPeerStat
 	GetClientStats() *ClientStats
+	GetQueueMetrics() (depth, capacity, fillPct int)
+	GetWorkerMetrics() (active, max int)
+	GetDropCounters() (droppedFull, rateLimited, throttled uint64)
 }
 
 // NewStatsCollector creates a new stats collector
@@ -90,6 +101,11 @@ func (sc *StatsCollector) CollectStats(provider StatsDataProvider) *Stats {
 
 	// Get forwarder stats directly from provider
 	stats.Forwarders = provider.GetForwarders()
+
+	// Queue and worker metrics
+	stats.QueueDepth, stats.QueueCapacity, stats.QueueFillPct = provider.GetQueueMetrics()
+	stats.ActiveWorkers, stats.MaxWorkers = provider.GetWorkerMetrics()
+	stats.DroppedFull, stats.RateLimited, stats.ThrottledForwarders = provider.GetDropCounters()
 
 	return stats
 }
@@ -119,6 +135,11 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	sb.WriteString(fmt.Sprintf("Tracked hashes: %d\n", stats.TrackedHashes))
 	sb.WriteString(fmt.Sprintf("Disabled forwarders: %d\n", stats.DisabledForwarders))
 	sb.WriteString(fmt.Sprintf("Active forwarders: %d\n", stats.ActiveForwarders))
+	sb.WriteString(fmt.Sprintf("Queue: depth %d / %d (%d%%)\n", stats.QueueDepth, stats.QueueCapacity, stats.QueueFillPct))
+	sb.WriteString(fmt.Sprintf("Workers: %d active / %d max\n", stats.ActiveWorkers, stats.MaxWorkers))
+	sb.WriteString(fmt.Sprintf("Queue drops (full): %d\n", stats.DroppedFull))
+	sb.WriteString(fmt.Sprintf("Rate limited: %d\n", stats.RateLimited))
+	sb.WriteString(fmt.Sprintf("Throttled forwarders skipped: %d\n", stats.ThrottledForwarders))
 
 	for _, forwarder := range stats.Forwarders {
 		if forwarder.HasStats {
@@ -177,6 +198,14 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 		Forwarders             []ForwarderStatJSON     `json:"forwarders,omitempty"`
 		HashPeerStats          map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
 		ClientStats            *ClientStats            `json:"client_stats,omitempty"`
+		QueueDepth             int                     `json:"queue_depth"`
+		QueueCapacity          int                     `json:"queue_capacity"`
+		QueueFillPct           int                     `json:"queue_fill_pct"`
+		ActiveWorkers          int                     `json:"active_workers"`
+		MaxWorkers             int                     `json:"max_workers"`
+		DroppedFull            uint64                  `json:"dropped_full"`
+		RateLimited            uint64                  `json:"rate_limited"`
+		ThrottledForwarders    uint64                  `json:"throttled_forwarders"`
 	}{
 		ScheduledAnnouncements: stats.ScheduledAnnouncements,
 		TrackedHashes:          stats.TrackedHashes,
@@ -184,6 +213,14 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 		ActiveForwarders:       stats.ActiveForwarders,
 		HashPeerStats:          stats.HashPeerStats,
 		ClientStats:            stats.ClientStats,
+		QueueDepth:             stats.QueueDepth,
+		QueueCapacity:          stats.QueueCapacity,
+		QueueFillPct:           stats.QueueFillPct,
+		ActiveWorkers:          stats.ActiveWorkers,
+		MaxWorkers:             stats.MaxWorkers,
+		DroppedFull:            stats.DroppedFull,
+		RateLimited:            stats.RateLimited,
+		ThrottledForwarders:    stats.ThrottledForwarders,
 	}
 
 	// Convert scheduled announces

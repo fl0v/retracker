@@ -5,6 +5,7 @@ import (
 	"net"
 	"syscall"
 	"testing"
+	"time"
 
 	btcommon "github.com/fl0v/retracker/bittorrent/common"
 	"github.com/fl0v/retracker/bittorrent/tracker"
@@ -376,5 +377,99 @@ func TestDisabledForwarderRemovedFromActiveLists(t *testing.T) {
 	}
 	if fm.isDisabled(fwd3.GetName()) {
 		t.Fatalf("other forwarders should still be active")
+	}
+}
+
+func TestRateLimitThresholdZeroDisablesRateLimit(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.queueRateLimitThresh = 0 // disable
+	fm.jobQueue = make(chan AnnounceJob, 10)
+	for i := 0; i < 8; i++ { // fill to 80%
+		fm.jobQueue <- AnnounceJob{}
+	}
+
+	if fm.shouldRateLimitInitial() {
+		t.Fatalf("rate limiting should be disabled when threshold is 0")
+	}
+}
+
+func TestRateLimitThresholdActive(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderQueueSize = 10
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.queueRateLimitThresh = 50 // 50%
+	fm.jobQueue = make(chan AnnounceJob, 10)
+	for i := 0; i < 6; i++ { // 60%
+		fm.jobQueue <- AnnounceJob{}
+	}
+
+	if !fm.shouldRateLimitInitial() {
+		t.Fatalf("rate limiting should be active when queue exceeds threshold")
+	}
+}
+
+func TestSelectForwardersThrottleKeepsFastestTopN(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderQueueSize = 10
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.queueThrottleThresh = 50
+	fm.queueThrottleTopN = 1
+	fm.jobQueue = make(chan AnnounceJob, 10)
+	for i := 0; i < 6; i++ { // 60%
+		fm.jobQueue <- AnnounceJob{}
+	}
+
+	// Prepare forwarders
+	f1 := corecommon.Forward{Name: "fast", Uri: "http://fast"}
+	f2 := corecommon.Forward{Name: "slow", Uri: "http://slow"}
+	fm.Forwarders = []corecommon.Forward{f1, f2}
+
+	// Stats: fast = 10ms, slow = 100ms
+	fm.statsMu.Lock()
+	fm.stats["fast"] = &ForwarderStats{ResponseTimes: []time.Duration{10 * time.Millisecond}}
+	fm.stats["slow"] = &ForwarderStats{ResponseTimes: []time.Duration{100 * time.Millisecond}}
+	fm.statsMu.Unlock()
+
+	selected := fm.selectForwardersByQueue(fm.Forwarders)
+	if len(selected) != 1 || selected[0].GetName() != "fast" {
+		t.Fatalf("expected only fastest forwarder selected; got %+v", selected)
+	}
+}
+
+func TestSuspendForwarderExpires(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.suspendForwarder("s1", 20*time.Millisecond)
+	if !fm.isSuspended("s1") {
+		t.Fatalf("forwarder should be suspended immediately after suspension")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if fm.isSuspended("s1") {
+		t.Fatalf("forwarder suspension should expire after duration")
 	}
 }

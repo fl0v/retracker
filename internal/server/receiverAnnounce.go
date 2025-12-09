@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sync/atomic"
 
 	"github.com/fl0v/retracker/bittorrent/common"
 	Response "github.com/fl0v/retracker/bittorrent/response"
@@ -227,6 +228,16 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 
 	// Trigger parallel decoupled announces to all forwarders
 	if ra.ForwarderManager != nil {
+		if ra.ForwarderManager.shouldRateLimitInitial() && !ra.ForwarderManager.rateLimiter.allow() {
+			atomic.AddUint64(&ra.ForwarderManager.rateLimitedCount, 1)
+			if ra.ForwarderManager.Prometheus != nil {
+				ra.ForwarderManager.Prometheus.RateLimited.Inc()
+			}
+			// If rate limiting is enabled, we inform the client to retry soon.
+			response.FailureReason = "tracker busy, retry in 10 seconds"
+			response.Interval = ra.clampInterval(10)
+			return
+		}
 		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
 		if len(ra.ForwarderManager.Forwarders) == 0 {
 			ErrorLogAnnounce.Printf("No forwarders configured; initial announce not forwarded for %x", request.InfoHash)

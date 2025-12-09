@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fl0v/retracker/bittorrent/common"
@@ -22,6 +23,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 const (
 	EventStopped   = "stopped"
@@ -67,6 +75,52 @@ type ForwarderManager struct {
 	failCounts         map[string]int
 	disabledForwarders map[string]*DisabledForwarder
 	forwardersMu       sync.RWMutex // protects Forwarders slice
+
+	// Queue/worker control
+	maxWorkers            int
+	queueScaleThreshold   int
+	queueRateLimitThresh  int
+	queueThrottleThresh   int
+	queueThrottleTopN     int
+	workerCount           int
+	rateLimiter           *tokenBucket
+	droppedFullCount      uint64
+	rateLimitedCount      uint64
+	throttledForwardCount uint64
+
+	suspendedMu         sync.Mutex
+	suspendedForwarders map[string]time.Time
+}
+
+type tokenBucket struct {
+	mu       sync.Mutex
+	tokens   int
+	rate     int // tokens per second
+	burst    int
+	lastTick time.Time
+}
+
+func (tb *tokenBucket) allow() bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	now := time.Now()
+	if tb.lastTick.IsZero() {
+		tb.lastTick = now
+		tb.tokens = tb.burst
+	}
+	elapsed := now.Sub(tb.lastTick)
+	if elapsed > 0 && tb.rate > 0 {
+		refill := int(elapsed.Seconds() * float64(tb.rate))
+		if refill > 0 {
+			tb.tokens = min(tb.burst, tb.tokens+refill)
+			tb.lastTick = now
+		}
+	}
+	if tb.tokens > 0 {
+		tb.tokens--
+		return true
+	}
+	return false
 }
 
 func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
@@ -74,22 +128,63 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 	if queueSize <= 0 {
 		queueSize = 1000
 	}
+	maxWorkers := cfg.MaxForwarderWorkers
+	if maxWorkers <= 0 {
+		maxWorkers = cfg.ForwarderWorkers * 2
+	}
+	queueScaleThresh := cfg.QueueScaleThresholdPct
+	if queueScaleThresh <= 0 {
+		queueScaleThresh = 60
+	}
+	queueRateLimitThresh := cfg.QueueRateLimitThreshold
+	if queueRateLimitThresh <= 0 {
+		queueRateLimitThresh = 80
+	}
+	queueThrottleThresh := cfg.QueueThrottleThreshold
+	if queueThrottleThresh <= 0 {
+		queueThrottleThresh = 60
+	}
+	queueThrottleTopN := cfg.QueueThrottleTopN
+	if queueThrottleTopN <= 0 {
+		queueThrottleTopN = 20
+	}
+	ratePerSec := cfg.RateLimitInitialPerSec
+	if ratePerSec <= 0 {
+		ratePerSec = 100
+	}
+	rateBurst := cfg.RateLimitInitialBurst
+	if rateBurst <= 0 {
+		rateBurst = 200
+	}
+
 	fm := &ForwarderManager{
-		Config:             cfg,
-		Storage:            storage,
-		MainStorage:        mainStorage,
-		Forwarders:         cfg.Forwards,
-		Workers:            cfg.ForwarderWorkers,
-		jobQueue:           make(chan AnnounceJob, queueSize),
-		stopChan:           make(chan struct{}),
-		Prometheus:         prom,
-		TempStorage:        tempStorage,
-		requestCache:       make(map[string]tracker.Request),
-		pendingJobs:        make(map[string]bool),
-		stats:              make(map[string]*ForwarderStats),
-		udpForwarder:       NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs),
-		failCounts:         make(map[string]int),
-		disabledForwarders: make(map[string]*DisabledForwarder),
+		Config:               cfg,
+		Storage:              storage,
+		MainStorage:          mainStorage,
+		Forwarders:           cfg.Forwards,
+		Workers:              cfg.ForwarderWorkers,
+		jobQueue:             make(chan AnnounceJob, queueSize),
+		stopChan:             make(chan struct{}),
+		Prometheus:           prom,
+		TempStorage:          tempStorage,
+		requestCache:         make(map[string]tracker.Request),
+		pendingJobs:          make(map[string]bool),
+		stats:                make(map[string]*ForwarderStats),
+		udpForwarder:         NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs),
+		failCounts:           make(map[string]int),
+		disabledForwarders:   make(map[string]*DisabledForwarder),
+		maxWorkers:           maxWorkers,
+		queueScaleThreshold:  queueScaleThresh,
+		queueRateLimitThresh: queueRateLimitThresh,
+		queueThrottleThresh:  queueThrottleThresh,
+		queueThrottleTopN:    queueThrottleTopN,
+		workerCount:          cfg.ForwarderWorkers,
+		rateLimiter: &tokenBucket{
+			rate:   ratePerSec,
+			burst:  rateBurst,
+			tokens: rateBurst,
+		},
+		suspendedForwarders: make(map[string]time.Time),
 	}
 	// Initialize stats for each forwarder
 	for _, forwarder := range cfg.Forwards {
@@ -106,6 +201,10 @@ func (fm *ForwarderManager) Start() {
 	for i := 0; i < fm.Workers; i++ {
 		go fm.worker()
 	}
+	if fm.Prometheus != nil {
+		fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+	}
+	go fm.scaleWorkers()
 	// No scheduler - re-announcing is client-driven
 
 	// Start statistics routine
@@ -165,6 +264,46 @@ func (fm *ForwarderManager) worker() {
 			fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
 		}
 	}
+}
+
+func (fm *ForwarderManager) scaleWorkers() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-fm.stopChan:
+			return
+		case <-ticker.C:
+			fillPct := fm.queueFillPct()
+			if fillPct >= fm.queueScaleThreshold && fm.workerCount < fm.maxWorkers {
+				// simple cool-down: only scale once per second tick
+				fm.workerCount++
+				go fm.worker()
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Scaling workers to %d (queue %d%%)\n", fm.workerCount, fillPct)
+				}
+				if fm.Prometheus != nil {
+					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+				}
+			}
+		}
+	}
+}
+
+func (fm *ForwarderManager) queueFillPct() int {
+	capacity := cap(fm.jobQueue)
+	if capacity == 0 {
+		return 0
+	}
+	return len(fm.jobQueue) * 100 / capacity
+}
+
+func (fm *ForwarderManager) updatePrometheusQueue(stats *observability.Stats) {
+	fm.Prometheus.QueueDepth.Set(float64(stats.QueueDepth))
+	fm.Prometheus.QueueCapacity.Set(float64(stats.QueueCapacity))
+	fm.Prometheus.QueueFillPct.Set(float64(stats.QueueFillPct))
+	fm.Prometheus.WorkerCount.Set(float64(stats.ActiveWorkers))
+	// counters are cumulative; gauges already set
 }
 
 func (fm *ForwarderManager) registerFailure(forwarderName string) {
@@ -253,12 +392,51 @@ func (fm *ForwarderManager) isDisabled(forwarderName string) bool {
 	return disabled
 }
 
+func (fm *ForwarderManager) isSuspended(forwarderName string) bool {
+	fm.suspendedMu.Lock()
+	defer fm.suspendedMu.Unlock()
+	until, ok := fm.suspendedForwarders[forwarderName]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(fm.suspendedForwarders, forwarderName)
+		return false
+	}
+	return true
+}
+
+func (fm *ForwarderManager) suspendForwarder(forwarderName string, duration time.Duration) {
+	fm.suspendedMu.Lock()
+	fm.suspendedForwarders[forwarderName] = time.Now().Add(duration)
+	fm.suspendedMu.Unlock()
+	if fm.Config.Debug {
+		DebugLogFwd.Printf("Suspended forwarder %s for %v\n", forwarderName, duration)
+	}
+}
+
+func shouldSuspendForwarder(statusCode int, err error) bool {
+	// Suspend on HTTP 429; can extend with other overload signals if needed
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	// Placeholder for future error-based signals
+	_ = err
+	return false
+}
+
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	forward := job.Forwarder
 
 	if fm.isDisabled(forward.GetName()) {
 		if fm.Config.Debug {
 			DebugLogFwd.Printf("Forwarder %s is disabled; dropping job for %x", forward.GetName(), job.InfoHash)
+		}
+		return
+	}
+	if fm.isSuspended(forward.GetName()) {
+		if fm.Config.Debug {
+			DebugLogFwd.Printf("Forwarder %s is suspended; dropping job for %x", forward.GetName(), job.InfoHash)
 		}
 		return
 	}
@@ -415,6 +593,18 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 			// Read and discard body before closing (required to reuse connection)
 			_, _ = io.ReadAll(body)
 			cancel()
+			// Special handling for 429 Too Many Requests -> suspend forwarder
+			if shouldSuspendForwarder(response.StatusCode, nil) {
+				suspendFor := time.Duration(fm.Config.ForwarderSuspendSeconds) * time.Second
+				if suspendFor <= 0 {
+					suspendFor = 300 * time.Second
+				}
+				fm.suspendForwarder(forwardName, suspendFor)
+				if fm.Config.Debug {
+					ErrorLogFwd.Printf("HTTP %d from %s; suspending for %v\n", response.StatusCode, trackerURL, suspendFor)
+				}
+				return
+			}
 			// Check if status code indicates tracker rejection (non-retryable)
 			if isTrackerRejection(response.StatusCode) {
 				if fm.Config.Debug {
@@ -526,19 +716,87 @@ func (fm *ForwarderManager) CacheRequest(infoHash common.InfoHash, request track
 	fm.requestCache[string(infoHash)] = request
 }
 
+func (fm *ForwarderManager) selectForwardersByQueue(all []CoreCommon.Forward) []CoreCommon.Forward {
+	fill := fm.queueFillPct()
+	if fill < fm.queueThrottleThresh || fm.queueThrottleTopN <= 0 {
+		return all
+	}
+
+	type entry struct {
+		f CoreCommon.Forward
+		t time.Duration
+		h bool
+	}
+
+	entries := make([]entry, 0, len(all))
+	fm.statsMu.RLock()
+	for _, f := range all {
+		if stats, ok := fm.stats[f.GetName()]; ok {
+			stats.mu.RLock()
+			if len(stats.ResponseTimes) > 0 {
+				var total time.Duration
+				for _, rt := range stats.ResponseTimes {
+					total += rt
+				}
+				avg := total / time.Duration(len(stats.ResponseTimes))
+				entries = append(entries, entry{f: f, t: avg, h: true})
+			} else {
+				entries = append(entries, entry{f: f, t: 0, h: false})
+			}
+			stats.mu.RUnlock()
+		} else {
+			entries = append(entries, entry{f: f, t: 0, h: false})
+		}
+	}
+	fm.statsMu.RUnlock()
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].h != entries[j].h {
+			return entries[i].h // prefer those with stats
+		}
+		return entries[i].t < entries[j].t
+	})
+
+	limit := fm.queueThrottleTopN
+	if limit > len(entries) {
+		limit = len(entries)
+	}
+	if limit < len(entries) {
+		skipped := uint64(len(entries) - limit)
+		atomic.AddUint64(&fm.throttledForwardCount, skipped)
+		if fm.Prometheus != nil {
+			fm.Prometheus.Throttled.Add(float64(skipped))
+		}
+	}
+	result := make([]CoreCommon.Forward, 0, limit)
+	for i := 0; i < limit; i++ {
+		result = append(result, entries[i].f)
+	}
+	return result
+}
+
+func (fm *ForwarderManager) shouldRateLimitInitial() bool {
+	if fm.queueRateLimitThresh <= 0 {
+		return false
+	}
+	return fm.queueFillPct() >= fm.queueRateLimitThresh
+}
+
 func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, request tracker.Request) {
 	fm.forwardersMu.RLock()
-	forwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
-	copy(forwarders, fm.Forwarders)
+	allForwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
+	copy(allForwarders, fm.Forwarders)
 	fm.forwardersMu.RUnlock()
 
-	if len(forwarders) == 0 {
+	if len(allForwarders) == 0 {
 		ErrorLogFwd.Printf("No forwarders available; skipping initial announce for %x", infoHash)
 		return
 	}
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("Triggering initial announce for %x to %d forwarder(s)", infoHash, len(forwarders))
+		DebugLogFwd.Printf("Triggering initial announce for %x to %d forwarder(s)", infoHash, len(allForwarders))
 	}
+
+	forwarders := fm.selectForwardersByQueue(allForwarders)
 
 	// Trigger parallel decoupled announces to all forwarders
 	for _, forwarder := range forwarders {
@@ -548,6 +806,13 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
 			if fm.Config.Debug {
 				DebugLogFwd.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+			}
+			continue
+		}
+		// Skip suspended forwarders
+		if fm.isSuspended(forwarderName) {
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
 			}
 			continue
 		}
@@ -571,6 +836,10 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 		default:
 			// Queue full, unmark and skip
 			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
+			atomic.AddUint64(&fm.droppedFullCount, 1)
+			if fm.Prometheus != nil {
+				fm.Prometheus.DroppedFull.Inc()
+			}
 			ErrorLogFwd.Printf("Job queue full, skipping initial announce for %x to %s", infoHash, forwarderName)
 		}
 	}
@@ -604,6 +873,9 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 				fm.forwardersMu.RLock()
 				for _, f := range fm.Forwarders {
 					if f.GetName() == forwarderName {
+						if fm.isSuspended(forwarderName) {
+							continue
+						}
 						forwarder = f
 						break
 					}
@@ -632,6 +904,9 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 					fm.forwardersMu.RLock()
 					for _, f := range fm.Forwarders {
 						if f.GetName() == forwarderName {
+							if fm.isSuspended(forwarderName) {
+								continue
+							}
 							forwarder = f
 							break
 						}
@@ -1213,11 +1488,29 @@ func (p *forwarderStatsProvider) GetClientStats() *observability.ClientStats {
 	return clientStats
 }
 
+func (p *forwarderStatsProvider) GetQueueMetrics() (depth, capacity, fillPct int) {
+	depth = len(p.fm.jobQueue)
+	capacity = cap(p.fm.jobQueue)
+	fillPct = p.fm.queueFillPct()
+	return
+}
+
+func (p *forwarderStatsProvider) GetWorkerMetrics() (active, max int) {
+	return p.fm.workerCount, p.fm.maxWorkers
+}
+
+func (p *forwarderStatsProvider) GetDropCounters() (droppedFull, rateLimited, throttled uint64) {
+	return atomic.LoadUint64(&p.fm.droppedFullCount), atomic.LoadUint64(&p.fm.rateLimitedCount), atomic.LoadUint64(&p.fm.throttledForwardCount)
+}
+
 func (fm *ForwarderManager) printStats() {
 	now := time.Now()
 	collector := observability.NewStatsCollector()
 	provider := &forwarderStatsProvider{fm: fm, now: now}
 	stats := collector.CollectStats(provider)
+	if fm.Prometheus != nil {
+		fm.updatePrometheusQueue(stats)
+	}
 	text := collector.FormatText(stats)
 	fmt.Print(text)
 }

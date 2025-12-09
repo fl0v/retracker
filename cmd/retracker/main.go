@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/fl0v/retracker/internal/config"
 	"github.com/fl0v/retracker/internal/observability"
@@ -23,6 +24,15 @@ var (
 	faviconIco []byte
 )
 
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			return parsed
+		}
+	}
+	return def
+}
+
 func helpText() {
 	fmt.Println("# https://github.com/fl0v/retracker")
 	flag.PrintDefaults()
@@ -37,7 +47,15 @@ func main() {
 	forwards := flag.String("f", "", "Load forwards from YAML file")
 	forwardTimeout := flag.Int("t", 30, "Timeout (sec) for forward requests (used with -f)")
 	forwarderWorkers := flag.Int("w", 10, "Number of workers for parallel forwarder processing")
-	forwarderQueueSize := flag.Int("Q", 1000, "Forwarder announce job queue size")
+	maxForwarderWorkers := flag.Int("W", 20, "Maximum workers for parallel forwarder processing")
+	forwarderQueueSize := flag.Int("Q", 10000, "Forwarder announce job queue size")
+	queueScaleThreshold := flag.Int("queue-scale-threshold", 60, "Queue fill %% to trigger worker scaling")
+	queueRateLimitThreshold := flag.Int("queue-rate-limit-threshold", 80, "Queue fill %% to trigger initial announce rate limiting")
+	queueThrottleThreshold := flag.Int("queue-throttle-threshold", 60, "Queue fill %% to throttle forwarders to fastest subset")
+	queueThrottleTopN := flag.Int("queue-throttle-top", 20, "Number of fastest forwarders to keep when throttling")
+	rateLimitInitialPerSec := flag.Int("rate-limit-initial-ps", 100, "Initial announces per second when rate limiting is active")
+	rateLimitInitialBurst := flag.Int("rate-limit-initial-burst", 200, "Burst for initial announce rate limit")
+	forwarderSuspend := flag.Int("forwarder-suspend", 300, "Seconds to suspend a forwarder after overload errors (e.g., HTTP 429)")
 	forwarderFailThreshold := flag.Int("F", 10, "Forwarder fail threshold before disabling")
 	forwarderRetryAttempts := flag.Int("R", 5, "Forwarder retry attempts (UDP/HTTP)")
 	forwarderRetryBaseMs := flag.Int("B", 500, "Forwarder retry base backoff in ms (exponential)")
@@ -79,8 +97,16 @@ func main() {
 		Age:                      *age,
 		XRealIP:                  *xrealip,
 		ForwardTimeout:           *forwardTimeout,
-		ForwarderWorkers:         *forwarderWorkers,
-		ForwarderQueueSize:       *forwarderQueueSize,
+		ForwarderWorkers:         envInt("FORWARDER_WORKERS", *forwarderWorkers),
+		MaxForwarderWorkers:      envInt("MAX_FORWARDER_WORKERS", *maxForwarderWorkers),
+		ForwarderQueueSize:       envInt("FORWARDER_QUEUE_SIZE", *forwarderQueueSize),
+		QueueScaleThresholdPct:   envInt("QUEUE_SCALE_THRESHOLD", *queueScaleThreshold),
+		QueueRateLimitThreshold:  envInt("QUEUE_RATE_LIMIT_THRESHOLD", *queueRateLimitThreshold),
+		QueueThrottleThreshold:   envInt("QUEUE_THROTTLE_THRESHOLD", *queueThrottleThreshold),
+		QueueThrottleTopN:        envInt("QUEUE_THROTTLE_TOP", *queueThrottleTopN),
+		RateLimitInitialPerSec:   envInt("RATE_LIMIT_INITIAL_PER_SEC", *rateLimitInitialPerSec),
+		RateLimitInitialBurst:    envInt("RATE_LIMIT_INITIAL_BURST", *rateLimitInitialBurst),
+		ForwarderSuspendSeconds:  envInt("FORWARDER_SUSPEND_SECONDS", *forwarderSuspend),
 		ForwarderFailThreshold:   *forwarderFailThreshold,
 		ForwarderRetryAttempts:   *forwarderRetryAttempts,
 		ForwarderRetryBaseMs:     *forwarderRetryBaseMs,
