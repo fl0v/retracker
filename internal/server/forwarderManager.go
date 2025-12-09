@@ -236,7 +236,7 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	trackerURL := forward.Uri
 
 	// Normal mode: log hash and tracker URL
-	fmt.Printf("Forwarding UDP announce %s to %s\n", hash, trackerURL)
+	fmt.Printf("UDP announce %s to %s\n", hash, trackerURL)
 	if fm.Config.Debug {
 		if forward.Ip != `` {
 			DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
@@ -248,7 +248,7 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	duration := time.Since(startTime)
 
 	if err != nil {
-		ErrorLogFwd.Printf("Error forwarding UDP %s to %s: %s\n", hash, trackerURL, err.Error())
+		ErrorLogFwd.Printf("UDP annouce error %s to %s: %s\n", hash, trackerURL, err.Error())
 		if fm.Config.Debug {
 			ErrorLogFwd.Printf("  Duration: %v\n", duration)
 		}
@@ -275,7 +275,8 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	// Record statistics
 	fm.recordStats(forwardName, duration, bitResponse.Interval)
 
-	fmt.Printf("UDP response from %s (%d bytes, %v, interval=%d, peers=%d)\n", trackerURL, respBytes, duration, bitResponse.Interval, len(bitResponse.Peers))
+	secs := duration.Seconds()
+	fmt.Printf("UDP response from %s (%d bytes, %.3fs, interval=%d, peers=%d)\n", trackerURL, respBytes, secs, bitResponse.Interval, len(bitResponse.Peers))
 }
 
 // executeHTTPAnnounce handles HTTP/HTTPS tracker announces (original logic)
@@ -294,7 +295,7 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		uri = fmt.Sprintf("%s&ip=%s&ipv4=%s", uri, forward.Ip, forward.Ip)
 	}
 
-	fmt.Printf("Forwarding announce %s to %s\n", hash, trackerURL)
+	fmt.Printf("HTTP announce %s to %s\n", hash, trackerURL)
 	if fm.Config.Debug {
 		DebugLogFwd.Printf("  Request URI: %s\n", uri)
 		if forward.Ip != `` {
@@ -339,6 +340,9 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 			lastErr = err
 			cancel()
 			if !isTimeoutErr(err) {
+				if fm.Config.Debug {
+					ErrorLogFwd.Printf("HTTP request error: %v\n", err)
+				}
 				fm.disableForwarder(forwardName)
 				return
 			}
@@ -354,7 +358,9 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		}
 
 		if response.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("HTTP %d %s", response.StatusCode, response.Status)
+			if fm.Config.Debug {
+				ErrorLogFwd.Printf("HTTP %d %s\n", response.StatusCode, response.Status)
+			}
 			cancel()
 			fm.disableForwarder(forwardName)
 			return
@@ -365,6 +371,9 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
 			if !isTimeoutErr(err) {
+				if fm.Config.Debug {
+					ErrorLogFwd.Printf("Failed to read response: %v\n", err)
+				}
 				fm.disableForwarder(forwardName)
 				return
 			}
@@ -378,8 +387,8 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 
 		bitResponse, err := Response.Load(payload)
 		if err != nil {
-			lastErr = fmt.Errorf("failed to parse response: %w", err)
 			if fm.Config.Debug {
+				ErrorLogFwd.Printf("Failed to parse response: %v\n", err)
 				isText := true
 				if len(payload) > 0 {
 					printableCount := 0
@@ -414,16 +423,14 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
 		fm.resetFailure(forwardName)
 		fm.recordStats(forwardName, duration, bitResponse.Interval)
-		fmt.Printf("HTTP response from %s (%d bytes, %v, interval=%d, peers=%d)\n", trackerURL, len(payload), duration, bitResponse.Interval, len(bitResponse.Peers))
+		secs := duration.Seconds()
+		fmt.Printf("HTTP response from %s (%d bytes, %.3fs, interval=%d, peers=%d)\n", trackerURL, len(payload), secs, bitResponse.Interval, len(bitResponse.Peers))
 		return
 	}
 
 	// All retries failed
 	duration := time.Since(startTime)
-	ErrorLogFwd.Printf("Error forwarding %s to %s: %v\n", hash, trackerURL, lastErr)
-	if fm.Config.Debug {
-		ErrorLogFwd.Printf("  Duration: %v\n", duration)
-	}
+	ErrorLogFwd.Printf("HTTP response error %s to %s: %v (%.3fs)\n", hash, trackerURL, lastErr.Error(), duration.Seconds())
 	if fm.Prometheus != nil {
 		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
 	}
