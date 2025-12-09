@@ -276,13 +276,13 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 }
 
 // Announce sends an announce request to the UDP tracker
-func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.Request) (*Response.Response, error) {
+func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.Request) (*Response.Response, int, error) {
 	forwarderName := forwarder.GetName()
 	trackerURL := forwarder.Uri
 
 	connectionID, conn, err := uf.getConnectionID(forwarder)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection ID: %w", err)
+		return nil, 0, fmt.Errorf("failed to get connection ID: %w", err)
 	}
 	defer conn.Close()
 
@@ -334,6 +334,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 
 	// Send announce request with retries
 	var response *Response.Response
+	var responseSize int
 	for retry := 0; retry < uf.maxRetries; retry++ {
 		if retry > 0 {
 			time.Sleep(uf.retryBase * time.Duration(1<<retry))
@@ -345,7 +346,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		_, err = conn.Write(buf.Bytes())
 		if err != nil {
 			if retry == uf.maxRetries-1 {
-				return nil, fmt.Errorf("failed to send announce request: %w", err)
+				return nil, 0, fmt.Errorf("failed to send announce request: %w", err)
 			}
 			continue
 		}
@@ -353,19 +354,20 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		// Read response (up to 20 + 6*N bytes for IPv4, or 20 + 18*N for IPv6)
 		respBuf := make([]byte, 4096)
 		n, err := conn.Read(respBuf)
+		responseSize = n
 		if err != nil {
 			if retry == uf.maxRetries-1 {
-				return nil, fmt.Errorf("failed to read announce response: %w", err)
+				return nil, 0, fmt.Errorf("failed to read announce response: %w", err)
 			}
 			if !isTimeoutErr(err) {
-				return nil, fmt.Errorf("failed to read announce response: %w", err)
+				return nil, 0, fmt.Errorf("failed to read announce response: %w", err)
 			}
 			continue
 		}
 
 		if n < 20 {
 			if retry == uf.maxRetries-1 {
-				return nil, fmt.Errorf("announce response too short: %d bytes", n)
+				return nil, 0, fmt.Errorf("announce response too short: %d bytes", n)
 			}
 			continue
 		}
@@ -391,19 +393,19 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 			uf.connMu.Lock()
 			delete(uf.connections, forwarderName)
 			uf.connMu.Unlock()
-			return nil, fmt.Errorf("tracker error: %s", errorMsg)
+			return nil, 0, fmt.Errorf("tracker error: %s", errorMsg)
 		}
 
 		if respAction != udpActionAnnounce {
 			if retry == uf.maxRetries-1 {
-				return nil, fmt.Errorf("unexpected action in announce response: %d", respAction)
+				return nil, 0, fmt.Errorf("unexpected action in announce response: %d", respAction)
 			}
 			continue
 		}
 
 		if respTransactionID != transactionID {
 			if retry == uf.maxRetries-1 {
-				return nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
+				return nil, 0, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
 			}
 			continue
 		}
@@ -456,8 +458,8 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 	}
 
 	if response == nil {
-		return nil, fmt.Errorf("failed to get announce response after %d retries", uf.maxRetries)
+		return nil, 0, fmt.Errorf("failed to get announce response after %d retries", uf.maxRetries)
 	}
 
-	return response, nil
+	return response, responseSize, nil
 }

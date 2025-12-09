@@ -244,7 +244,7 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	}
 
 	// Use UDP forwarder
-	bitResponse, err := fm.udpForwarder.Announce(forward, request)
+	bitResponse, respBytes, err := fm.udpForwarder.Announce(forward, request)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -275,12 +275,7 @@ func (fm *ForwarderManager) executeUDPAnnounce(job AnnounceJob) {
 	// Record statistics
 	fm.recordStats(forwardName, duration, bitResponse.Interval)
 
-	// Normal mode: response info + duration
-	fmt.Printf("Received UDP response from %s in %v (interval=%d, peers=%d)\n", trackerURL, duration, bitResponse.Interval, len(bitResponse.Peers))
-	// Debug mode: decoded response data
-	if fm.Config.Debug {
-		DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
-	}
+	fmt.Printf("UDP response from %s (%d bytes, %v, interval=%d, peers=%d)\n", trackerURL, respBytes, duration, bitResponse.Interval, len(bitResponse.Peers))
 }
 
 // executeHTTPAnnounce handles HTTP/HTTPS tracker announces (original logic)
@@ -419,10 +414,7 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
 		fm.resetFailure(forwardName)
 		fm.recordStats(forwardName, duration, bitResponse.Interval)
-		fmt.Printf("Received %d bytes from %s in %v\n", len(payload), trackerURL, duration)
-		if fm.Config.Debug {
-			DebugLogFwd.Printf("  Decoded response: interval=%d, peers=%d\n", bitResponse.Interval, len(bitResponse.Peers))
-		}
+		fmt.Printf("HTTP response from %s (%d bytes, %v, interval=%d, peers=%d)\n", trackerURL, len(payload), duration, bitResponse.Interval, len(bitResponse.Peers))
 		return
 	}
 
@@ -719,7 +711,7 @@ func (fm *ForwarderManager) executeUDPStoppedAnnounce(forwarder CoreCommon.Forwa
 	}
 
 	// Use UDP forwarder - we don't need to capture the response for stopped/completed events
-	_, err := fm.udpForwarder.Announce(forwarder, request)
+	_, _, err := fm.udpForwarder.Announce(forwarder, request)
 	if err != nil {
 		ErrorLogFwd.Printf("Error forwarding UDP %s event for %s to %s: %s\n", request.Event, hash, trackerURL, err.Error())
 		return
