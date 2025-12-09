@@ -108,6 +108,9 @@ local-clean: ## Remove the local build directory
 local-run: local-build ## Run retracker locally with both HTTP and UDP (ports 6969)
 	$(BINARY) -l :6969 -u :6969 -f ./configs/forwarders.yml
 
+local-run-nof: local-build ## Run retracker locally with both HTTP and UDP (ports 6969)
+	$(BINARY) -l :6969 -u :6969 -d -i 300
+
 local-run-debug: local-build ## Run retracker locally with HTTP, UDP, and debug mode
 	$(BINARY) -l :6969 -u :6969 -d -f ./configs/forwarders.yml
 
