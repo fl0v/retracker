@@ -2,7 +2,7 @@
 	docker-build docker-rebuild docker-clean \
 	docker-up docker-down docker-restart docker-logs docker-shell \
 	update-forwarders local-build local-clean local-run local-run-debug local-run-prometheus \
-	lint lint-fix fmt fmt-check check
+	lint lint-fix fmt fmt-check check test
 
 .DEFAULT_GOAL := help
 
@@ -177,4 +177,10 @@ fmt-check: ## Check if code is formatted correctly
 	fi
 
 check: fmt-check lint ## Run all checks (formatting and linting)
+
+test: ## Run all tests
+	go test ./... -v
+
+test-cover: ## Run all tests with coverage report
+	go test ./... -v -cover
 
