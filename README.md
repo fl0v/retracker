@@ -154,21 +154,23 @@ This will:
 * Build the retracker image
 * Start the container on port 6969
 * Mount the forwarders configuration from `../configs/forwarders.yml`
-* Enable Prometheus metrics, debug mode, and configure timeouts
 
-To customize the configuration, edit `docker/docker-compose.yml` and modify the `command` line with the desired flags:
-* `-l :6969` - HTTP listen address
-* `-u :6969` - UDP listen address (optional)
-* `-d` - Debug mode
-* `-p` - Enable Prometheus metrics
-* `-f /app/forwarders.yml` - Forwarders configuration file
-* `-a 180` - Peer age in minutes
-* `-t 2` - Forward request timeout in seconds
-* `-i 30` - Announce response interval in seconds
+To customize the configuration, edit `docker/docker-compose.yml` and modify the environment variables:
+* `RETRACKER_CONFIG` - Path to configuration file (maps to `-c` flag)
+* `RETRACKER_LISTEN` - HTTP listen address:port (maps to `-l` flag)
+* `RETRACKER_UDP_LISTEN` - UDP listen address:port (maps to `-u` flag, optional)
+* `RETRACKER_FORWARDS` - Path to forwarders configuration file (maps to `-f` flag)
+* `RETRACKER_DEBUG` - Enable debug mode (maps to `-d` flag, set to `true` to enable)
+
+All other configuration options should be set in the config file specified by `RETRACKER_CONFIG`.
 
 Example with UDP support:
 ```yaml
-command: ["./retracker", "-l", ":6969", "-u", ":6969", "-f", "/app/forwarders.yml", "-p", "-d"]
+environment:
+  - RETRACKER_LISTEN=:6969
+  - RETRACKER_UDP_LISTEN=:6969
+  - RETRACKER_FORWARDS=/app/forwarders.yml
+  - RETRACKER_DEBUG=false
 ```
 
 ## Development
