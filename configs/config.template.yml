@@ -1,0 +1,109 @@
+# Retracker Configuration Template
+# Copy this file to config.yml and customize as needed
+# All settings are optional - defaults will be used if not specified
+#
+# Priority order (highest to lowest):
+# 1. Command-line flags
+# 2. Environment variables
+# 3. This config file
+# 4. Default values
+
+# HTTP listen address:port (default: ":6969")
+# Can be overridden with -l flag or RETRACKER_LISTEN env var
+# listen: ":6969"
+
+# UDP listen address:port (default: "" - disabled)
+# Set to empty string to disable UDP tracker
+# Can be overridden with -u flag or RETRACKER_UDP_LISTEN env var
+# udp_listen: ""
+
+# Debug mode (default: false)
+# Enables verbose debug logging
+# Can be overridden with -d flag or RETRACKER_DEBUG env var
+# debug: false
+
+# Enable Prometheus metrics (default: false)
+# Exposes metrics at /metrics endpoint when enabled
+# Can be overridden with -p flag or RETRACKER_PROMETHEUS env var
+# prometheus_enabled: false
+
+# Keep peers in memory for 'n' minutes (default: 180)
+# Peers older than this will be removed from memory
+# age: 180
+
+# Get client IP from X-Real-IP header (default: false)
+# Useful when running behind a reverse proxy
+# x_real_ip: false
+
+# Announce response interval in seconds (default: 30)
+# How often clients should re-announce
+# announce_response_interval: 30
+
+# Minimum announce interval in seconds (default: 15)
+# Minimum time between announces (must be <= announce_response_interval)
+# min_announce_interval: 15
+
+# Tracker ID to include in announce responses (default: "")
+# Optional identifier for this tracker instance
+# tracker_id: ""
+
+# Statistics print interval in seconds (default: 60)
+# How often to print stats to console
+# stats_interval: 60
+
+# Forwarder Configuration
+# These settings apply when forwarders are configured (via -f flag)
+
+# Forward request timeout in seconds (default: 30)
+# forward_timeout: 30
+
+# Number of worker goroutines for parallel forwarder processing (default: 10)
+# forwarder_workers: 10
+
+# Maximum worker goroutines (default: 20)
+# Workers will scale up to this limit when queue is busy
+# max_forwarder_workers: 20
+
+# Forwarder announce job queue size (default: 10000)
+# Maximum number of pending announce jobs
+# forwarder_queue_size: 10000
+
+# Queue fill percentage to trigger worker scaling (default: 60)
+# When queue is this full, workers will scale up
+# queue_scale_threshold_pct: 60
+
+# Queue fill percentage to trigger initial announce rate limiting (default: 80)
+# When queue reaches this threshold, rate limiting activates
+# queue_rate_limit_threshold: 80
+
+# Queue fill percentage to throttle forwarders (default: 60)
+# When queue is this full, only fastest forwarders are used
+# queue_throttle_threshold: 60
+
+# Number of fastest forwarders to keep when throttling (default: 20)
+# When throttling, only this many fastest forwarders will be used
+# queue_throttle_top_n: 20
+
+# Initial announces per second when rate limiting is active (default: 100)
+# rate_limit_initial_per_sec: 100
+
+# Burst size for initial announce rate limit (default: 200)
+# rate_limit_initial_burst: 200
+
+# Seconds to suspend a forwarder after overload errors (e.g., HTTP 429) (default: 300)
+# forwarder_suspend_seconds: 300
+
+# Forwarder fail threshold before disabling (default: 10)
+# After this many consecutive failures, forwarder is disabled
+# forwarder_fail_threshold: 10
+
+# Forwarder retry attempts for failed requests (default: 5)
+# forwarder_retry_attempts: 5
+
+# Forwarder retry base backoff in milliseconds (default: 500)
+# Uses exponential backoff: base * 2^attempt
+# forwarder_retry_base_ms: 500
+
+# Note: Forwarders configuration is separate and loaded via -f flag
+# See configs/forwarders.template.yml for forwarder configuration
+

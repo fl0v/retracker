@@ -3,5 +3,6 @@
 vendor
 configs/*
 !configs/forwarders.template.yml
+!configs/config.template.yml
 /bin/
 /scripts/lists/

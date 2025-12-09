@@ -76,18 +76,18 @@ docker-container-stop: ## Stop the standalone container
 docker-container-run-debug: docker-build ## Build from local code and run standalone container with debug mode enabled
 	docker run -d \
 		--name $(CONTAINER_NAME)-debug \
-		-p 6969:80 \
+		-p 6969:6969 \
 		$(IMAGE_NAME) \
 		./retracker -l :6969 -d
 
 docker-container-run-prometheus: docker-build ## Build from local code and run standalone container with Prometheus metrics enabled
 	docker run -d \
 		--name $(CONTAINER_NAME)-prom \
-		-p 6969:80 \
+		-p 6969:6969 \
 		$(IMAGE_NAME) \
 		./retracker -l :6969 -p
 
-docker-container-run-custom: docker-build ## Build from local code and run standalone container with custom port (usage: make docker-container-run-custom PORT=9090:80)
+docker-container-run-custom: docker-build ## Build from local code and run standalone container with custom port (usage: make docker-container-run-custom PORT=9090:6969)
 	docker run -d \
 		--name $(CONTAINER_NAME)-custom \
 		-p $(PORT) \

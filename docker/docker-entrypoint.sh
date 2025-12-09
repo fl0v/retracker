@@ -4,7 +4,12 @@ set -e
 # Build command arguments from environment variables
 ARGS=""
 
-# -l (listen) - HTTP listen address:port
+# -c (config) - Configuration file path
+if [ -n "${RETRACKER_CONFIG:-}" ]; then
+    ARGS="${ARGS} -c ${RETRACKER_CONFIG}"
+fi
+
+# -l (listen) - HTTP listen address:port (overrides config file, default: :6969)
 if [ -n "${RETRACKER_LISTEN:-}" ]; then
     ARGS="${ARGS} -l ${RETRACKER_LISTEN}"
 else

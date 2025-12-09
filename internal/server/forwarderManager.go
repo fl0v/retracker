@@ -1216,6 +1216,7 @@ func (fm *ForwarderManager) statsRoutine() {
 // forwarderStatsProvider implements observability.StatsDataProvider
 type forwarderStatsProvider struct {
 	fm  *ForwarderManager
+	cfg *config.Config
 	now time.Time
 }
 
@@ -1503,10 +1504,44 @@ func (p *forwarderStatsProvider) GetDropCounters() (droppedFull, rateLimited, th
 	return atomic.LoadUint64(&p.fm.droppedFullCount), atomic.LoadUint64(&p.fm.rateLimitedCount), atomic.LoadUint64(&p.fm.throttledForwardCount)
 }
 
+func (p *forwarderStatsProvider) GetConfig() *observability.ConfigInfo {
+	if p.cfg == nil {
+		return nil
+	}
+	return &observability.ConfigInfo{
+		HTTPListen:               p.cfg.Listen,
+		UDPListen:                p.cfg.UDPListen,
+		Debug:                    p.cfg.Debug,
+		XRealIP:                  p.cfg.XRealIP,
+		PrometheusEnabled:        p.cfg.PrometheusEnabled,
+		Age:                      p.cfg.Age,
+		AnnounceResponseInterval: p.cfg.AnnounceResponseInterval,
+		MinAnnounceInterval:      p.cfg.MinAnnounceInterval,
+		TrackerID:                p.cfg.TrackerID,
+		StatsInterval:            p.cfg.StatsInterval,
+		ForwardTimeout:           p.cfg.ForwardTimeout,
+		ForwarderWorkers:         p.cfg.ForwarderWorkers,
+		MaxForwarderWorkers:      p.cfg.MaxForwarderWorkers,
+		ForwarderQueueSize:       p.cfg.ForwarderQueueSize,
+		QueueScaleThresholdPct:   p.cfg.QueueScaleThresholdPct,
+		QueueRateLimitThreshold:  p.cfg.QueueRateLimitThreshold,
+		QueueThrottleThreshold:   p.cfg.QueueThrottleThreshold,
+		QueueThrottleTopN:        p.cfg.QueueThrottleTopN,
+		RateLimitInitialPerSec:   p.cfg.RateLimitInitialPerSec,
+		RateLimitInitialBurst:    p.cfg.RateLimitInitialBurst,
+		ForwarderSuspendSeconds:  p.cfg.ForwarderSuspendSeconds,
+		ForwarderFailThreshold:   p.cfg.ForwarderFailThreshold,
+		ForwarderRetryAttempts:   p.cfg.ForwarderRetryAttempts,
+		ForwarderRetryBaseMs:     p.cfg.ForwarderRetryBaseMs,
+		ForwardersCount:          len(p.cfg.Forwards),
+		ForwardsFile:             p.cfg.ForwardsFile,
+	}
+}
+
 func (fm *ForwarderManager) printStats() {
 	now := time.Now()
 	collector := observability.NewStatsCollector()
-	provider := &forwarderStatsProvider{fm: fm, now: now}
+	provider := &forwarderStatsProvider{fm: fm, cfg: fm.Config, now: now}
 	stats := collector.CollectStats(provider)
 	if fm.Prometheus != nil {
 		fm.updatePrometheusQueue(stats)

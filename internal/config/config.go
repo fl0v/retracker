@@ -16,31 +16,56 @@ var (
 )
 
 type Config struct {
-	AnnounceResponseInterval int
-	MinAnnounceInterval      int
-	TrackerID                string
-	Listen                   string
-	UDPListen                string
-	Debug                    bool
-	Age                      float64
-	XRealIP                  bool
-	Forwards                 []common.Forward
-	ForwardsFile             string // Path to forwards YAML file (if loaded)
-	ForwardTimeout           int
-	ForwarderWorkers         int
-	ForwarderQueueSize       int
-	MaxForwarderWorkers      int
-	QueueScaleThresholdPct   int
-	QueueRateLimitThreshold  int
-	QueueThrottleThreshold   int
-	QueueThrottleTopN        int
-	RateLimitInitialPerSec   int
-	RateLimitInitialBurst    int
-	ForwarderSuspendSeconds  int
-	ForwarderFailThreshold   int
-	ForwarderRetryAttempts   int
-	ForwarderRetryBaseMs     int
-	StatsInterval            int
+	AnnounceResponseInterval int              `yaml:"announce_response_interval"`
+	MinAnnounceInterval      int              `yaml:"min_announce_interval"`
+	TrackerID                string           `yaml:"tracker_id"`
+	Listen                   string           `yaml:"listen"`
+	UDPListen                string           `yaml:"udp_listen"`
+	Debug                    bool             `yaml:"debug"`
+	Age                      float64          `yaml:"age"`
+	XRealIP                  bool             `yaml:"x_real_ip"`
+	Forwards                 []common.Forward `yaml:"-"` // Not loaded from main config file
+	ForwardsFile             string           `yaml:"-"` // Path to forwards YAML file (if loaded)
+	ForwardTimeout           int              `yaml:"forward_timeout"`
+	ForwarderWorkers         int              `yaml:"forwarder_workers"`
+	ForwarderQueueSize       int              `yaml:"forwarder_queue_size"`
+	MaxForwarderWorkers      int              `yaml:"max_forwarder_workers"`
+	QueueScaleThresholdPct   int              `yaml:"queue_scale_threshold_pct"`
+	QueueRateLimitThreshold  int              `yaml:"queue_rate_limit_threshold"`
+	QueueThrottleThreshold   int              `yaml:"queue_throttle_threshold"`
+	QueueThrottleTopN        int              `yaml:"queue_throttle_top_n"`
+	RateLimitInitialPerSec   int              `yaml:"rate_limit_initial_per_sec"`
+	RateLimitInitialBurst    int              `yaml:"rate_limit_initial_burst"`
+	ForwarderSuspendSeconds  int              `yaml:"forwarder_suspend_seconds"`
+	ForwarderFailThreshold   int              `yaml:"forwarder_fail_threshold"`
+	ForwarderRetryAttempts   int              `yaml:"forwarder_retry_attempts"`
+	ForwarderRetryBaseMs     int              `yaml:"forwarder_retry_base_ms"`
+	StatsInterval            int              `yaml:"stats_interval"`
+	PrometheusEnabled        bool             `yaml:"prometheus_enabled"`
+}
+
+// LoadFromFile loads configuration from a YAML file
+// Missing values will use defaults (zero values for Go types)
+func (config *Config) LoadFromFile(path string) error {
+	if path == "" {
+		return nil // No config file specified, use defaults
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		ErrorLog.Printf("Failed to open config file '%s': %s\n", path, err.Error())
+		return err
+	}
+	defer f.Close()
+
+	decoder := gopkginyaml.NewDecoder(f)
+	if err := decoder.Decode(config); err != nil {
+		ErrorLog.Printf("Failed to parse config file '%s': %s\n", path, err.Error())
+		return err
+	}
+
+	DebugLog.Printf("Loaded configuration from '%s'\n", path)
+	return nil
 }
 
 func (config *Config) ReloadForwards(fileName string) error {
@@ -77,12 +102,8 @@ func (config *Config) ReloadForwards(fileName string) error {
 }
 
 // PrintConfig prints all configuration settings in a formatted way
+// Prometheus status is always displayed from Config.PrometheusEnabled
 func (config *Config) PrintConfig() {
-	config.PrintConfigWithPrometheus(false)
-}
-
-// PrintConfigWithPrometheus prints all configuration settings including Prometheus status
-func (config *Config) PrintConfigWithPrometheus(enablePrometheus bool) {
 	fmt.Println("\n=== Configuration ===")
 	fmt.Printf("Version: %s\n", "0.10.0") // TODO: get from main package
 	fmt.Printf("HTTP Listen: %s\n", config.Listen)
@@ -93,7 +114,7 @@ func (config *Config) PrintConfigWithPrometheus(enablePrometheus bool) {
 	}
 	fmt.Printf("Debug Mode: %v\n", config.Debug)
 	fmt.Printf("X-Real-IP Header: %v\n", config.XRealIP)
-	fmt.Printf("Prometheus Metrics: %v\n", enablePrometheus)
+	fmt.Printf("Prometheus Metrics: %v\n", config.PrometheusEnabled)
 	fmt.Printf("Peer Age (minutes): %.1f\n", config.Age)
 	fmt.Printf("Announce Response Interval: %d seconds\n", config.AnnounceResponseInterval)
 	fmt.Printf("Minimum Announce Interval: %d seconds\n", config.MinAnnounceInterval)

@@ -11,8 +11,39 @@ import (
 // StatsCollector collects and formats statistics
 type StatsCollector struct{}
 
+// ConfigInfo holds server configuration information
+type ConfigInfo struct {
+	HTTPListen               string  `json:"http_listen"`
+	UDPListen                string  `json:"udp_listen"`
+	Debug                    bool    `json:"debug"`
+	XRealIP                  bool    `json:"x_real_ip"`
+	PrometheusEnabled        bool    `json:"prometheus_enabled"`
+	Age                      float64 `json:"age"`
+	AnnounceResponseInterval int     `json:"announce_response_interval"`
+	MinAnnounceInterval      int     `json:"min_announce_interval"`
+	TrackerID                string  `json:"tracker_id,omitempty"`
+	StatsInterval            int     `json:"stats_interval"`
+	ForwardTimeout           int     `json:"forward_timeout"`
+	ForwarderWorkers         int     `json:"forwarder_workers"`
+	MaxForwarderWorkers      int     `json:"max_forwarder_workers"`
+	ForwarderQueueSize       int     `json:"forwarder_queue_size"`
+	QueueScaleThresholdPct   int     `json:"queue_scale_threshold_pct"`
+	QueueRateLimitThreshold  int     `json:"queue_rate_limit_threshold"`
+	QueueThrottleThreshold   int     `json:"queue_throttle_threshold"`
+	QueueThrottleTopN        int     `json:"queue_throttle_top_n"`
+	RateLimitInitialPerSec   int     `json:"rate_limit_initial_per_sec"`
+	RateLimitInitialBurst    int     `json:"rate_limit_initial_burst"`
+	ForwarderSuspendSeconds  int     `json:"forwarder_suspend_seconds"`
+	ForwarderFailThreshold   int     `json:"forwarder_fail_threshold"`
+	ForwarderRetryAttempts   int     `json:"forwarder_retry_attempts"`
+	ForwarderRetryBaseMs     int     `json:"forwarder_retry_base_ms"`
+	ForwardersCount          int     `json:"forwarders_count"`
+	ForwardsFile             string  `json:"forwards_file,omitempty"`
+}
+
 // Stats holds all collected statistics
 type Stats struct {
+	Config                 *ConfigInfo             `json:"config,omitempty"`
 	ScheduledAnnouncements int                     `json:"scheduled_announcements"`
 	ScheduledAnnounces     []ScheduledAnnounce     `json:"scheduled_announces,omitempty"`
 	TrackedHashes          int                     `json:"tracked_hashes"`
@@ -80,6 +111,7 @@ type StatsDataProvider interface {
 	GetQueueMetrics() (depth, capacity, fillPct int)
 	GetWorkerMetrics() (active, max int)
 	GetDropCounters() (droppedFull, rateLimited, throttled uint64)
+	GetConfig() *ConfigInfo
 }
 
 // NewStatsCollector creates a new stats collector
@@ -90,6 +122,7 @@ func NewStatsCollector() *StatsCollector {
 // CollectStats collects statistics from a data provider
 func (sc *StatsCollector) CollectStats(provider StatsDataProvider) *Stats {
 	stats := &Stats{
+		Config:                 provider.GetConfig(),
 		ScheduledAnnouncements: provider.GetPendingCount(),
 		ScheduledAnnounces:     provider.GetScheduledAnnounces(),
 		TrackedHashes:          provider.GetTrackedHashes(),
@@ -115,6 +148,47 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	var sb strings.Builder
 
 	sb.WriteString("\n=== Statistics ===\n")
+
+	// Print configuration section
+	if stats.Config != nil {
+		sb.WriteString("\n=== Configuration ===\n")
+		sb.WriteString(fmt.Sprintf("HTTP Listen: %s\n", stats.Config.HTTPListen))
+		if stats.Config.UDPListen != "" {
+			sb.WriteString(fmt.Sprintf("UDP Listen: %s\n", stats.Config.UDPListen))
+		} else {
+			sb.WriteString("UDP Listen: disabled\n")
+		}
+		sb.WriteString(fmt.Sprintf("Debug Mode: %v\n", stats.Config.Debug))
+		sb.WriteString(fmt.Sprintf("X-Real-IP Header: %v\n", stats.Config.XRealIP))
+		sb.WriteString(fmt.Sprintf("Prometheus Metrics: %v\n", stats.Config.PrometheusEnabled))
+		sb.WriteString(fmt.Sprintf("Peer Age (minutes): %.1f\n", stats.Config.Age))
+		sb.WriteString(fmt.Sprintf("Announce Response Interval: %d seconds\n", stats.Config.AnnounceResponseInterval))
+		sb.WriteString(fmt.Sprintf("Minimum Announce Interval: %d seconds\n", stats.Config.MinAnnounceInterval))
+		if stats.Config.TrackerID != "" {
+			sb.WriteString(fmt.Sprintf("Tracker ID: %s\n", stats.Config.TrackerID))
+		}
+		sb.WriteString(fmt.Sprintf("Statistics Interval: %d seconds\n", stats.Config.StatsInterval))
+		if stats.Config.ForwardersCount > 0 {
+			sb.WriteString(fmt.Sprintf("Forwarders: %d configured\n", stats.Config.ForwardersCount))
+			if stats.Config.ForwardsFile != "" {
+				sb.WriteString(fmt.Sprintf("  Forwards File: %s\n", stats.Config.ForwardsFile))
+			}
+			sb.WriteString(fmt.Sprintf("  Forward Timeout: %d seconds\n", stats.Config.ForwardTimeout))
+			sb.WriteString(fmt.Sprintf("  Forwarder Workers: %d (max %d)\n", stats.Config.ForwarderWorkers, stats.Config.MaxForwarderWorkers))
+			sb.WriteString(fmt.Sprintf("  Forwarder Queue Size: %d\n", stats.Config.ForwarderQueueSize))
+			sb.WriteString(fmt.Sprintf("  Queue Scale Threshold: %d%%\n", stats.Config.QueueScaleThresholdPct))
+			sb.WriteString(fmt.Sprintf("  Queue Rate Limit Threshold: %d%%\n", stats.Config.QueueRateLimitThreshold))
+			sb.WriteString(fmt.Sprintf("  Queue Throttle Threshold: %d%% (top %d forwarders)\n", stats.Config.QueueThrottleThreshold, stats.Config.QueueThrottleTopN))
+			sb.WriteString(fmt.Sprintf("  Rate Limit Initial: %d/sec (burst %d)\n", stats.Config.RateLimitInitialPerSec, stats.Config.RateLimitInitialBurst))
+			sb.WriteString(fmt.Sprintf("  Forwarder suspend: %d seconds\n", stats.Config.ForwarderSuspendSeconds))
+			sb.WriteString(fmt.Sprintf("  Forwarder Fail Threshold: %d\n", stats.Config.ForwarderFailThreshold))
+			sb.WriteString(fmt.Sprintf("  Forwarder Retry Attempts: %d\n", stats.Config.ForwarderRetryAttempts))
+			sb.WriteString(fmt.Sprintf("  Forwarder Retry Base (ms): %d\n", stats.Config.ForwarderRetryBaseMs))
+		} else {
+			sb.WriteString("Forwarders: none configured\n")
+		}
+		sb.WriteString("==================\n")
+	}
 	sb.WriteString(fmt.Sprintf("Scheduled announcements: %d\n", stats.ScheduledAnnouncements))
 
 	if len(stats.ScheduledAnnounces) > 0 {
@@ -190,6 +264,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	// Create a JSON-friendly version of stats
 	jsonStats := struct {
+		Config                 *ConfigInfo             `json:"config,omitempty"`
 		ScheduledAnnouncements int                     `json:"scheduled_announcements"`
 		ScheduledAnnounces     []ScheduledAnnounceJSON `json:"scheduled_announces,omitempty"`
 		TrackedHashes          int                     `json:"tracked_hashes"`
@@ -207,6 +282,7 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 		RateLimited            uint64                  `json:"rate_limited"`
 		ThrottledForwarders    uint64                  `json:"throttled_forwarders"`
 	}{
+		Config:                 stats.Config,
 		ScheduledAnnouncements: stats.ScheduledAnnouncements,
 		TrackedHashes:          stats.TrackedHashes,
 		DisabledForwarders:     stats.DisabledForwarders,

@@ -56,10 +56,10 @@ func (core *Core) HTTPStatsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var provider observability.StatsDataProvider
 	if core.ForwarderManager != nil {
-		provider = &forwarderStatsProvider{fm: core.ForwarderManager, now: now}
+		provider = &forwarderStatsProvider{fm: core.ForwarderManager, cfg: core.Config, now: now}
 	} else {
 		// When no forwarders are configured, create a simple provider using only Storage
-		provider = &simpleStatsProvider{storage: core.Storage, now: now}
+		provider = &simpleStatsProvider{storage: core.Storage, cfg: core.Config, now: now}
 	}
 
 	stats := collector.CollectStats(provider)
@@ -84,6 +84,7 @@ func (core *Core) HTTPStatsHandler(w http.ResponseWriter, r *http.Request) {
 // simpleStatsProvider provides stats when no forwarders are configured
 type simpleStatsProvider struct {
 	storage *Storage
+	cfg     *config.Config
 	now     time.Time
 }
 
@@ -199,4 +200,38 @@ func (p *simpleStatsProvider) GetWorkerMetrics() (active, max int) {
 
 func (p *simpleStatsProvider) GetDropCounters() (droppedFull, rateLimited, throttled uint64) {
 	return 0, 0, 0
+}
+
+func (p *simpleStatsProvider) GetConfig() *observability.ConfigInfo {
+	if p.cfg == nil {
+		return nil
+	}
+	return &observability.ConfigInfo{
+		HTTPListen:               p.cfg.Listen,
+		UDPListen:                p.cfg.UDPListen,
+		Debug:                    p.cfg.Debug,
+		XRealIP:                  p.cfg.XRealIP,
+		PrometheusEnabled:        p.cfg.PrometheusEnabled,
+		Age:                      p.cfg.Age,
+		AnnounceResponseInterval: p.cfg.AnnounceResponseInterval,
+		MinAnnounceInterval:      p.cfg.MinAnnounceInterval,
+		TrackerID:                p.cfg.TrackerID,
+		StatsInterval:            p.cfg.StatsInterval,
+		ForwardTimeout:           p.cfg.ForwardTimeout,
+		ForwarderWorkers:         p.cfg.ForwarderWorkers,
+		MaxForwarderWorkers:      p.cfg.MaxForwarderWorkers,
+		ForwarderQueueSize:       p.cfg.ForwarderQueueSize,
+		QueueScaleThresholdPct:   p.cfg.QueueScaleThresholdPct,
+		QueueRateLimitThreshold:  p.cfg.QueueRateLimitThreshold,
+		QueueThrottleThreshold:   p.cfg.QueueThrottleThreshold,
+		QueueThrottleTopN:        p.cfg.QueueThrottleTopN,
+		RateLimitInitialPerSec:   p.cfg.RateLimitInitialPerSec,
+		RateLimitInitialBurst:    p.cfg.RateLimitInitialBurst,
+		ForwarderSuspendSeconds:  p.cfg.ForwarderSuspendSeconds,
+		ForwarderFailThreshold:   p.cfg.ForwarderFailThreshold,
+		ForwarderRetryAttempts:   p.cfg.ForwarderRetryAttempts,
+		ForwarderRetryBaseMs:     p.cfg.ForwarderRetryBaseMs,
+		ForwardersCount:          len(p.cfg.Forwards),
+		ForwardsFile:             p.cfg.ForwardsFile,
+	}
 }
