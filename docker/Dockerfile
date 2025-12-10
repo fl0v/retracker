@@ -15,9 +15,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o retracker ./cmd/r
 # Final stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates wget
+# Runtime deps: bash for helper script, curl for tracker downloads, ca certs for TLS
+RUN apk --no-cache add ca-certificates bash curl
 
 WORKDIR /app
+RUN mkdir -p /app/scripts
 
 # Copy the binary from builder
 COPY --from=builder /build/retracker .
