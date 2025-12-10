@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,10 +43,13 @@ var (
 )
 
 type ForwarderStats struct {
-	ResponseTimes []time.Duration
-	Intervals     []int
-	mu            sync.RWMutex
+	AvgResponseTime time.Duration // EMA of response times
+	AvgInterval     float64       // EMA of intervals
+	SampleCount     int           // Total samples seen
+	mu              sync.RWMutex
 }
+
+const emaAlpha = 0.02 // Smoothing factor equivalent to ~100 sample window
 
 type DisabledForwarder struct {
 	Reason       string // Truncated to maxReasonLength for memory efficiency
@@ -83,6 +87,8 @@ type ForwarderManager struct {
 	queueThrottleThresh   int
 	queueThrottleTopN     int
 	workerCount           int
+	workerCountMu         sync.Mutex    // protects workerCount during scaling
+	scaleDownChan         chan struct{} // channel to signal workers to scale down
 	rateLimiter           *tokenBucket
 	droppedFullCount      uint64
 	rateLimitedCount      uint64
@@ -185,12 +191,12 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 			tokens: rateBurst,
 		},
 		suspendedForwarders: make(map[string]time.Time),
+		scaleDownChan:       make(chan struct{}, 100), // buffered channel for scale-down signals
 	}
 	// Initialize stats for each forwarder
 	for _, forwarder := range cfg.Forwards {
 		fm.stats[forwarder.GetName()] = &ForwarderStats{
-			ResponseTimes: make([]time.Duration, 0),
-			Intervals:     make([]int, 0),
+			SampleCount: 0,
 		}
 	}
 	return fm
@@ -251,10 +257,29 @@ func (fm *ForwarderManager) unmarkJobPending(infoHash common.InfoHash, forwarder
 }
 
 func (fm *ForwarderManager) worker() {
+	baseWorkers := fm.Workers
 	for {
 		select {
 		case <-fm.stopChan:
 			return
+		case <-fm.scaleDownChan:
+			// Check if this worker is beyond base workers and should exit
+			fm.workerCountMu.Lock()
+			currentCount := fm.workerCount
+			shouldExit := currentCount > baseWorkers
+			if shouldExit {
+				fm.workerCount--
+				fm.workerCountMu.Unlock()
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Worker scaling down, remaining: %d\n", fm.workerCount)
+				}
+				if fm.Prometheus != nil {
+					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+				}
+				return
+			}
+			fm.workerCountMu.Unlock()
+			// Not an extra worker, continue
 		case job, ok := <-fm.jobQueue:
 			if !ok {
 				return
@@ -275,16 +300,39 @@ func (fm *ForwarderManager) scaleWorkers() {
 			return
 		case <-ticker.C:
 			fillPct := fm.queueFillPct()
-			if fillPct >= fm.queueScaleThreshold && fm.workerCount < fm.maxWorkers {
-				// simple cool-down: only scale once per second tick
+			fm.workerCountMu.Lock()
+			currentCount := fm.workerCount
+			baseWorkers := fm.Workers
+
+			shouldScaleUp := fillPct >= fm.queueScaleThreshold && currentCount < fm.maxWorkers
+			shouldScaleDown := fillPct < 40 && currentCount > baseWorkers
+
+			switch {
+			case shouldScaleUp:
+				// Scale up: simple cool-down: only scale once per second tick
 				fm.workerCount++
+				fm.workerCountMu.Unlock()
 				go fm.worker()
 				if fm.Config.Debug {
-					DebugLogFwd.Printf("Scaling workers to %d (queue %d%%)\n", fm.workerCount, fillPct)
+					DebugLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", fm.workerCount, fillPct)
 				}
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
 				}
+			case shouldScaleDown:
+				// Scale down: queue below 40% and we have more than base workers
+				// Signal one worker to exit
+				select {
+				case fm.scaleDownChan <- struct{}{}:
+					if fm.Config.Debug {
+						DebugLogFwd.Printf("Signaling worker to scale down (queue %d%%, workers: %d)\n", fillPct, currentCount)
+					}
+				default:
+					// Channel full, skip this tick
+				}
+				fm.workerCountMu.Unlock()
+			default:
+				fm.workerCountMu.Unlock()
 			}
 		}
 	}
@@ -722,56 +770,38 @@ func (fm *ForwarderManager) selectForwardersByQueue(all []CoreCommon.Forward) []
 		return all
 	}
 
-	type entry struct {
-		f CoreCommon.Forward
-		t time.Duration
-		h bool
-	}
-
-	entries := make([]entry, 0, len(all))
-	fm.statsMu.RLock()
-	for _, f := range all {
-		if stats, ok := fm.stats[f.GetName()]; ok {
-			stats.mu.RLock()
-			if len(stats.ResponseTimes) > 0 {
-				var total time.Duration
-				for _, rt := range stats.ResponseTimes {
-					total += rt
-				}
-				avg := total / time.Duration(len(stats.ResponseTimes))
-				entries = append(entries, entry{f: f, t: avg, h: true})
-			} else {
-				entries = append(entries, entry{f: f, t: 0, h: false})
-			}
-			stats.mu.RUnlock()
-		} else {
-			entries = append(entries, entry{f: f, t: 0, h: false})
-		}
-	}
-	fm.statsMu.RUnlock()
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].h != entries[j].h {
-			return entries[i].h // prefer those with stats
-		}
-		return entries[i].t < entries[j].t
-	})
-
 	limit := fm.queueThrottleTopN
-	if limit > len(entries) {
-		limit = len(entries)
+	if limit > len(all) {
+		limit = len(all)
 	}
-	if limit < len(entries) {
-		skipped := uint64(len(entries) - limit)
-		atomic.AddUint64(&fm.throttledForwardCount, skipped)
-		if fm.Prometheus != nil {
-			fm.Prometheus.Throttled.Add(float64(skipped))
-		}
+	if limit >= len(all) {
+		return all
 	}
+
+	// Randomly select N trackers from all available to distribute load
+	// Create a copy of the forwarders slice to avoid modifying the original
+	selected := make([]CoreCommon.Forward, len(all))
+	copy(selected, all)
+
+	// Shuffle using Fisher-Yates algorithm
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for i := len(selected) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		selected[i], selected[j] = selected[j], selected[i]
+	}
+
+	// Take the first N after shuffling
 	result := make([]CoreCommon.Forward, 0, limit)
 	for i := 0; i < limit; i++ {
-		result = append(result, entries[i].f)
+		result = append(result, selected[i])
 	}
+
+	skipped := uint64(len(all) - limit)
+	atomic.AddUint64(&fm.throttledForwardCount, skipped)
+	if fm.Prometheus != nil {
+		fm.Prometheus.Throttled.Add(float64(skipped))
+	}
+
 	return result
 }
 
@@ -1180,22 +1210,25 @@ func (fm *ForwarderManager) recordStats(forwarderName string, responseTime time.
 	stats, ok := fm.stats[forwarderName]
 	if !ok {
 		stats = &ForwarderStats{
-			ResponseTimes: make([]time.Duration, 0),
-			Intervals:     make([]int, 0),
+			SampleCount: 0,
 		}
 		fm.stats[forwarderName] = stats
 	}
 
 	stats.mu.Lock()
-	// Keep last 100 response times and intervals
-	stats.ResponseTimes = append(stats.ResponseTimes, responseTime)
-	if len(stats.ResponseTimes) > 100 {
-		stats.ResponseTimes = stats.ResponseTimes[1:]
+	// Use Exponential Moving Average (EMA)
+	if stats.SampleCount == 0 {
+		// First sample: set directly
+		stats.AvgResponseTime = responseTime
+		stats.AvgInterval = float64(interval)
+	} else {
+		// EMA update: new_avg = alpha * new_sample + (1-alpha) * old_avg
+		stats.AvgResponseTime = time.Duration(
+			float64(responseTime)*emaAlpha + float64(stats.AvgResponseTime)*(1-emaAlpha),
+		)
+		stats.AvgInterval = float64(interval)*emaAlpha + stats.AvgInterval*(1-emaAlpha)
 	}
-	stats.Intervals = append(stats.Intervals, interval)
-	if len(stats.Intervals) > 100 {
-		stats.Intervals = stats.Intervals[1:]
-	}
+	stats.SampleCount++
 	stats.mu.Unlock()
 }
 
@@ -1308,30 +1341,15 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 
 	for forwarderName, stats := range p.fm.stats {
 		stats.mu.RLock()
-		if len(stats.ResponseTimes) > 0 {
-			var totalTime time.Duration
-			for _, rt := range stats.ResponseTimes {
-				totalTime += rt
-			}
-			avgResponseTime := totalTime / time.Duration(len(stats.ResponseTimes))
-
-			var totalInterval int
-			for _, interval := range stats.Intervals {
-				totalInterval += interval
-			}
-			avgInterval := 0
-			if len(stats.Intervals) > 0 {
-				avgInterval = totalInterval / len(stats.Intervals)
-			}
-
+		if stats.SampleCount > 0 {
 			forwarderStats[forwarderName] = struct {
 				AvgResponseTime time.Duration
 				AvgInterval     int
 				Count           int
 			}{
-				AvgResponseTime: avgResponseTime,
-				AvgInterval:     avgInterval,
-				Count:           len(stats.ResponseTimes),
+				AvgResponseTime: stats.AvgResponseTime,
+				AvgInterval:     int(stats.AvgInterval + 0.5), // Round to nearest int
+				Count:           stats.SampleCount,
 			}
 		}
 		stats.mu.RUnlock()
@@ -1341,9 +1359,11 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 	result := make([]observability.ForwarderStat, len(forwarders))
 	for i, forwarder := range forwarders {
 		forwarderName := forwarder.GetName()
+		protocol := forwarder.GetProtocol()
 		if stats, ok := forwarderStats[forwarderName]; ok {
 			result[i] = observability.ForwarderStat{
 				Name:            forwarderName,
+				Protocol:        protocol,
 				AvgResponseTime: stats.AvgResponseTime,
 				AvgInterval:     stats.AvgInterval,
 				SampleCount:     stats.Count,
@@ -1352,6 +1372,7 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 		} else {
 			result[i] = observability.ForwarderStat{
 				Name:     forwarderName,
+				Protocol: protocol,
 				HasStats: false,
 			}
 		}
@@ -1367,39 +1388,37 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 	hashPeerStats := make(map[string]observability.HashPeerStat)
 
 	for infoHash, forwarders := range p.fm.Storage.Entries {
-		seenLocal := make(map[string]struct{})
-		seenForwarder := make(map[string]struct{})
+		seenLocal := make(map[common.PeerID]struct{})
+		seenForwarder := make(map[common.PeerID]struct{})
 
-		// Count local peers (unique by IP)
+		// Count local peers (unique by peer ID)
 		if p.fm.MainStorage != nil {
-			localPeers := p.fm.MainStorage.GetPeers(infoHash)
-			for _, peer := range localPeers {
-				ip := string(peer.IP)
-				if ip == "" {
-					continue
+			p.fm.MainStorage.requestsMu.Lock()
+			if requests, ok := p.fm.MainStorage.Requests[infoHash]; ok {
+				for peerID := range requests {
+					seenLocal[peerID] = struct{}{}
 				}
-				seenLocal[ip] = struct{}{}
 			}
+			p.fm.MainStorage.requestsMu.Unlock()
 		}
 
-		// Count forwarder peers (unique by IP)
+		// Count forwarder peers (unique by peer ID)
 		for _, entry := range forwarders {
 			for _, peer := range entry.Peers {
-				ip := string(peer.IP)
-				if ip == "" {
+				if peer.PeerID == "" {
 					continue
 				}
-				seenForwarder[ip] = struct{}{}
+				seenForwarder[peer.PeerID] = struct{}{}
 			}
 		}
 
 		// Build totals
-		totalSeen := make(map[string]struct{})
-		for ip := range seenLocal {
-			totalSeen[ip] = struct{}{}
+		totalSeen := make(map[common.PeerID]struct{})
+		for peerID := range seenLocal {
+			totalSeen[peerID] = struct{}{}
 		}
-		for ip := range seenForwarder {
-			totalSeen[ip] = struct{}{}
+		for peerID := range seenForwarder {
+			totalSeen[peerID] = struct{}{}
 		}
 
 		hashKey := fmt.Sprintf("%x", infoHash)

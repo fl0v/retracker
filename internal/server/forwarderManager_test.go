@@ -445,8 +445,14 @@ func TestSelectForwardersThrottleKeepsFastestTopN(t *testing.T) {
 
 	// Stats: fast = 10ms, slow = 100ms
 	fm.statsMu.Lock()
-	fm.stats["fast"] = &ForwarderStats{ResponseTimes: []time.Duration{10 * time.Millisecond}}
-	fm.stats["slow"] = &ForwarderStats{ResponseTimes: []time.Duration{100 * time.Millisecond}}
+	fm.stats["fast"] = &ForwarderStats{
+		AvgResponseTime: 10 * time.Millisecond,
+		SampleCount:     1,
+	}
+	fm.stats["slow"] = &ForwarderStats{
+		AvgResponseTime: 100 * time.Millisecond,
+		SampleCount:     1,
+	}
 	fm.statsMu.Unlock()
 
 	selected := fm.selectForwardersByQueue(fm.Forwarders)

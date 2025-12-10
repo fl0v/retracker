@@ -72,6 +72,7 @@ type ScheduledAnnounce struct {
 // ForwarderStat represents statistics for a forwarder
 type ForwarderStat struct {
 	Name            string        `json:"name"`
+	Protocol        string        `json:"protocol,omitempty"`
 	AvgResponseTime time.Duration `json:"avg_response_time_ms"`
 	AvgInterval     int           `json:"avg_interval_seconds"`
 	SampleCount     int           `json:"sample_count"`
@@ -198,11 +199,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		}
 		sb.WriteString(fmt.Sprintf("Scheduled announces (next %d):\n", limit))
 		for _, sa := range stats.ScheduledAnnounces[:limit] {
-			hashDisplay := sa.InfoHash
-			if len(hashDisplay) > 16 {
-				hashDisplay = hashDisplay[:16] + "..."
-			}
-			sb.WriteString(fmt.Sprintf("  %s -> %s: %v\n", hashDisplay, sa.ForwarderName, sa.TimeToExec.Round(time.Second)))
+			sb.WriteString(fmt.Sprintf("  %s -> %s: %v\n", sa.InfoHash, sa.ForwarderName, sa.TimeToExec.Round(time.Second)))
 		}
 	}
 
@@ -217,16 +214,24 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 
 	for _, forwarder := range stats.Forwarders {
 		if forwarder.HasStats {
-			sb.WriteString(fmt.Sprintf("  %s: avg response time %v, avg interval %ds (from %d samples)\n",
-				forwarder.Name, forwarder.AvgResponseTime.Round(time.Millisecond), forwarder.AvgInterval, forwarder.SampleCount))
+			protocolStr := ""
+			if forwarder.Protocol != "" {
+				protocolStr = fmt.Sprintf(" [%s]", forwarder.Protocol)
+			}
+			sb.WriteString(fmt.Sprintf("  %s%s: avg response time %v, avg interval %ds (from %d samples)\n",
+				forwarder.Name, protocolStr, forwarder.AvgResponseTime.Round(time.Millisecond), forwarder.AvgInterval, forwarder.SampleCount))
 		} else {
-			sb.WriteString(fmt.Sprintf("  %s: no statistics yet\n", forwarder.Name))
+			protocolStr := ""
+			if forwarder.Protocol != "" {
+				protocolStr = fmt.Sprintf(" [%s]", forwarder.Protocol)
+			}
+			sb.WriteString(fmt.Sprintf("  %s%s: no statistics yet\n", forwarder.Name, protocolStr))
 		}
 	}
 
-	// Print per-hash unique IP counts
+	// Print per-hash unique peer counts
 	if len(stats.HashPeerStats) > 0 {
-		sb.WriteString("Hash unique IPs (local/forwarders/total):\n")
+		sb.WriteString("Hash unique peers (local/forwarders/total):\n")
 		// Sort hashes for consistent output
 		hashes := make([]string, 0, len(stats.HashPeerStats))
 		for hash := range stats.HashPeerStats {
@@ -235,11 +240,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sort.Strings(hashes)
 		for _, hash := range hashes {
 			hashStats := stats.HashPeerStats[hash]
-			hashDisplay := hash
-			if len(hashDisplay) > 16 {
-				hashDisplay = hashDisplay[:16] + "..."
-			}
-			sb.WriteString(fmt.Sprintf("  %s: %d/%d/%d\n", hashDisplay, hashStats.LocalUnique, hashStats.ForwarderUnique, hashStats.TotalUnique))
+			sb.WriteString(fmt.Sprintf("  %s: %d/%d/%d\n", hash, hashStats.LocalUnique, hashStats.ForwarderUnique, hashStats.TotalUnique))
 		}
 	}
 
@@ -314,6 +315,7 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	for i, f := range stats.Forwarders {
 		jsonStats.Forwarders[i] = ForwarderStatJSON{
 			Name:            f.Name,
+			Protocol:        f.Protocol,
 			AvgResponseTime: int(f.AvgResponseTime.Milliseconds()),
 			AvgInterval:     f.AvgInterval,
 			SampleCount:     f.SampleCount,
@@ -334,6 +336,7 @@ type ScheduledAnnounceJSON struct {
 // ForwarderStatJSON is the JSON representation of ForwarderStat
 type ForwarderStatJSON struct {
 	Name            string `json:"name"`
+	Protocol        string `json:"protocol,omitempty"`
 	AvgResponseTime int    `json:"avg_response_time_ms"`
 	AvgInterval     int    `json:"avg_interval_seconds"`
 	SampleCount     int    `json:"sample_count"`
