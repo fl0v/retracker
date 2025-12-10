@@ -96,6 +96,10 @@ type ForwarderManager struct {
 
 	suspendedMu         sync.Mutex
 	suspendedForwarders map[string]time.Time
+
+	// Scheduled jobs
+	scheduledJobs   map[time.Time][]AnnounceJob // scheduled jobs by execution time
+	scheduledJobsMu sync.RWMutex
 }
 
 type tokenBucket struct {
@@ -192,6 +196,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		},
 		suspendedForwarders: make(map[string]time.Time),
 		scaleDownChan:       make(chan struct{}, 100), // buffered channel for scale-down signals
+		scheduledJobs:       make(map[time.Time][]AnnounceJob),
 	}
 	// Initialize stats for each forwarder
 	for _, forwarder := range cfg.Forwards {
@@ -211,7 +216,7 @@ func (fm *ForwarderManager) Start() {
 		fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
 	}
 	go fm.scaleWorkers()
-	// No scheduler - re-announcing is client-driven
+	go fm.schedulerRoutine()
 
 	// Start statistics routine
 	if fm.Config.StatsInterval > 0 {
@@ -283,6 +288,12 @@ func (fm *ForwarderManager) worker() {
 		case job, ok := <-fm.jobQueue:
 			if !ok {
 				return
+			}
+			// Check if job is scheduled for future execution
+			if !job.ScheduledTime.IsZero() && time.Now().Before(job.ScheduledTime) {
+				// Job not ready yet, reschedule it (ignore return value - we're rescheduling an existing job)
+				fm.scheduleJob(job)
+				continue
 			}
 			fm.executeAnnounce(job)
 			// Unmark job as pending when done
@@ -876,9 +887,8 @@ func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, req
 }
 
 func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request tracker.Request, clientInterval int) {
-	// Collect jobs to queue (outside of lock)
-	jobsToQueue := make([]AnnounceJob, 0)
-	nextAnnounces := make(map[string]time.Time) // forwarderName -> nextAnnounce time
+	now := time.Now()
+	jobsToSchedule := make([]AnnounceJob, 0)
 
 	fm.Storage.mu.RLock()
 	if forwarders, ok := fm.Storage.Entries[infoHash]; ok {
@@ -888,111 +898,97 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 				continue
 			}
 
-			// Check if client interval is bigger than forwarder interval -> re-announce immediately
-			if clientInterval > entry.Interval {
-				// Re-announce immediately
-				if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
-					if fm.Config.Debug {
-						DebugLogFwd.Printf("Re-announce job already pending for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
-					}
-					continue
+			// Check if job is already pending
+			if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Re-announce job already pending for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
 				}
+				continue
+			}
 
-				// Find the forwarder
-				var forwarder CoreCommon.Forward
-				fm.forwardersMu.RLock()
-				for _, f := range fm.Forwarders {
-					if f.GetName() == forwarderName {
-						if fm.isSuspended(forwarderName) {
-							continue
-						}
-						forwarder = f
-						break
-					}
+			// Calculate time until forwarder's next allowed announcement
+			timeUntilNext := entry.NextAnnounce.Sub(now)
+
+			// If > 10 minutes, ignore this forwarder
+			if timeUntilNext > 10*time.Minute {
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Skipping re-announce for %x to %s (time until next: %v > 10 minutes)\n",
+						infoHash, forwarderName, timeUntilNext)
 				}
-				fm.forwardersMu.RUnlock()
-				if forwarder.Uri == "" {
-					continue
-				}
+				continue
+			}
 
-				jobsToQueue = append(jobsToQueue, AnnounceJob{
-					InfoHash:      infoHash,
-					ForwarderName: forwarderName,
-					PeerID:        request.PeerID,
-					Forwarder:     forwarder,
-					Request:       request,
-				})
-			} else if clientInterval < entry.Interval {
-				// Client interval is smaller -> schedule one re-announce following forwarder indication
-				now := time.Now()
-				nextAnnounce := now.Add(time.Duration(entry.Interval) * time.Second)
+			// If ≤ 10 minutes, schedule job at NextAnnounce + 1 minute
+			scheduledTime := entry.NextAnnounce.Add(1 * time.Minute)
 
-				// Only schedule if not already pending and it's time
-				if !fm.isJobPending(infoHash, forwarderName, request.PeerID) && (now.After(entry.NextAnnounce) || now.Equal(entry.NextAnnounce)) {
-					// Find the forwarder
-					var forwarder CoreCommon.Forward
-					fm.forwardersMu.RLock()
-					for _, f := range fm.Forwarders {
-						if f.GetName() == forwarderName {
-							if fm.isSuspended(forwarderName) {
-								continue
-							}
-							forwarder = f
-							break
-						}
-					}
-					fm.forwardersMu.RUnlock()
-					if forwarder.Uri == "" {
+			// Find the forwarder
+			var forwarder CoreCommon.Forward
+			fm.forwardersMu.RLock()
+			for _, f := range fm.Forwarders {
+				if f.GetName() == forwarderName {
+					if fm.isSuspended(forwarderName) {
+						fm.forwardersMu.RUnlock()
 						continue
 					}
-
-					jobsToQueue = append(jobsToQueue, AnnounceJob{
-						InfoHash:      infoHash,
-						ForwarderName: forwarderName,
-						PeerID:        request.PeerID,
-						Forwarder:     forwarder,
-						Request:       request,
-					})
-					nextAnnounces[forwarderName] = nextAnnounce
+					forwarder = f
+					break
 				}
 			}
+			fm.forwardersMu.RUnlock()
+			if forwarder.Uri == "" {
+				continue
+			}
+
+			job := AnnounceJob{
+				InfoHash:      infoHash,
+				ForwarderName: forwarderName,
+				PeerID:        request.PeerID,
+				Forwarder:     forwarder,
+				Request:       request,
+				ScheduledTime: scheduledTime,
+			}
+
+			// If scheduled time is in the past or very soon, execute immediately
+			if scheduledTime.Before(now) || scheduledTime.Sub(now) < 5*time.Second {
+				job.ScheduledTime = time.Time{} // Zero time means immediate
+			}
+
+			jobsToSchedule = append(jobsToSchedule, job)
 		}
 	}
 	fm.Storage.mu.RUnlock()
 
-	// Queue jobs and update NextAnnounce times
-	for _, job := range jobsToQueue {
+	// Schedule or queue jobs
+	for _, job := range jobsToSchedule {
 		fm.markJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
-		select {
-		case fm.jobQueue <- job:
-			if fm.Config.Debug {
-				hash := fmt.Sprintf("%x", job.InfoHash)
-				if nextAnnounce, ok := nextAnnounces[job.ForwarderName]; ok {
-					DebugLogFwd.Printf("Queued scheduled re-announce for %s to %s (following forwarder interval)\n",
-						hash, job.ForwarderName)
-					// Update NextAnnounce time
-					fm.Storage.mu.Lock()
-					if f, ok := fm.Storage.Entries[job.InfoHash]; ok {
-						if e, ok := f[job.ForwarderName]; ok {
-							e.NextAnnounce = nextAnnounce
-							f[job.ForwarderName] = e
-						}
-					}
-					fm.Storage.mu.Unlock()
-				} else {
-					// Immediate re-announce
-					fm.Storage.mu.RLock()
-					entry := fm.Storage.Entries[job.InfoHash][job.ForwarderName]
-					fm.Storage.mu.RUnlock()
-					DebugLogFwd.Printf("Queued immediate re-announce for %s to %s (client interval %d > forwarder interval %d)\n",
-						hash, job.ForwarderName, clientInterval, entry.Interval)
+
+		if job.ScheduledTime.IsZero() {
+			// Immediate execution
+			select {
+			case fm.jobQueue <- job:
+				if fm.Config.Debug {
+					hash := fmt.Sprintf("%x", job.InfoHash)
+					DebugLogFwd.Printf("Queued immediate re-announce for %s to %s\n", hash, job.ForwarderName)
+				}
+			default:
+				fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
+				if fm.Config.Debug {
+					hash := fmt.Sprintf("%x", job.InfoHash)
+					DebugLogFwd.Printf("Job queue full, skipping re-announce for %s to %s\n", hash, job.ForwarderName)
 				}
 			}
-		default:
-			fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
-			if fm.Config.Debug {
-				hash := fmt.Sprintf("%x", job.InfoHash)
-				DebugLogFwd.Printf("Job queue full, skipping re-announce for %s to %s\n", hash, job.ForwarderName)
+		} else {
+			// Scheduled execution - check for duplicates before scheduling
+			if fm.scheduleJob(job) {
+				if fm.Config.Debug {
+					hash := fmt.Sprintf("%x", job.InfoHash)
+					timeUntilExec := job.ScheduledTime.Sub(now)
+					DebugLogFwd.Printf("Scheduled re-announce for %s to %s at %v (in %v)\n",
+						hash, job.ForwarderName, job.ScheduledTime, timeUntilExec)
+				}
+			} else {
+				// Duplicate job, unmark as pending since we're not scheduling it
+				fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
 			}
 		}
 	}
@@ -1244,6 +1240,82 @@ func (fm *ForwarderManager) statsRoutine() {
 			fm.printStats()
 		}
 	}
+}
+
+// schedulerRoutine periodically checks for scheduled jobs ready to execute
+func (fm *ForwarderManager) schedulerRoutine() {
+	ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-fm.stopChan:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			fm.scheduledJobsMu.Lock()
+			readyJobs := make([]AnnounceJob, 0)
+			timesToRemove := make([]time.Time, 0)
+
+			for scheduledTime, jobs := range fm.scheduledJobs {
+				if now.After(scheduledTime) || now.Equal(scheduledTime) {
+					readyJobs = append(readyJobs, jobs...)
+					timesToRemove = append(timesToRemove, scheduledTime)
+				}
+			}
+
+			// Remove processed time slots
+			for _, t := range timesToRemove {
+				delete(fm.scheduledJobs, t)
+			}
+			fm.scheduledJobsMu.Unlock()
+
+			// Queue ready jobs
+			for _, job := range readyJobs {
+				select {
+				case fm.jobQueue <- job:
+					if fm.Config.Debug {
+						DebugLogFwd.Printf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName)
+					}
+				default:
+					// Queue full, reschedule
+					fm.scheduledJobsMu.Lock()
+					// Reschedule for 10 seconds later
+					newTime := now.Add(10 * time.Second)
+					fm.scheduledJobs[newTime] = append(fm.scheduledJobs[newTime], job)
+					fm.scheduledJobsMu.Unlock()
+					if fm.Config.Debug {
+						DebugLogFwd.Printf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName)
+					}
+				}
+			}
+		}
+	}
+}
+
+// scheduleJob adds a job to the scheduled jobs map
+// Returns true if job was scheduled, false if an identical job already exists
+func (fm *ForwarderManager) scheduleJob(job AnnounceJob) bool {
+	fm.scheduledJobsMu.Lock()
+	defer fm.scheduledJobsMu.Unlock()
+
+	// Check if we already have an identical scheduled job (same hash, same forwarder)
+	for _, jobs := range fm.scheduledJobs {
+		for _, existingJob := range jobs {
+			if existingJob.InfoHash == job.InfoHash && existingJob.ForwarderName == job.ForwarderName {
+				// Identical job already scheduled
+				if fm.Config.Debug {
+					DebugLogFwd.Printf("Skipping duplicate scheduled job for %x to %s (already scheduled at %v)\n",
+						job.InfoHash, job.ForwarderName, existingJob.ScheduledTime)
+				}
+				return false
+			}
+		}
+	}
+
+	// No duplicate found, schedule the job
+	fm.scheduledJobs[job.ScheduledTime] = append(fm.scheduledJobs[job.ScheduledTime], job)
+	return true
 }
 
 // forwarderStatsProvider implements observability.StatsDataProvider

@@ -85,7 +85,6 @@ func main() {
 	forwarderRetryBaseMs := flag.Int("B", 0, "Forwarder retry base backoff in ms (exponential) (overrides config file)")
 	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics (overrides config file)")
 	announceResponseInterval := flag.Int("i", 0, "Announce response interval (sec) (overrides config file)")
-	minAnnounceInterval := flag.Int("m", 0, "Minimum announce interval (sec) (overrides config file)")
 	statsInterval := flag.Int("s", 0, "Statistics print interval (sec) (overrides config file)")
 	trackerID := flag.String("tracker-id", "", "Tracker ID to include in announce responses (overrides config file)")
 	ver := flag.Bool("v", false, "Show version")
@@ -283,9 +282,6 @@ func main() {
 	}
 	if *announceResponseInterval > 0 {
 		cfg.AnnounceResponseInterval = *announceResponseInterval
-	}
-	if *minAnnounceInterval > 0 {
-		cfg.MinAnnounceInterval = *minAnnounceInterval
 	}
 	if *statsInterval > 0 {
 		cfg.StatsInterval = *statsInterval

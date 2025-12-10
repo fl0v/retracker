@@ -204,8 +204,8 @@ func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, resp
 	// Update storage
 	ra.Storage.Update(*request)
 
-	// Get local peers
-	response.Peers = ra.Storage.GetPeers(request.InfoHash)
+	// Get peers from both local and forwarder storage
+	response.Peers = ra.getPeersForResponse(request.InfoHash)
 
 	// Check if this is first announce for this info_hash
 	if ra.isFirstAnnounce(request.InfoHash) {
@@ -220,11 +220,8 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 	// First announce: return default shorter interval and trigger parallel forwarder announces
 	response.Interval = ra.clampInterval(ra.Config.MinAnnounceInterval)
 
-	// Get cached forwarder peers (should be empty on first announce)
-	if ra.ForwarderStorage != nil {
-		forwarderPeers := ra.ForwarderStorage.GetAllPeers(request.InfoHash)
-		response.Peers = append(response.Peers, forwarderPeers...)
-	}
+	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
+	// No need to collect again here
 
 	// Trigger parallel decoupled announces to all forwarders
 	if ra.ForwarderManager != nil {
@@ -254,21 +251,20 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 
 // handleSubsequentAnnounce handles subsequent announces for an info_hash
 func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, response *Response.Response) {
-	// Get cached forwarder peers
+	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
+	// No need to collect again here
+
+	// Calculate interval
 	if ra.ForwarderStorage != nil {
-		forwarderPeers := ra.ForwarderStorage.GetAllPeers(request.InfoHash)
-		response.Peers = append(response.Peers, forwarderPeers...)
-
-		// Calculate interval
 		response.Interval = ra.calculateInterval(request.InfoHash)
-
-		// Check if we need to re-announce based on interval comparison
-		if ra.ForwarderManager != nil {
-			ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
-			ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
-		}
 	} else {
 		response.Interval = ra.clampInterval(ra.Config.AnnounceResponseInterval)
+	}
+
+	// Check if we need to re-announce based on time-based scheduling
+	if ra.ForwarderManager != nil {
+		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
+		ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
 	}
 }
 

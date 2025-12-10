@@ -28,6 +28,7 @@ type AnnounceJob struct {
 	PeerID        common.PeerID
 	Forwarder     CoreCommon.Forward
 	Request       tracker.Request // template request
+	ScheduledTime time.Time       // If set, job should execute at this time (zero means immediate)
 }
 
 func NewForwarderStorage() *ForwarderStorage {
