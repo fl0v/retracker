@@ -12,6 +12,7 @@ type Response struct {
 	Incomplete    int           `bencode:"incomplete,omitempty"`
 	TrackerID     string        `bencode:"tracker id,omitempty"`
 	FailureReason string        `bencode:"failure reason,omitempty"`
+	RetryIn       interface{}   `bencode:"retry in,omitempty"` // BEP 31: int (minutes) or "never"
 	Peers         []common.Peer `bencode:"peers"`
 }
 
@@ -65,6 +66,10 @@ func Load(b []byte) (*Response, error) {
 		Complete:    asInt(raw["complete"]),
 		Incomplete:  asInt(raw["incomplete"]),
 		TrackerID:   asString(raw["tracker id"]),
+	}
+
+	if retryInVal, ok := raw["retry in"]; ok {
+		resp.RetryIn = retryInVal
 	}
 
 	if peersVal, ok := raw["peers"]; ok {

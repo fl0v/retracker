@@ -10,14 +10,15 @@ import (
 )
 
 type ResponseCompacted struct {
-	Interval      int    `bencode:"interval"`
-	MinInterval   int    `bencode:"min interval,omitempty"`
-	Complete      int    `bencode:"complete,omitempty"`
-	Incomplete    int    `bencode:"incomplete,omitempty"`
-	TrackerID     string `bencode:"tracker id,omitempty"`
-	FailureReason string `bencode:"failure reason,omitempty"`
-	Peers4        []byte `bencode:"peers"`
-	Peers6        []byte `bencode:"peers6"`
+	Interval      int         `bencode:"interval"`
+	MinInterval   int         `bencode:"min interval,omitempty"`
+	Complete      int         `bencode:"complete,omitempty"`
+	Incomplete    int         `bencode:"incomplete,omitempty"`
+	TrackerID     string      `bencode:"tracker id,omitempty"`
+	FailureReason string      `bencode:"failure reason,omitempty"`
+	RetryIn       interface{} `bencode:"retry in,omitempty"` // BEP 31: int (minutes) or "never"
+	Peers4        []byte      `bencode:"peers"`
+	Peers6        []byte      `bencode:"peers6"`
 }
 
 func (self *ResponseCompacted) Bencode() (string, error) {
@@ -32,6 +33,7 @@ func (self *ResponseCompacted) Response() Response {
 		Incomplete:    self.Incomplete,
 		TrackerID:     self.TrackerID,
 		FailureReason: self.FailureReason,
+		RetryIn:       self.RetryIn,
 		Peers:         self.Peers(),
 	}
 	return response

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -291,8 +292,15 @@ func (fm *ForwarderManager) worker() {
 			}
 			// Check if job is scheduled for future execution
 			if !job.ScheduledTime.IsZero() && time.Now().Before(job.ScheduledTime) {
-				// Job not ready yet, reschedule it (ignore return value - we're rescheduling an existing job)
-				fm.scheduleJob(job)
+				// Job not ready yet, reschedule it
+				if !fm.scheduleJob(job) {
+					// Duplicate job already scheduled, unmark as pending to avoid losing it
+					fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
+					if fm.Config.Debug {
+						DebugLogFwd.Printf("Rescheduled job for %x to %s already exists, unmarking as pending\n",
+							job.InfoHash, job.ForwarderName)
+					}
+				}
 				continue
 			}
 			fm.executeAnnounce(job)
@@ -322,13 +330,14 @@ func (fm *ForwarderManager) scaleWorkers() {
 			case shouldScaleUp:
 				// Scale up: simple cool-down: only scale once per second tick
 				fm.workerCount++
+				newCount := fm.workerCount
 				fm.workerCountMu.Unlock()
 				go fm.worker()
 				if fm.Config.Debug {
-					DebugLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", fm.workerCount, fillPct)
+					DebugLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct)
 				}
 				if fm.Prometheus != nil {
-					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+					fm.Prometheus.WorkerCount.Set(float64(newCount))
 				}
 			case shouldScaleDown:
 				// Scale down: queue below 40% and we have more than base workers
@@ -742,6 +751,19 @@ func (fm *ForwarderManager) executeHTTPAnnounce(job AnnounceJob) {
 			continue
 		}
 
+		// Check for failure with "retry in" (BEP 31: Failure Retry Extension)
+		if bitResponse.FailureReason != "" {
+			if handled := fm.handleRetryError(job, bitResponse.FailureReason, bitResponse.RetryIn, trackerURL); handled {
+				return
+			}
+			// If not handled by retry logic, treat as regular failure
+			lastErr = fmt.Errorf("tracker failure: %s", bitResponse.FailureReason)
+			if fm.Config.Debug {
+				ErrorLogFwd.Printf("Tracker failure response: %s\n", bitResponse.FailureReason)
+			}
+			continue
+		}
+
 		// Success
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, bitResponse.Peers, bitResponse.Interval)
 		fm.resetFailure(forwardName)
@@ -927,8 +949,8 @@ func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request
 			for _, f := range fm.Forwarders {
 				if f.GetName() == forwarderName {
 					if fm.isSuspended(forwarderName) {
-						fm.forwardersMu.RUnlock()
-						continue
+						forwarder = CoreCommon.Forward{} // Mark as not found
+						break
 					}
 					forwarder = f
 					break
@@ -1291,6 +1313,96 @@ func (fm *ForwarderManager) schedulerRoutine() {
 			}
 		}
 	}
+}
+
+// handleRetryError handles retry logic from tracker failure responses (BEP 31: Failure Retry Extension)
+// Returns true if the error was handled (scheduled retry or disabled), false otherwise
+func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason string, retryIn interface{}, trackerURL string) bool {
+	if retryIn == nil {
+		return false // No "retry in" field, not a retry extension response
+	}
+
+	// Check if retryIn is "never"
+	if retryInStr, ok := retryIn.(string); ok && retryInStr == "never" {
+		// Permanent failure - disable forwarder
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("Tracker %s returned permanent failure (retry in: never): %s\n",
+				trackerURL, failureReason)
+		}
+		fm.disableForwarder(job.ForwarderName, fmt.Sprintf("Permanent failure: %s", failureReason))
+		return true
+	}
+
+	// Parse retryIn as minutes (int)
+	retryMinutes := 0
+	switch v := retryIn.(type) {
+	case int:
+		retryMinutes = v
+	case int64:
+		retryMinutes = int(v)
+	case string:
+		// Try to parse as integer
+		if parsed, err := strconv.Atoi(v); err == nil {
+			retryMinutes = parsed
+		} else {
+			if fm.Config.Debug {
+				ErrorLogFwd.Printf("Invalid retry in value: %v (expected int or 'never')\n", v)
+			}
+			return false
+		}
+	default:
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("Unexpected retry in type: %T (value: %v)\n", v, v)
+		}
+		return false
+	}
+
+	if retryMinutes <= 0 {
+		return false // Invalid retry time
+	}
+
+	// Only reschedule if retry period is less than 10 minutes
+	if retryMinutes >= 10 {
+		// Retry period too long, consider announce completed
+		// Don't update storage - preserve existing peers from last successful announce
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("Tracker %s requested retry in %d minutes (>= 10), treating as completed (failure: %s)\n",
+				trackerURL, retryMinutes, failureReason)
+		}
+		return true
+	}
+
+	// Schedule retry at the specified time
+	now := time.Now()
+	scheduledTime := now.Add(time.Duration(retryMinutes) * time.Minute)
+
+	// Create a new job for retry
+	retryJob := AnnounceJob{
+		InfoHash:      job.InfoHash,
+		ForwarderName: job.ForwarderName,
+		PeerID:        job.PeerID,
+		Forwarder:     job.Forwarder,
+		Request:       job.Request,
+		ScheduledTime: scheduledTime,
+	}
+
+	// Mark as pending and schedule
+	fm.markJobPending(retryJob.InfoHash, retryJob.ForwarderName, retryJob.PeerID)
+	if fm.scheduleJob(retryJob) {
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("Scheduled retry for %x to %s in %d minutes (failure: %s)\n",
+				job.InfoHash, job.ForwarderName, retryMinutes, failureReason)
+		}
+	} else {
+		// Duplicate job already scheduled
+		fm.unmarkJobPending(retryJob.InfoHash, retryJob.ForwarderName, retryJob.PeerID)
+		if fm.Config.Debug {
+			ErrorLogFwd.Printf("Duplicate retry job already scheduled for %x to %s\n",
+				job.InfoHash, job.ForwarderName)
+		}
+	}
+
+	return true
 }
 
 // scheduleJob adds a job to the scheduled jobs map
