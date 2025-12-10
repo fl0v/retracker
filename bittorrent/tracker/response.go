@@ -8,7 +8,7 @@ import (
 type Response struct {
 	Interval int           `bencode:"interval"`
 	Peers    []common.Peer `bencode:"peers"`
-	//Peers []byte `bencode:"peers"`
+	// Peers []byte `bencode:"peers"`
 }
 
 func (self *Response) Bencode() (string, error) {

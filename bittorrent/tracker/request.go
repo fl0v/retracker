@@ -75,7 +75,8 @@ func (self *Request) Bencode() (string, error) {
 }
 
 func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-	event, userAgent string, compactFlag string, noPeerIDFlag string, logger *log.Logger) (*Request, error) {
+	event, userAgent string, compactFlag string, noPeerIDFlag string, logger *log.Logger,
+) (*Request, error) {
 	request := Request{timestamp: time.Now(), remoteAddr: common.Address(remoteAddr), UserAgent: userAgent}
 
 	if v := common.InfoHash(infoHash); v.Valid() {

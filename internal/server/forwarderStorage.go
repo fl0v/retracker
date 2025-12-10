@@ -122,6 +122,26 @@ func (fs *ForwarderStorage) MarkAnnounced(infoHash common.InfoHash, forwarderNam
 	}
 }
 
+// ShouldAnnounceNow returns true when the tracker has never been contacted for the hash
+// or when the stored NextAnnounce is due.
+func (fs *ForwarderStorage) ShouldAnnounceNow(infoHash common.InfoHash, forwarderName string, now time.Time) bool {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	forwarders, ok := fs.Entries[infoHash]
+	if !ok {
+		return true
+	}
+	entry, ok := forwarders[forwarderName]
+	if !ok {
+		return true
+	}
+	if entry.NextAnnounce.IsZero() {
+		return true
+	}
+	return !entry.NextAnnounce.After(now)
+}
+
 func (fs *ForwarderStorage) HasInfoHash(infoHash common.InfoHash) bool {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()

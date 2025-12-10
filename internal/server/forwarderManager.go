@@ -846,6 +846,72 @@ func (fm *ForwarderManager) selectForwardersByQueue(all []CoreCommon.Forward) []
 	return result
 }
 
+// QueueEligibleAnnounces enqueues announce jobs for forwarders that have never
+// seen the hash or are past their NextAnnounce. Throttling is applied when the
+// queue is under pressure.
+func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, request tracker.Request) {
+	fm.forwardersMu.RLock()
+	allForwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
+	copy(allForwarders, fm.Forwarders)
+	fm.forwardersMu.RUnlock()
+
+	if len(allForwarders) == 0 {
+		ErrorLogFwd.Printf("No forwarders available; skipping announce for %x", infoHash)
+		return
+	}
+
+	forwarders := fm.selectForwardersByQueue(allForwarders)
+	now := time.Now()
+
+	for _, forwarder := range forwarders {
+		forwarderName := forwarder.GetName()
+
+		if fm.isDisabled(forwarderName) {
+			continue
+		}
+		if fm.isSuspended(forwarderName) {
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
+			}
+			continue
+		}
+		if !fm.Storage.ShouldAnnounceNow(infoHash, forwarderName, now) {
+			continue
+		}
+		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+			}
+			continue
+		}
+
+		job := AnnounceJob{
+			InfoHash:      infoHash,
+			ForwarderName: forwarderName,
+			PeerID:        request.PeerID,
+			Forwarder:     forwarder,
+			Request:       request,
+		}
+
+		fm.markJobPending(infoHash, forwarderName, request.PeerID)
+
+		select {
+		case fm.jobQueue <- job:
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Queued announce for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+			}
+		default:
+			// Queue full, unmark and skip
+			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
+			atomic.AddUint64(&fm.droppedFullCount, 1)
+			if fm.Prometheus != nil {
+				fm.Prometheus.DroppedFull.Inc()
+			}
+			ErrorLogFwd.Printf("Job queue full, skipping announce for %x to %s", infoHash, forwarderName)
+		}
+	}
+}
+
 func (fm *ForwarderManager) shouldRateLimitInitial() bool {
 	if fm.queueRateLimitThresh <= 0 {
 		return false

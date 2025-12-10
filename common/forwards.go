@@ -5,11 +5,11 @@ import "net/url"
 type Forward struct {
 	Name string
 	Uri  string
-	//TODO:
-	//Proxy string
+	// TODO:
+	// Proxy string
 	Ip   string
 	Host string
-	//Dns []string
+	// Dns []string
 }
 
 func (forward *Forward) GetName() string {

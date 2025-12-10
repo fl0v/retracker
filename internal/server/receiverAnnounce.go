@@ -161,11 +161,6 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 
 // handleStoppedEvent processes a stopped event: forwards to forwarders, cancels pending jobs, and deletes the peer
 func (ra *ReceiverAnnounce) handleStoppedEvent(request *tracker.Request, response *Response.Response) {
-	// Forward stopped event to forwarders immediately
-	if ra.ForwarderManager != nil {
-		ra.ForwarderManager.ForwardStoppedEvent(request.InfoHash, request.PeerID, *request)
-	}
-
 	// Delete peer from storage
 	ra.Storage.Delete(*request)
 
@@ -190,14 +185,6 @@ func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, respo
 
 	// Calculate interval
 	response.Interval = ra.calculateInterval(request.InfoHash)
-
-	// Forward completed event (one-time notification, but don't cancel jobs)
-	if ra.ForwarderManager != nil {
-		ra.ForwarderManager.ForwardCompletedEvent(request.InfoHash, request.PeerID, *request)
-		// Continue normal announce scheduling
-		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
-		ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
-	}
 }
 
 // handleRegularAnnounce processes regular announces (started event or empty event)
@@ -252,14 +239,7 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 			return
 		}
 		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
-		if len(ra.ForwarderManager.Forwarders) == 0 {
-			ErrorLogAnnounce.Printf("No forwarders configured; initial announce not forwarded for %x", request.InfoHash)
-		} else {
-			if ra.Config.Debug {
-				DebugLogAnnounce.Printf("Queueing initial forward to %d forwarder(s) for %x (peer %x)", len(ra.ForwarderManager.Forwarders), request.InfoHash, request.PeerID)
-			}
-			ra.ForwarderManager.TriggerInitialAnnounce(request.InfoHash, *request)
-		}
+		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
 	} else if len(ra.Config.Forwards) > 0 {
 		ErrorLogAnnounce.Printf("Forwarders configured (%d) but forwarder manager is nil; cannot forward initial announce for %x", len(ra.Config.Forwards), request.InfoHash)
 	}
@@ -277,10 +257,10 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 		response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 	}
 
-	// Check if we need to re-announce based on time-based scheduling
+	// For regular announces, forward immediately if due or not yet contacted
 	if ra.ForwarderManager != nil {
 		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
-		ra.ForwarderManager.CheckAndReannounce(request.InfoHash, *request, response.Interval)
+		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
 	}
 }
 
