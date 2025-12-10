@@ -24,7 +24,6 @@
 
 # Enable Prometheus metrics (default: false)
 # Exposes metrics at /metrics endpoint when enabled
-# Can be overridden with -p flag or RETRACKER_PROMETHEUS env var
 # prometheus_enabled: false
 
 # Keep peers in memory for 'n' minutes (default: 180)

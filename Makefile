@@ -1,7 +1,7 @@
 .PHONY: help \
 	docker-build docker-rebuild docker-clean \
 	docker-up docker-down docker-restart docker-logs docker-shell \
-	update-forwarders local-build local-clean local-run local-run-debug local-run-prometheus \
+	update-forwarders local-build local-clean local-run local-run-debug \
 	lint lint-fix fmt fmt-check check test
 
 .DEFAULT_GOAL := help
@@ -80,13 +80,6 @@ docker-container-run-debug: docker-build ## Build from local code and run standa
 		$(IMAGE_NAME) \
 		./retracker -l :6969 -d
 
-docker-container-run-prometheus: docker-build ## Build from local code and run standalone container with Prometheus metrics enabled
-	docker run -d \
-		--name $(CONTAINER_NAME)-prom \
-		-p 6969:6969 \
-		$(IMAGE_NAME) \
-		./retracker -l :6969 -p
-
 docker-container-run-custom: docker-build ## Build from local code and run standalone container with custom port (usage: make docker-container-run-custom PORT=9090:6969)
 	docker run -d \
 		--name $(CONTAINER_NAME)-custom \
@@ -113,10 +106,6 @@ local-run-nof: local-build ## Run retracker locally with both HTTP and UDP (port
 
 local-run-debug: local-build ## Run retracker locally with HTTP, UDP, and debug mode
 	$(BINARY) -l :6969 -u :6969 -d -f ./configs/forwarders.yml
-
-local-run-prometheus: local-build ## Run retracker locally with HTTP, UDP, and Prometheus
-	$(BINARY) -l :6969 -u :6969 -p -f ./configs/forwarders.yml
-
 
 # Linting and formatting
 # Find golangci-lint in PATH or common Go bin locations

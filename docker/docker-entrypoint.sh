@@ -4,6 +4,21 @@ set -e
 # Build command arguments from environment variables
 ARGS=""
 
+# Optionally refresh forwarders list on startup
+should_update_forwarders() {
+    case "${RETRACKER_UPDATE_FORWARDERS:-false}" in
+        true|1|yes|on|enable|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# If enabled, generate forwarders file before building args
+if should_update_forwarders; then
+    DEST_PATH="${RETRACKER_FORWARDS:-configs/forwarders.yml}"
+    echo "Updating forwarders file at ${DEST_PATH}..."
+    /app/scripts/update-forwarders.sh "${DEST_PATH}"
+fi
+
 # -c (config) - Configuration file path
 if [ -n "${RETRACKER_CONFIG:-}" ]; then
     ARGS="${ARGS} -c ${RETRACKER_CONFIG}"

@@ -83,7 +83,6 @@ func main() {
 	forwarderFailThreshold := flag.Int("F", 0, "Forwarder fail threshold before disabling (overrides config file)")
 	forwarderRetryAttempts := flag.Int("R", 0, "Forwarder retry attempts (UDP/HTTP) (overrides config file)")
 	forwarderRetryBaseMs := flag.Int("B", 0, "Forwarder retry base backoff in ms (exponential) (overrides config file)")
-	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics (overrides config file)")
 	announceInterval := flag.Int("i", 0, "Announce interval (sec) (overrides config file)")
 	statsInterval := flag.Int("s", 0, "Statistics print interval (sec) (overrides config file)")
 	trackerID := flag.String("tracker-id", "", "Tracker ID to include in announce responses (overrides config file)")
@@ -193,9 +192,6 @@ func main() {
 	if v := envInt("RETRACKER_STATS_INTERVAL"); v > 0 {
 		cfg.StatsInterval = v
 	}
-	if v := envBool("RETRACKER_PROMETHEUS", false); v {
-		cfg.PrometheusEnabled = v
-	}
 	if v := envString("RETRACKER_TRACKER_ID", ""); v != "" {
 		cfg.TrackerID = v
 	}
@@ -285,15 +281,6 @@ func main() {
 	}
 	if *statsInterval > 0 {
 		cfg.StatsInterval = *statsInterval
-	}
-	prometheusSet := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "p" {
-			prometheusSet = true
-		}
-	})
-	if prometheusSet {
-		cfg.PrometheusEnabled = *enablePrometheus
 	}
 	if *trackerID != "" {
 		cfg.TrackerID = *trackerID

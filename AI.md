@@ -33,8 +33,8 @@ retracker/
 │   └── observability/    # Prometheus metrics
 ├── bittorrent/           # BitTorrent protocol modules
 │   ├── common/           # Common types (InfoHash, PeerID, Peer, Address)
-│   ├── tracker/          # Tracker request/response types
-│   └── response/         # Response encoding (bencode, compact format)
+│   ├── tracker/          # Request parsing/validation
+│   └── response/         # Response encoding (bencode + compact format)
 ├── common/               # Shared common module (Forward struct)
 ├── scripts/              # Build and utility scripts
 ├── configs/              # Runtime configuration files
@@ -72,11 +72,12 @@ retracker/
   - Automatic retry with exponential backoff
 - **ForwarderStorage** (`forwarderStorage.go`): Tracks forwarder state and peer mappings
 
-### 4. Request Handling
+### 4. Request/Response Handling
 - **Receiver** (`receiver.go`): Routes requests to appropriate handlers
 - **HTTP Handler** (`receiverAnnounce.go`): Processes HTTP announce requests
 - **UDP Handler** (`receiverUDP.go`): Processes UDP announce requests (BEP 15)
 - **Scrape Handler** (`scrape.go`): Handles scrape requests (BEP 48)
+- **Responses**: Use `bittorrent/response` for HTTP/UDP replies (compact and verbose forms). Legacy `bittorrent/tracker/response.go` was removed as dead code.
 
 ## Important Conventions
 
@@ -98,7 +99,7 @@ retracker/
 ### BitTorrent Protocol
 - See `BITTORRENT.md` for detailed protocol documentation
 - Key types: `InfoHash`, `PeerID`, `Peer` (from `bittorrent/common`)
-- Request/Response types from `bittorrent/tracker`
+- Requests are built in `bittorrent/tracker/request.go`; responses come from `bittorrent/response`
 - Event types: `started`, `completed`, `stopped`, or empty (regular)
 
 ## Critical Behaviors
@@ -142,12 +143,11 @@ retracker/
 ### Go Modules
 - Project uses Go workspaces (`go.work`)
 - Multiple modules in `bittorrent/` subdirectories
-- Main module in `retracker/` directory
+- Main module `github.com/fl0v/retracker` with local replaces for `bittorrent/*` and `common`
 
 ### Dependencies
-- External packages: `gopkg.in/yaml.v2` for YAML parsing
-- Internal packages: `github.com/vvampirius/retracker/bittorrent/*`
-- Internal packages: `github.com/vvampirius/retracker/common`
+- External: `gopkg.in/yaml.v2`, `github.com/zeebo/bencode`, `github.com/prometheus/client_golang`
+- Internal: `github.com/fl0v/retracker/bittorrent/*`, `github.com/fl0v/retracker/common`
 
 ## Testing Considerations
 
@@ -213,27 +213,40 @@ retracker/
 
 ```go
 // From bittorrent/common
-type InfoHash [20]byte
-type PeerID [20]byte
+type InfoHash string // must be 20 bytes
+type PeerID string   // must be 20 bytes
 type Peer struct {
-    IP   net.IP
-    Port uint16
+    PeerID PeerID
+    IP     Address
+    Port   int
 }
 
-// From bittorrent/tracker
+// From bittorrent/tracker/request.go
 type Request struct {
     InfoHash common.InfoHash
     PeerID   common.PeerID
     // ... other fields
-    Peer() common.Peer
-    TimeStampDelta() time.Duration
+    Peer() common.Peer       // returns IP with remoteAddr fallback
+    TimeStampDelta() float64 // minutes since timestamp
+}
+
+// From bittorrent/response/response.go
+type Response struct {
+    Interval      int
+    MinInterval   int
+    Complete      int
+    Incomplete    int
+    TrackerID     string
+    FailureReason string
+    Peers         []common.Peer
 }
 ```
 
 ## Common Pitfalls to Avoid
 
-1. **Forgetting to lock**: Always lock before accessing `Storage.Requests`
-2. **Not canceling stopped jobs**: Stopped events must cancel pending forwarder jobs
-3. **Ignoring event semantics**: Event announces are immediate, not scheduled
-4. **Race conditions**: Be careful with goroutines and shared state
-5. **Memory leaks**: Ensure purge routine is working and peers are removed on stopped events
+1. **Using the wrong response package**: Always use `bittorrent/response` (the old `bittorrent/tracker/response.go` was removed).
+2. **Forgetting to lock**: Always lock before accessing `Storage.Requests`.
+3. **Not canceling stopped jobs**: Stopped events must cancel pending forwarder jobs.
+4. **Ignoring event semantics**: Event announces are immediate, not scheduled.
+5. **Race conditions**: Be careful with goroutines and shared state.
+6. **Memory leaks**: Ensure purge routine is working and peers are removed on stopped events.

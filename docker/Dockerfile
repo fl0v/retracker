@@ -22,9 +22,10 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /build/retracker .
 
-# Copy entrypoint script from repo
+# Copy entrypoint and helper scripts from repo
 COPY --from=builder /build/docker/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+COPY --from=builder /build/scripts/update-forwarders.sh /app/scripts/update-forwarders.sh
+RUN chmod +x /app/docker-entrypoint.sh /app/scripts/update-forwarders.sh
 
 EXPOSE 6969 6969/udp
 

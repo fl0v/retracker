@@ -19,6 +19,7 @@ import (
 var (
 	DebugLogAnnounce = log.New(os.Stdout, `debug#`, log.Lshortfile)
 	ErrorLogAnnounce = log.New(os.Stderr, `error#`, log.Lshortfile)
+	remoteAddrRegexp = regexp.MustCompile(`(.*):\d+$`)
 )
 
 type ReceiverAnnounce struct {
@@ -114,8 +115,7 @@ func (ra *ReceiverAnnounce) getRemoteAddr(r *http.Request, xrealip string) strin
 
 func (ra *ReceiverAnnounce) parseRemoteAddr(in, def string) string {
 	address := def
-	r := regexp.MustCompile(`(.*):\d+$`)
-	if match := r.FindStringSubmatch(in); len(match) == 2 {
+	if match := remoteAddrRegexp.FindStringSubmatch(in); len(match) == 2 {
 		address = match[1]
 	}
 	return address

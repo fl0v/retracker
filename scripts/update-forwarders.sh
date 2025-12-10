@@ -9,7 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LISTS_DIR="${SCRIPT_DIR}/lists"
 CUSTOM_LIST="${LISTS_DIR}/_custom.txt"
-OUTPUT_FILE="${PROJECT_ROOT}/configs/forwarders.yml"
+
+# Destination forwarders file (supports absolute or project-relative paths)
+DEST_PATH="${1:-configs/forwarders.yml}"
+if [[ "${DEST_PATH}" = /* ]]; then
+    OUTPUT_FILE="${DEST_PATH}"
+else
+    OUTPUT_FILE="${PROJECT_ROOT}/${DEST_PATH}"
+fi
 
 # Define tracker list sources (URL and local filename)
 # Format: "URL|filename"
@@ -24,8 +31,8 @@ SKIP_FILES=("_all.txt" "_normalized.txt" "_unique.txt" "_custom.txt" "forwarders
 
 # Create lists directory if it doesn't exist
 mkdir -p "$LISTS_DIR"
-# Create configs directory if it doesn't exist
-mkdir -p "${PROJECT_ROOT}/configs"
+# Create destination directory if it doesn't exist
+mkdir -p "$(dirname "${OUTPUT_FILE}")"
 
 echo "Downloading tracker lists to ${LISTS_DIR}..."
 

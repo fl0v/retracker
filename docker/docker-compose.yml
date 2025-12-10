@@ -9,17 +9,18 @@ services:
       - "6969:6969"      # HTTP port
       - "6969:6969/udp"  # UDP port
     volumes:
-      # Mount forwards config file from configs directory
-      - ../configs/forwarders.yml:/app/forwarders.yml:ro
+      # Mount main config and forwarders files from host
+      - ../configs/config.yml:/app/configs/config.yml
+      - ../configs/forwarders.yml:/app/configs/forwarders.yml
     environment:
       # Configuration file path
-      # - RETRACKER_CONFIG=/app/config.yml
+      - RETRACKER_CONFIG=/app/configs/config.yml
       # HTTP listen address:port (overrides config file)
       - RETRACKER_LISTEN=:6969
       # UDP listen address:port (empty to disable)
       - RETRACKER_UDP_LISTEN=:6969
       # Load forwards from YAML file
-      - RETRACKER_FORWARDS=/app/forwarders.yml
+      - RETRACKER_FORWARDS=/app/configs/forwarders.yml
       # Debug mode (default: false)
       - RETRACKER_DEBUG=false
     restart: unless-stopped

@@ -19,10 +19,11 @@ func (ts *TempStorage) cleanRoutine() {
 		entries, err := os.ReadDir(ts.path)
 		if err != nil {
 			ErrorLog.Println(err.Error())
-			time.Sleep(time.Second)
+			time.Sleep(time.Hour) // back off to reduce churn on repeated failures
 			continue
 		}
-		deadline := time.Now().AddDate(0, 0, -1)
+		now := time.Now()
+		deadline := now.AddDate(0, 0, -1)
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue

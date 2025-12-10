@@ -35,7 +35,12 @@ func (self *Storage) Update(request tracker.Request) {
 func (self *Storage) Delete(request tracker.Request) {
 	self.requestsMu.Lock()
 	defer self.requestsMu.Unlock()
-	delete(self.Requests[request.InfoHash], request.PeerID) // TODO: test this
+	if requests, ok := self.Requests[request.InfoHash]; ok {
+		delete(requests, request.PeerID)
+		if len(requests) == 0 {
+			delete(self.Requests, request.InfoHash)
+		}
+	}
 }
 
 func (self *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {

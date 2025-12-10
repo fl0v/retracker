@@ -13,7 +13,7 @@
 # Examples:
 
 # HTTP tracker
-- uri: http://tracker.example.com:8080/announce
+- uri: http://tracker.example.com:6969/announce
 
 # HTTPS tracker
 - uri: https://tracker.example.com/announce
