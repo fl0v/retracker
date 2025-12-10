@@ -140,10 +140,11 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 	}
 
 	if response.Interval == 0 {
-		response.Interval = ra.Config.AnnounceResponseInterval
+		response.Interval = ra.Config.AnnounceInterval
 	}
+	// Clamp interval to ensure minimum is AnnounceInterval
 	response.Interval = ra.clampInterval(response.Interval)
-	response.MinInterval = ra.Config.MinAnnounceInterval
+	response.MinInterval = ra.Config.AnnounceInterval
 
 	seeders, leechers := ra.countLocalPeers(request.InfoHash)
 	response.Complete = seeders
@@ -176,7 +177,7 @@ func (ra *ReceiverAnnounce) handleStoppedEvent(request *tracker.Request, respons
 		}
 	}
 
-	response.Interval = ra.clampInterval(ra.Config.AnnounceResponseInterval)
+	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 }
 
 // handleCompletedEvent processes a completed event: updates storage, forwards event, but continues normal flow
@@ -217,8 +218,8 @@ func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, resp
 
 // handleFirstAnnounce handles the first announce for an info_hash
 func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, response *Response.Response) {
-	// First announce: return default shorter interval and trigger parallel forwarder announces
-	response.Interval = ra.clampInterval(ra.Config.MinAnnounceInterval)
+	// First announce: return configured interval and trigger parallel forwarder announces
+	response.Interval = ra.Config.AnnounceInterval
 
 	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
 	// No need to collect again here
@@ -230,9 +231,24 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 			if ra.ForwarderManager.Prometheus != nil {
 				ra.ForwarderManager.Prometheus.RateLimited.Inc()
 			}
-			// If rate limiting is enabled, we inform the client to retry soon.
-			response.FailureReason = "tracker busy, retry in 10 seconds"
-			response.Interval = ra.clampInterval(10)
+			// If rate limiting is enabled, use retry period (bypasses clampInterval minimum)
+			retrySeconds := ra.Config.RetryPeriod
+			if retrySeconds <= 0 {
+				retrySeconds = 300 // Default to 5 minutes if not configured
+			}
+			response.FailureReason = fmt.Sprintf("tracker busy, retry in %d seconds", retrySeconds)
+			response.Interval = retrySeconds
+			return
+		}
+		// Check if queue is full before attempting to queue jobs
+		if ra.ForwarderManager.isQueueFull() {
+			atomic.AddUint64(&ra.ForwarderManager.droppedFullCount, 1)
+			if ra.ForwarderManager.Prometheus != nil {
+				ra.ForwarderManager.Prometheus.DroppedFull.Inc()
+			}
+			// Queue is full, reject with retry using configured interval (default 30 minutes)
+			response.FailureReason = "tracker queue full, retry in 30 minutes"
+			response.Interval = ra.Config.AnnounceInterval
 			return
 		}
 		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
@@ -258,7 +274,7 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 	if ra.ForwarderStorage != nil {
 		response.Interval = ra.calculateInterval(request.InfoHash)
 	} else {
-		response.Interval = ra.clampInterval(ra.Config.AnnounceResponseInterval)
+		response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 	}
 
 	// Check if we need to re-announce based on time-based scheduling
@@ -289,7 +305,7 @@ func (ra *ReceiverAnnounce) calculateInterval(infoHash common.InfoHash) int {
 		}
 	}
 	// No forwarders responded yet, use default
-	return ra.clampInterval(ra.Config.AnnounceResponseInterval)
+	return ra.clampInterval(ra.Config.AnnounceInterval)
 }
 
 // isFirstAnnounce checks if this is the first announce for the given info_hash
@@ -302,14 +318,13 @@ func (ra *ReceiverAnnounce) isFirstAnnounce(infoHash common.InfoHash) bool {
 
 func (ra *ReceiverAnnounce) clampInterval(interval int) int {
 	if interval <= 0 {
-		return ra.Config.MinAnnounceInterval
+		return ra.Config.AnnounceInterval
 	}
-	if interval < ra.Config.MinAnnounceInterval {
-		return ra.Config.MinAnnounceInterval
+	// Ensure minimum is AnnounceInterval (default 30 minutes)
+	if interval < ra.Config.AnnounceInterval {
+		return ra.Config.AnnounceInterval
 	}
-	if ra.Config.AnnounceResponseInterval > 0 && interval > ra.Config.AnnounceResponseInterval {
-		return ra.Config.AnnounceResponseInterval
-	}
+	// No maximum clamping - allow longer intervals from forwarders
 	return interval
 }
 

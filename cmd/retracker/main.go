@@ -84,7 +84,7 @@ func main() {
 	forwarderRetryAttempts := flag.Int("R", 0, "Forwarder retry attempts (UDP/HTTP) (overrides config file)")
 	forwarderRetryBaseMs := flag.Int("B", 0, "Forwarder retry base backoff in ms (exponential) (overrides config file)")
 	enablePrometheus := flag.Bool("p", false, "Enable Prometheus metrics (overrides config file)")
-	announceResponseInterval := flag.Int("i", 0, "Announce response interval (sec) (overrides config file)")
+	announceInterval := flag.Int("i", 0, "Announce interval (sec) (overrides config file)")
 	statsInterval := flag.Int("s", 0, "Statistics print interval (sec) (overrides config file)")
 	trackerID := flag.String("tracker-id", "", "Tracker ID to include in announce responses (overrides config file)")
 	ver := flag.Bool("v", false, "Show version")
@@ -105,29 +105,29 @@ func main() {
 
 	// Initialize config with defaults
 	cfg := config.Config{
-		Listen:                   ":6969",
-		UDPListen:                "",
-		Debug:                    false,
-		Age:                      180,
-		XRealIP:                  false,
-		ForwardTimeout:           30,
-		ForwarderWorkers:         10,
-		MaxForwarderWorkers:      20,
-		ForwarderQueueSize:       10000,
-		QueueScaleThresholdPct:   60,
-		QueueRateLimitThreshold:  80,
-		QueueThrottleThreshold:   60,
-		QueueThrottleTopN:        20,
-		RateLimitInitialPerSec:   100,
-		RateLimitInitialBurst:    200,
-		ForwarderSuspendSeconds:  300,
-		ForwarderFailThreshold:   10,
-		ForwarderRetryAttempts:   5,
-		ForwarderRetryBaseMs:     500,
-		AnnounceResponseInterval: 30,
-		MinAnnounceInterval:      15,
-		StatsInterval:            60,
-		PrometheusEnabled:        false,
+		Listen:                  ":6969",
+		UDPListen:               "",
+		Debug:                   false,
+		Age:                     180,
+		XRealIP:                 false,
+		ForwardTimeout:          30,
+		ForwarderWorkers:        10,
+		MaxForwarderWorkers:     20,
+		ForwarderQueueSize:      10000,
+		QueueScaleThresholdPct:  60,
+		QueueRateLimitThreshold: 80,
+		QueueThrottleThreshold:  60,
+		QueueThrottleTopN:       20,
+		RateLimitInitialPerSec:  100,
+		RateLimitInitialBurst:   200,
+		ForwarderSuspendSeconds: 300,
+		ForwarderFailThreshold:  10,
+		ForwarderRetryAttempts:  5,
+		ForwarderRetryBaseMs:    500,
+		AnnounceInterval:        1800,
+		RetryPeriod:             300,
+		StatsInterval:           60,
+		PrometheusEnabled:       false,
 	}
 
 	// Step 1: Load from config file (if provided via flag or env var)
@@ -188,7 +188,7 @@ func main() {
 		cfg.ForwarderSuspendSeconds = v
 	}
 	if v := envInt("RETRACKER_ANNOUNCE_INTERVAL"); v > 0 {
-		cfg.AnnounceResponseInterval = v
+		cfg.AnnounceInterval = v
 	}
 	if v := envInt("RETRACKER_STATS_INTERVAL"); v > 0 {
 		cfg.StatsInterval = v
@@ -280,8 +280,8 @@ func main() {
 	if *forwarderRetryBaseMs > 0 {
 		cfg.ForwarderRetryBaseMs = *forwarderRetryBaseMs
 	}
-	if *announceResponseInterval > 0 {
-		cfg.AnnounceResponseInterval = *announceResponseInterval
+	if *announceInterval > 0 {
+		cfg.AnnounceInterval = *announceInterval
 	}
 	if *statsInterval > 0 {
 		cfg.StatsInterval = *statsInterval
@@ -299,12 +299,13 @@ func main() {
 		cfg.TrackerID = *trackerID
 	}
 
-	// Validate and adjust min announce interval
-	if cfg.MinAnnounceInterval <= 0 {
-		cfg.MinAnnounceInterval = cfg.AnnounceResponseInterval
+	// Validate announce interval
+	if cfg.AnnounceInterval <= 0 {
+		cfg.AnnounceInterval = 1800 // Default to 30 minutes
 	}
-	if cfg.MinAnnounceInterval > cfg.AnnounceResponseInterval {
-		cfg.MinAnnounceInterval = cfg.AnnounceResponseInterval
+	// Validate retry period
+	if cfg.RetryPeriod <= 0 {
+		cfg.RetryPeriod = 300 // Default to 5 minutes
 	}
 
 	if *forwards != `` {

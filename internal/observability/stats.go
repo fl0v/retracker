@@ -13,32 +13,31 @@ type StatsCollector struct{}
 
 // ConfigInfo holds server configuration information
 type ConfigInfo struct {
-	HTTPListen               string  `json:"http_listen"`
-	UDPListen                string  `json:"udp_listen"`
-	Debug                    bool    `json:"debug"`
-	XRealIP                  bool    `json:"x_real_ip"`
-	PrometheusEnabled        bool    `json:"prometheus_enabled"`
-	Age                      float64 `json:"age"`
-	AnnounceResponseInterval int     `json:"announce_response_interval"`
-	MinAnnounceInterval      int     `json:"min_announce_interval"`
-	TrackerID                string  `json:"tracker_id,omitempty"`
-	StatsInterval            int     `json:"stats_interval"`
-	ForwardTimeout           int     `json:"forward_timeout"`
-	ForwarderWorkers         int     `json:"forwarder_workers"`
-	MaxForwarderWorkers      int     `json:"max_forwarder_workers"`
-	ForwarderQueueSize       int     `json:"forwarder_queue_size"`
-	QueueScaleThresholdPct   int     `json:"queue_scale_threshold_pct"`
-	QueueRateLimitThreshold  int     `json:"queue_rate_limit_threshold"`
-	QueueThrottleThreshold   int     `json:"queue_throttle_threshold"`
-	QueueThrottleTopN        int     `json:"queue_throttle_top_n"`
-	RateLimitInitialPerSec   int     `json:"rate_limit_initial_per_sec"`
-	RateLimitInitialBurst    int     `json:"rate_limit_initial_burst"`
-	ForwarderSuspendSeconds  int     `json:"forwarder_suspend_seconds"`
-	ForwarderFailThreshold   int     `json:"forwarder_fail_threshold"`
-	ForwarderRetryAttempts   int     `json:"forwarder_retry_attempts"`
-	ForwarderRetryBaseMs     int     `json:"forwarder_retry_base_ms"`
-	ForwardersCount          int     `json:"forwarders_count"`
-	ForwardsFile             string  `json:"forwards_file,omitempty"`
+	HTTPListen              string  `json:"http_listen"`
+	UDPListen               string  `json:"udp_listen"`
+	Debug                   bool    `json:"debug"`
+	XRealIP                 bool    `json:"x_real_ip"`
+	PrometheusEnabled       bool    `json:"prometheus_enabled"`
+	Age                     float64 `json:"age"`
+	AnnounceInterval        int     `json:"announce_interval"`
+	TrackerID               string  `json:"tracker_id,omitempty"`
+	StatsInterval           int     `json:"stats_interval"`
+	ForwardTimeout          int     `json:"forward_timeout"`
+	ForwarderWorkers        int     `json:"forwarder_workers"`
+	MaxForwarderWorkers     int     `json:"max_forwarder_workers"`
+	ForwarderQueueSize      int     `json:"forwarder_queue_size"`
+	QueueScaleThresholdPct  int     `json:"queue_scale_threshold_pct"`
+	QueueRateLimitThreshold int     `json:"queue_rate_limit_threshold"`
+	QueueThrottleThreshold  int     `json:"queue_throttle_threshold"`
+	QueueThrottleTopN       int     `json:"queue_throttle_top_n"`
+	RateLimitInitialPerSec  int     `json:"rate_limit_initial_per_sec"`
+	RateLimitInitialBurst   int     `json:"rate_limit_initial_burst"`
+	ForwarderSuspendSeconds int     `json:"forwarder_suspend_seconds"`
+	ForwarderFailThreshold  int     `json:"forwarder_fail_threshold"`
+	ForwarderRetryAttempts  int     `json:"forwarder_retry_attempts"`
+	ForwarderRetryBaseMs    int     `json:"forwarder_retry_base_ms"`
+	ForwardersCount         int     `json:"forwarders_count"`
+	ForwardsFile            string  `json:"forwards_file,omitempty"`
 }
 
 // Stats holds all collected statistics
@@ -163,8 +162,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sb.WriteString(fmt.Sprintf("X-Real-IP Header: %v\n", stats.Config.XRealIP))
 		sb.WriteString(fmt.Sprintf("Prometheus Metrics: %v\n", stats.Config.PrometheusEnabled))
 		sb.WriteString(fmt.Sprintf("Peer Age (minutes): %.1f\n", stats.Config.Age))
-		sb.WriteString(fmt.Sprintf("Announce Response Interval: %d seconds\n", stats.Config.AnnounceResponseInterval))
-		sb.WriteString(fmt.Sprintf("Minimum Announce Interval: %d seconds\n", stats.Config.MinAnnounceInterval))
+		sb.WriteString(fmt.Sprintf("Announce Interval: %d seconds\n", stats.Config.AnnounceInterval))
 		if stats.Config.TrackerID != "" {
 			sb.WriteString(fmt.Sprintf("Tracker ID: %s\n", stats.Config.TrackerID))
 		}

@@ -16,32 +16,32 @@ var (
 )
 
 type Config struct {
-	AnnounceResponseInterval int              `yaml:"announce_response_interval"`
-	MinAnnounceInterval      int              `yaml:"min_announce_interval"`
-	TrackerID                string           `yaml:"tracker_id"`
-	Listen                   string           `yaml:"listen"`
-	UDPListen                string           `yaml:"udp_listen"`
-	Debug                    bool             `yaml:"debug"`
-	Age                      float64          `yaml:"age"`
-	XRealIP                  bool             `yaml:"x_real_ip"`
-	Forwards                 []common.Forward `yaml:"-"` // Not loaded from main config file
-	ForwardsFile             string           `yaml:"-"` // Path to forwards YAML file (if loaded)
-	ForwardTimeout           int              `yaml:"forward_timeout"`
-	ForwarderWorkers         int              `yaml:"forwarder_workers"`
-	ForwarderQueueSize       int              `yaml:"forwarder_queue_size"`
-	MaxForwarderWorkers      int              `yaml:"max_forwarder_workers"`
-	QueueScaleThresholdPct   int              `yaml:"queue_scale_threshold_pct"`
-	QueueRateLimitThreshold  int              `yaml:"queue_rate_limit_threshold"`
-	QueueThrottleThreshold   int              `yaml:"queue_throttle_threshold"`
-	QueueThrottleTopN        int              `yaml:"queue_throttle_top_n"`
-	RateLimitInitialPerSec   int              `yaml:"rate_limit_initial_per_sec"`
-	RateLimitInitialBurst    int              `yaml:"rate_limit_initial_burst"`
-	ForwarderSuspendSeconds  int              `yaml:"forwarder_suspend_seconds"`
-	ForwarderFailThreshold   int              `yaml:"forwarder_fail_threshold"`
-	ForwarderRetryAttempts   int              `yaml:"forwarder_retry_attempts"`
-	ForwarderRetryBaseMs     int              `yaml:"forwarder_retry_base_ms"`
-	StatsInterval            int              `yaml:"stats_interval"`
-	PrometheusEnabled        bool             `yaml:"prometheus_enabled"`
+	AnnounceInterval        int              `yaml:"announce_interval"`
+	RetryPeriod             int              `yaml:"retry_period"`
+	TrackerID               string           `yaml:"tracker_id"`
+	Listen                  string           `yaml:"listen"`
+	UDPListen               string           `yaml:"udp_listen"`
+	Debug                   bool             `yaml:"debug"`
+	Age                     float64          `yaml:"age"`
+	XRealIP                 bool             `yaml:"x_real_ip"`
+	Forwards                []common.Forward `yaml:"-"` // Not loaded from main config file
+	ForwardsFile            string           `yaml:"-"` // Path to forwards YAML file (if loaded)
+	ForwardTimeout          int              `yaml:"forward_timeout"`
+	ForwarderWorkers        int              `yaml:"forwarder_workers"`
+	ForwarderQueueSize      int              `yaml:"forwarder_queue_size"`
+	MaxForwarderWorkers     int              `yaml:"max_forwarder_workers"`
+	QueueScaleThresholdPct  int              `yaml:"queue_scale_threshold_pct"`
+	QueueRateLimitThreshold int              `yaml:"queue_rate_limit_threshold"`
+	QueueThrottleThreshold  int              `yaml:"queue_throttle_threshold"`
+	QueueThrottleTopN       int              `yaml:"queue_throttle_top_n"`
+	RateLimitInitialPerSec  int              `yaml:"rate_limit_initial_per_sec"`
+	RateLimitInitialBurst   int              `yaml:"rate_limit_initial_burst"`
+	ForwarderSuspendSeconds int              `yaml:"forwarder_suspend_seconds"`
+	ForwarderFailThreshold  int              `yaml:"forwarder_fail_threshold"`
+	ForwarderRetryAttempts  int              `yaml:"forwarder_retry_attempts"`
+	ForwarderRetryBaseMs    int              `yaml:"forwarder_retry_base_ms"`
+	StatsInterval           int              `yaml:"stats_interval"`
+	PrometheusEnabled       bool             `yaml:"prometheus_enabled"`
 }
 
 // LoadFromFile loads configuration from a YAML file
@@ -116,8 +116,7 @@ func (config *Config) PrintConfig() {
 	fmt.Printf("X-Real-IP Header: %v\n", config.XRealIP)
 	fmt.Printf("Prometheus Metrics: %v\n", config.PrometheusEnabled)
 	fmt.Printf("Peer Age (minutes): %.1f\n", config.Age)
-	fmt.Printf("Announce Response Interval: %d seconds\n", config.AnnounceResponseInterval)
-	fmt.Printf("Minimum Announce Interval: %d seconds\n", config.MinAnnounceInterval)
+	fmt.Printf("Announce Interval: %d seconds\n", config.AnnounceInterval)
 	if config.TrackerID != "" {
 		fmt.Printf("Tracker ID: %s\n", config.TrackerID)
 	}

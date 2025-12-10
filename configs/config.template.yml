@@ -35,13 +35,23 @@
 # Useful when running behind a reverse proxy
 # x_real_ip: false
 
-# Announce response interval in seconds (default: 30)
-# How often clients should re-announce
-# announce_response_interval: 30
+# Announce interval in seconds (default: 1800 = 30 minutes)
+# This single setting controls all announce interval behavior:
+#   - Initial announcements: Clients receive this interval on their first announce
+#   - Queue-full retry: When the forwarder queue is full, clients are told to retry after this interval
+#   - Minimum clamping: Subsequent announces use the average interval from forwarders, but are
+#     clamped to this minimum value to prevent clients from announcing too frequently
+#   - Response MinInterval: Sent to clients as the minimum time between announces
+# Subsequent announces calculate the average interval from all forwarders, but will never be
+# less than this configured value. Longer intervals from forwarders are allowed.
+# announce_interval: 1800
 
-# Minimum announce interval in seconds (default: 15)
-# Minimum time between announces (must be <= announce_response_interval)
-# min_announce_interval: 15
+# Retry period in seconds (default: 300 = 5 minutes)
+# Used for rate-limited announcements when the forwarder queue is busy.
+# This setting overrides the announce_interval minimum and allows shorter retry periods
+# to be sent to clients when rate limiting is active. This helps clients retry more
+# frequently during temporary overload conditions.
+# retry_period: 300
 
 # Tracker ID to include in announce responses (default: "")
 # Optional identifier for this tracker instance

@@ -366,6 +366,14 @@ func (fm *ForwarderManager) queueFillPct() int {
 	return len(fm.jobQueue) * 100 / capacity
 }
 
+func (fm *ForwarderManager) isQueueFull() bool {
+	capacity := cap(fm.jobQueue)
+	if capacity == 0 {
+		return false
+	}
+	return len(fm.jobQueue) >= capacity
+}
+
 func (fm *ForwarderManager) updatePrometheusQueue(stats *observability.Stats) {
 	fm.Prometheus.QueueDepth.Set(float64(stats.QueueDepth))
 	fm.Prometheus.QueueCapacity.Set(float64(stats.QueueCapacity))
@@ -1712,32 +1720,31 @@ func (p *forwarderStatsProvider) GetConfig() *observability.ConfigInfo {
 		return nil
 	}
 	return &observability.ConfigInfo{
-		HTTPListen:               p.cfg.Listen,
-		UDPListen:                p.cfg.UDPListen,
-		Debug:                    p.cfg.Debug,
-		XRealIP:                  p.cfg.XRealIP,
-		PrometheusEnabled:        p.cfg.PrometheusEnabled,
-		Age:                      p.cfg.Age,
-		AnnounceResponseInterval: p.cfg.AnnounceResponseInterval,
-		MinAnnounceInterval:      p.cfg.MinAnnounceInterval,
-		TrackerID:                p.cfg.TrackerID,
-		StatsInterval:            p.cfg.StatsInterval,
-		ForwardTimeout:           p.cfg.ForwardTimeout,
-		ForwarderWorkers:         p.cfg.ForwarderWorkers,
-		MaxForwarderWorkers:      p.cfg.MaxForwarderWorkers,
-		ForwarderQueueSize:       p.cfg.ForwarderQueueSize,
-		QueueScaleThresholdPct:   p.cfg.QueueScaleThresholdPct,
-		QueueRateLimitThreshold:  p.cfg.QueueRateLimitThreshold,
-		QueueThrottleThreshold:   p.cfg.QueueThrottleThreshold,
-		QueueThrottleTopN:        p.cfg.QueueThrottleTopN,
-		RateLimitInitialPerSec:   p.cfg.RateLimitInitialPerSec,
-		RateLimitInitialBurst:    p.cfg.RateLimitInitialBurst,
-		ForwarderSuspendSeconds:  p.cfg.ForwarderSuspendSeconds,
-		ForwarderFailThreshold:   p.cfg.ForwarderFailThreshold,
-		ForwarderRetryAttempts:   p.cfg.ForwarderRetryAttempts,
-		ForwarderRetryBaseMs:     p.cfg.ForwarderRetryBaseMs,
-		ForwardersCount:          len(p.cfg.Forwards),
-		ForwardsFile:             p.cfg.ForwardsFile,
+		HTTPListen:              p.cfg.Listen,
+		UDPListen:               p.cfg.UDPListen,
+		Debug:                   p.cfg.Debug,
+		XRealIP:                 p.cfg.XRealIP,
+		PrometheusEnabled:       p.cfg.PrometheusEnabled,
+		Age:                     p.cfg.Age,
+		AnnounceInterval:        p.cfg.AnnounceInterval,
+		TrackerID:               p.cfg.TrackerID,
+		StatsInterval:           p.cfg.StatsInterval,
+		ForwardTimeout:          p.cfg.ForwardTimeout,
+		ForwarderWorkers:        p.cfg.ForwarderWorkers,
+		MaxForwarderWorkers:     p.cfg.MaxForwarderWorkers,
+		ForwarderQueueSize:      p.cfg.ForwarderQueueSize,
+		QueueScaleThresholdPct:  p.cfg.QueueScaleThresholdPct,
+		QueueRateLimitThreshold: p.cfg.QueueRateLimitThreshold,
+		QueueThrottleThreshold:  p.cfg.QueueThrottleThreshold,
+		QueueThrottleTopN:       p.cfg.QueueThrottleTopN,
+		RateLimitInitialPerSec:  p.cfg.RateLimitInitialPerSec,
+		RateLimitInitialBurst:   p.cfg.RateLimitInitialBurst,
+		ForwarderSuspendSeconds: p.cfg.ForwarderSuspendSeconds,
+		ForwarderFailThreshold:  p.cfg.ForwarderFailThreshold,
+		ForwarderRetryAttempts:  p.cfg.ForwarderRetryAttempts,
+		ForwarderRetryBaseMs:    p.cfg.ForwarderRetryBaseMs,
+		ForwardersCount:         len(p.cfg.Forwards),
+		ForwardsFile:            p.cfg.ForwardsFile,
 	}
 }
 

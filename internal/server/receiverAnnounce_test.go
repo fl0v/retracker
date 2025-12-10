@@ -11,9 +11,8 @@ import (
 
 func TestProcessAnnounceRespectsNumwantAndSetsFields(t *testing.T) {
 	cfg := &config.Config{
-		AnnounceResponseInterval: 30,
-		MinAnnounceInterval:      10,
-		TrackerID:                "tracker-1",
+		AnnounceInterval: 30,
+		TrackerID:        "tracker-1",
 	}
 
 	storage := &Storage{
@@ -50,10 +49,11 @@ func TestProcessAnnounceRespectsNumwantAndSetsFields(t *testing.T) {
 		t.Fatalf("nil response")
 	}
 
-	if resp.MinInterval != cfg.MinAnnounceInterval {
-		t.Fatalf("min interval mismatch: %d", resp.MinInterval)
+	// MinInterval now equals AnnounceInterval in simplified single-interval logic
+	if resp.MinInterval != cfg.AnnounceInterval {
+		t.Fatalf("min interval mismatch: expected %d, got %d", cfg.AnnounceInterval, resp.MinInterval)
 	}
-	if resp.Interval != cfg.AnnounceResponseInterval {
+	if resp.Interval != cfg.AnnounceInterval {
 		t.Fatalf("interval mismatch: %d", resp.Interval)
 	}
 	if resp.TrackerID != cfg.TrackerID {
