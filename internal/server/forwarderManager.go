@@ -46,14 +46,14 @@ var (
 // Note: This is different from ForwarderStorage which tracks intervals per-hash, per-forwarder.
 // LastInterval here is the most recent interval reported by this forwarder for ANY hash.
 type ForwarderStats struct {
-	AvgResponseTime time.Duration // EMA of response times (across all hashes for this forwarder)
-	LastInterval    int           // Last reported interval from this forwarder (most recent across all hashes)
-	SampleCount     int           // Total samples seen (across all hashes for this forwarder)
-	mu              sync.RWMutex
+	AvgResponseTime  time.Duration // EMA of response times (across all hashes for this forwarder)
+	LastInterval     int           // Last reported interval from this forwarder (most recent across all hashes)
+	LastAnnounceTime time.Time     // Time of the most recent successful announce
+	SampleCount      int           // Total samples seen (across all hashes for this forwarder)
+	mu               sync.RWMutex
 }
 
 const (
-	emaAlpha             = 0.02 // Smoothing factor equivalent to ~100 sample window (unused now, kept for reference)
 	emaAlphaResponseTime = 0.15 // Higher weight for response time EMA - gives 15% weight to latest sample for faster adaptation
 )
 
@@ -1144,6 +1144,7 @@ func (fm *ForwarderManager) recordStats(forwarderName string, responseTime time.
 		// First sample: set directly
 		stats.AvgResponseTime = responseTime
 		stats.LastInterval = interval
+		stats.LastAnnounceTime = time.Now()
 	} else {
 		// EMA update: new_avg = alpha * new_sample + (1-alpha) * old_avg
 		// Using higher alpha (0.15) gives 15% weight to latest response time for faster adaptation
@@ -1152,6 +1153,7 @@ func (fm *ForwarderManager) recordStats(forwarderName string, responseTime time.
 		)
 		// Store last reported interval (not averaged)
 		stats.LastInterval = interval
+		stats.LastAnnounceTime = time.Now()
 	}
 	stats.SampleCount++
 	stats.mu.Unlock()
@@ -1393,22 +1395,25 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 
 	p.fm.statsMu.RLock()
 	forwarderStats := make(map[string]struct {
-		AvgResponseTime time.Duration
-		LastInterval    int
-		Count           int
+		AvgResponseTime  time.Duration
+		LastInterval     int
+		LastAnnounceTime time.Time
+		Count            int
 	})
 
 	for forwarderName, stats := range p.fm.stats {
 		stats.mu.RLock()
 		if stats.SampleCount > 0 {
 			forwarderStats[forwarderName] = struct {
-				AvgResponseTime time.Duration
-				LastInterval    int
-				Count           int
+				AvgResponseTime  time.Duration
+				LastInterval     int
+				LastAnnounceTime time.Time
+				Count            int
 			}{
-				AvgResponseTime: stats.AvgResponseTime,
-				LastInterval:    stats.LastInterval,
-				Count:           stats.SampleCount,
+				AvgResponseTime:  stats.AvgResponseTime,
+				LastInterval:     stats.LastInterval,
+				LastAnnounceTime: stats.LastAnnounceTime,
+				Count:            stats.SampleCount,
 			}
 		}
 		stats.mu.RUnlock()
@@ -1420,13 +1425,15 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 		forwarderName := forwarder.GetName()
 		protocol := forwarder.GetProtocol()
 		if stats, ok := forwarderStats[forwarderName]; ok {
+			secondsSinceLastAnnounce := int(p.now.Sub(stats.LastAnnounceTime).Seconds())
 			result[i] = observability.ForwarderStat{
-				Name:            forwarderName,
-				Protocol:        protocol,
-				AvgResponseTime: stats.AvgResponseTime,
-				AvgInterval:     stats.LastInterval,
-				SampleCount:     stats.Count,
-				HasStats:        true,
+				Name:                     forwarderName,
+				Protocol:                 protocol,
+				AvgResponseTime:          stats.AvgResponseTime,
+				LastInterval:             stats.LastInterval,
+				SampleCount:              stats.Count,
+				SecondsSinceLastAnnounce: secondsSinceLastAnnounce,
+				HasStats:                 true,
 			}
 		} else {
 			result[i] = observability.ForwarderStat{

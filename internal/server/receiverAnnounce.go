@@ -183,8 +183,8 @@ func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, respo
 	// Get peers for response
 	response.Peers = ra.getPeersForResponse(request.InfoHash)
 
-	// Calculate interval
-	response.Interval = ra.calculateInterval(request.InfoHash)
+	// Use general interval setting from config
+	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 }
 
 // handleRegularAnnounce processes regular announces (started event or empty event)
@@ -206,7 +206,7 @@ func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, resp
 // handleFirstAnnounce handles the first announce for an info_hash
 func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, response *Response.Response) {
 	// First announce: return configured interval and trigger parallel forwarder announces
-	response.Interval = ra.Config.AnnounceInterval
+	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 
 	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
 	// No need to collect again here
@@ -250,12 +250,8 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
 	// No need to collect again here
 
-	// Calculate interval
-	if ra.ForwarderStorage != nil {
-		response.Interval = ra.calculateInterval(request.InfoHash)
-	} else {
-		response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
-	}
+	// Use general interval setting from config
+	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 
 	// For regular announces, forward immediately if due or not yet contacted
 	if ra.ForwarderManager != nil {
@@ -274,18 +270,6 @@ func (ra *ReceiverAnnounce) getPeersForResponse(infoHash common.InfoHash) []comm
 	}
 
 	return peers
-}
-
-// calculateInterval calculates the appropriate interval for the response
-func (ra *ReceiverAnnounce) calculateInterval(infoHash common.InfoHash) int {
-	if ra.ForwarderStorage != nil {
-		avgInterval := ra.ForwarderStorage.GetAverageInterval(infoHash)
-		if avgInterval > 0 {
-			return ra.clampInterval(avgInterval)
-		}
-	}
-	// No forwarders responded yet, use default
-	return ra.clampInterval(ra.Config.AnnounceInterval)
 }
 
 // isFirstAnnounce checks if this is the first announce for the given info_hash

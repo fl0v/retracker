@@ -87,28 +87,6 @@ func (fs *ForwarderStorage) GetAllPeers(infoHash common.InfoHash) []common.Peer 
 	return allPeers
 }
 
-// GetAverageInterval returns the average interval from all forwarders that have responded
-func (fs *ForwarderStorage) GetAverageInterval(infoHash common.InfoHash) int {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	if forwarders, ok := fs.Entries[infoHash]; ok {
-		totalInterval := 0
-		count := 0
-		for _, entry := range forwarders {
-			// Only count forwarders that have actually responded (have peers or have been updated)
-			if entry.Interval > 0 {
-				totalInterval += entry.Interval
-				count++
-			}
-		}
-		if count > 0 {
-			return totalInterval / count
-		}
-	}
-	return 0 // No forwarders have responded yet
-}
-
 func (fs *ForwarderStorage) GetNextAnnounceJobs(now time.Time) []AnnounceJob {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()

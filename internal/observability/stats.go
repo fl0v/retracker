@@ -35,12 +35,13 @@ type Stats struct {
 
 // ForwarderStat represents statistics for a forwarder
 type ForwarderStat struct {
-	Name            string        `json:"name"`
-	Protocol        string        `json:"protocol,omitempty"`
-	AvgResponseTime time.Duration `json:"avg_response_time_ms"`
-	AvgInterval     int           `json:"avg_interval_seconds"`
-	SampleCount     int           `json:"sample_count"`
-	HasStats        bool          `json:"has_stats"`
+	Name                     string        `json:"name"`
+	Protocol                 string        `json:"protocol,omitempty"`
+	AvgResponseTime          time.Duration `json:"avg_response_time_ms"`
+	LastInterval             int           `json:"last_interval_seconds"`
+	SampleCount              int           `json:"sample_count"`
+	SecondsSinceLastAnnounce int           `json:"seconds_since_last_announce"`
+	HasStats                 bool          `json:"has_stats"`
 }
 
 // SimpleStats holds only essential statistics for console output
@@ -209,9 +210,23 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 
 	// Format forwarders as a table
 	if len(stats.Forwarders) > 0 {
+		// Find maximum tracker name length for proper padding
+		maxNameLen := 0
+		for _, forwarder := range stats.Forwarders {
+			if len(forwarder.Name) > maxNameLen {
+				maxNameLen = len(forwarder.Name)
+			}
+		}
+		// Ensure minimum width for readability
+		if maxNameLen < 20 {
+			maxNameLen = 20
+		}
+
 		sb.WriteString("\nForwarders:\n")
-		sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15s %-12s\n", "Name", "Protocol", "AvgResponseTime", "AvgInterval", "SampleCount"))
-		sb.WriteString(strings.Repeat("-", 92) + "\n")
+		// Order: Protocol, Tracker, AvgResponse, LastInterval, AnnounceCount, SecondsFromLastAnnounce
+		headerFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15s %%-15s %%-25s\n", maxNameLen)
+		sb.WriteString(fmt.Sprintf(headerFormat, "Protocol", "Tracker", "AvgResponse", "LastInterval", "AnnounceCount", "SecondsFromLastAnnounce"))
+		sb.WriteString(strings.Repeat("-", 10+maxNameLen+20+15+15+25+5) + "\n")
 		for _, forwarder := range stats.Forwarders {
 			protocol := forwarder.Protocol
 			if protocol == "" {
@@ -219,11 +234,14 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			}
 			if forwarder.HasStats {
 				responseTime := forwarder.AvgResponseTime.Round(time.Millisecond).String()
-				sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15d %-12d\n",
-					forwarder.Name, protocol, responseTime, forwarder.AvgInterval, forwarder.SampleCount))
+				rowFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15d %%-15d %%-25d\n", maxNameLen)
+				sb.WriteString(fmt.Sprintf(rowFormat,
+					protocol, forwarder.Name, responseTime, forwarder.LastInterval,
+					forwarder.SampleCount, forwarder.SecondsSinceLastAnnounce))
 			} else {
-				sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15s %-12s\n",
-					forwarder.Name, protocol, "no statistics yet", "-", "-"))
+				rowFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15s %%-15s %%-25s\n", maxNameLen)
+				sb.WriteString(fmt.Sprintf(rowFormat,
+					protocol, forwarder.Name, "no statistics yet", "-", "-", "-"))
 			}
 		}
 	}
@@ -309,12 +327,13 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	jsonStats.Forwarders = make([]ForwarderStatJSON, len(stats.Forwarders))
 	for i, f := range stats.Forwarders {
 		jsonStats.Forwarders[i] = ForwarderStatJSON{
-			Name:            f.Name,
-			Protocol:        f.Protocol,
-			AvgResponseTime: int(f.AvgResponseTime.Milliseconds()),
-			AvgInterval:     f.AvgInterval,
-			SampleCount:     f.SampleCount,
-			HasStats:        f.HasStats,
+			Name:                     f.Name,
+			Protocol:                 f.Protocol,
+			AvgResponseTime:          int(f.AvgResponseTime.Milliseconds()),
+			LastInterval:             f.LastInterval,
+			SampleCount:              f.SampleCount,
+			SecondsSinceLastAnnounce: f.SecondsSinceLastAnnounce,
+			HasStats:                 f.HasStats,
 		}
 	}
 
@@ -323,10 +342,11 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 
 // ForwarderStatJSON is the JSON representation of ForwarderStat
 type ForwarderStatJSON struct {
-	Name            string `json:"name"`
-	Protocol        string `json:"protocol,omitempty"`
-	AvgResponseTime int    `json:"avg_response_time_ms"`
-	AvgInterval     int    `json:"avg_interval_seconds"`
-	SampleCount     int    `json:"sample_count"`
-	HasStats        bool   `json:"has_stats"`
+	Name                     string `json:"name"`
+	Protocol                 string `json:"protocol,omitempty"`
+	AvgResponseTime          int    `json:"avg_response_time_ms"`
+	LastInterval             int    `json:"last_interval_seconds"`
+	SampleCount              int    `json:"sample_count"`
+	SecondsSinceLastAnnounce int    `json:"seconds_since_last_announce"`
+	HasStats                 bool   `json:"has_stats"`
 }
