@@ -26,19 +26,18 @@ Each `AnnounceJob` contains:
 ## Current Behavior on Startup
 
 When retracker starts:
-1. Each client's first announce triggers `TriggerInitialAnnounce()`
-2. This creates **N jobs** (where N = number of forwarders) **per unique info_hash**
+1. Each client's first announce goes through `QueueEligibleAnnounces()`
+2. Jobs are only queued for forwarders where `ShouldAnnounceNow()` is true (never seen hash or NextAnnounce is due)
 3. If 100 clients connect simultaneously with unique hashes and 5 forwarders:
-   - **500 jobs** created immediately
+   - Up to **500 jobs** may be created, but skips occur when forwarders aren't due
    - With default queue (1000), this uses ~250 KB
-4. If queue fills up, jobs are **silently dropped** (logged as error)
+4. If queue fills up, initial announces are rejected with a retry; scheduled jobs are rescheduled
 
-## Problems with Current Approach
+## Considerations
 
-1. **Silent Failures**: Jobs are dropped when queue is full, no retry mechanism
-2. **No Backpressure**: Clients don't know their announce wasn't forwarded
-3. **Memory vs. Throughput Trade-off**: Larger queue = more memory but better burst handling
-4. **No Prioritization**: All jobs treated equally (initial vs. re-announce)
+1. **Backpressure**: Initial announces are rate-limited and may be rejected when the queue is full
+2. **Memory vs. Throughput**: Larger queue = more memory but better burst handling
+3. **Prioritization**: Initial and re-announce jobs share the same queue; scheduling defers non-urgent work
 
 ## Alternatives to Increasing Queue Size
 

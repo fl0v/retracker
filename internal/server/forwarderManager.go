@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,14 +42,20 @@ var (
 	ErrorLogFwd = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
+// ForwarderStats tracks statistics per forwarder (aggregated across all hashes).
+// Note: This is different from ForwarderStorage which tracks intervals per-hash, per-forwarder.
+// LastInterval here is the most recent interval reported by this forwarder for ANY hash.
 type ForwarderStats struct {
-	AvgResponseTime time.Duration // EMA of response times
-	AvgInterval     float64       // EMA of intervals
-	SampleCount     int           // Total samples seen
+	AvgResponseTime time.Duration // EMA of response times (across all hashes for this forwarder)
+	LastInterval    int           // Last reported interval from this forwarder (most recent across all hashes)
+	SampleCount     int           // Total samples seen (across all hashes for this forwarder)
 	mu              sync.RWMutex
 }
 
-const emaAlpha = 0.02 // Smoothing factor equivalent to ~100 sample window
+const (
+	emaAlpha             = 0.02 // Smoothing factor equivalent to ~100 sample window (unused now, kept for reference)
+	emaAlphaResponseTime = 0.15 // Higher weight for response time EMA - gives 15% weight to latest sample for faster adaptation
+)
 
 type DisabledForwarder struct {
 	Reason       string // Truncated to maxReasonLength for memory efficiency
@@ -866,9 +871,6 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 	for _, forwarder := range forwarders {
 		forwarderName := forwarder.GetName()
 
-		if fm.isDisabled(forwarderName) {
-			continue
-		}
 		if fm.isSuspended(forwarderName) {
 			if fm.Config.Debug {
 				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
@@ -917,177 +919,6 @@ func (fm *ForwarderManager) shouldRateLimitInitial() bool {
 		return false
 	}
 	return fm.queueFillPct() >= fm.queueRateLimitThresh
-}
-
-func (fm *ForwarderManager) TriggerInitialAnnounce(infoHash common.InfoHash, request tracker.Request) {
-	fm.forwardersMu.RLock()
-	allForwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
-	copy(allForwarders, fm.Forwarders)
-	fm.forwardersMu.RUnlock()
-
-	if len(allForwarders) == 0 {
-		ErrorLogFwd.Printf("No forwarders available; skipping initial announce for %x", infoHash)
-		return
-	}
-	if fm.Config.Debug {
-		DebugLogFwd.Printf("Triggering initial announce for %x to %d forwarder(s)", infoHash, len(allForwarders))
-	}
-
-	forwarders := fm.selectForwardersByQueue(allForwarders)
-
-	// Trigger parallel decoupled announces to all forwarders
-	for _, forwarder := range forwarders {
-		forwarderName := forwarder.GetName()
-
-		// Check if job is already pending
-		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
-			}
-			continue
-		}
-		// Skip suspended forwarders
-		if fm.isSuspended(forwarderName) {
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
-			}
-			continue
-		}
-
-		job := AnnounceJob{
-			InfoHash:      infoHash,
-			ForwarderName: forwarderName,
-			PeerID:        request.PeerID,
-			Forwarder:     forwarder,
-			Request:       request,
-		}
-
-		// Mark as pending before queuing
-		fm.markJobPending(infoHash, forwarderName, request.PeerID)
-
-		select {
-		case fm.jobQueue <- job:
-			if fm.Config.Debug {
-				DebugLogFwd.Printf("Queued initial announce for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
-			}
-		default:
-			// Queue full, unmark and skip
-			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
-			atomic.AddUint64(&fm.droppedFullCount, 1)
-			if fm.Prometheus != nil {
-				fm.Prometheus.DroppedFull.Inc()
-			}
-			ErrorLogFwd.Printf("Job queue full, skipping initial announce for %x to %s", infoHash, forwarderName)
-		}
-	}
-}
-
-func (fm *ForwarderManager) CheckAndReannounce(infoHash common.InfoHash, request tracker.Request, clientInterval int) {
-	now := time.Now()
-	jobsToSchedule := make([]AnnounceJob, 0)
-
-	fm.Storage.mu.RLock()
-	if forwarders, ok := fm.Storage.Entries[infoHash]; ok {
-		for forwarderName, entry := range forwarders {
-			// Skip if no interval yet (forwarder hasn't responded)
-			if entry.Interval <= 0 {
-				continue
-			}
-
-			// Check if job is already pending
-			if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
-				if fm.Config.Debug {
-					DebugLogFwd.Printf("Re-announce job already pending for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
-				}
-				continue
-			}
-
-			// Calculate time until forwarder's next allowed announcement
-			timeUntilNext := entry.NextAnnounce.Sub(now)
-
-			// If > 10 minutes, ignore this forwarder
-			if timeUntilNext > 10*time.Minute {
-				if fm.Config.Debug {
-					DebugLogFwd.Printf("Skipping re-announce for %x to %s (time until next: %v > 10 minutes)\n",
-						infoHash, forwarderName, timeUntilNext)
-				}
-				continue
-			}
-
-			// If ≤ 10 minutes, schedule job at NextAnnounce + 1 minute
-			scheduledTime := entry.NextAnnounce.Add(1 * time.Minute)
-
-			// Find the forwarder
-			var forwarder CoreCommon.Forward
-			fm.forwardersMu.RLock()
-			for _, f := range fm.Forwarders {
-				if f.GetName() == forwarderName {
-					if fm.isSuspended(forwarderName) {
-						forwarder = CoreCommon.Forward{} // Mark as not found
-						break
-					}
-					forwarder = f
-					break
-				}
-			}
-			fm.forwardersMu.RUnlock()
-			if forwarder.Uri == "" {
-				continue
-			}
-
-			job := AnnounceJob{
-				InfoHash:      infoHash,
-				ForwarderName: forwarderName,
-				PeerID:        request.PeerID,
-				Forwarder:     forwarder,
-				Request:       request,
-				ScheduledTime: scheduledTime,
-			}
-
-			// If scheduled time is in the past or very soon, execute immediately
-			if scheduledTime.Before(now) || scheduledTime.Sub(now) < 5*time.Second {
-				job.ScheduledTime = time.Time{} // Zero time means immediate
-			}
-
-			jobsToSchedule = append(jobsToSchedule, job)
-		}
-	}
-	fm.Storage.mu.RUnlock()
-
-	// Schedule or queue jobs
-	for _, job := range jobsToSchedule {
-		fm.markJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
-
-		if job.ScheduledTime.IsZero() {
-			// Immediate execution
-			select {
-			case fm.jobQueue <- job:
-				if fm.Config.Debug {
-					hash := fmt.Sprintf("%x", job.InfoHash)
-					DebugLogFwd.Printf("Queued immediate re-announce for %s to %s\n", hash, job.ForwarderName)
-				}
-			default:
-				fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
-				if fm.Config.Debug {
-					hash := fmt.Sprintf("%x", job.InfoHash)
-					DebugLogFwd.Printf("Job queue full, skipping re-announce for %s to %s\n", hash, job.ForwarderName)
-				}
-			}
-		} else {
-			// Scheduled execution - check for duplicates before scheduling
-			if fm.scheduleJob(job) {
-				if fm.Config.Debug {
-					hash := fmt.Sprintf("%x", job.InfoHash)
-					timeUntilExec := job.ScheduledTime.Sub(now)
-					DebugLogFwd.Printf("Scheduled re-announce for %s to %s at %v (in %v)\n",
-						hash, job.ForwarderName, job.ScheduledTime, timeUntilExec)
-				}
-			} else {
-				// Duplicate job, unmark as pending since we're not scheduling it
-				fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
-			}
-		}
-	}
 }
 
 // ForwardStoppedEvent forwards a stopped event to all forwarders without scheduling future announces
@@ -1308,17 +1139,19 @@ func (fm *ForwarderManager) recordStats(forwarderName string, responseTime time.
 	}
 
 	stats.mu.Lock()
-	// Use Exponential Moving Average (EMA)
+	// Use Exponential Moving Average (EMA) for response time with higher weight on recent values
 	if stats.SampleCount == 0 {
 		// First sample: set directly
 		stats.AvgResponseTime = responseTime
-		stats.AvgInterval = float64(interval)
+		stats.LastInterval = interval
 	} else {
 		// EMA update: new_avg = alpha * new_sample + (1-alpha) * old_avg
+		// Using higher alpha (0.15) gives 15% weight to latest response time for faster adaptation
 		stats.AvgResponseTime = time.Duration(
-			float64(responseTime)*emaAlpha + float64(stats.AvgResponseTime)*(1-emaAlpha),
+			float64(responseTime)*emaAlphaResponseTime + float64(stats.AvgResponseTime)*(1-emaAlphaResponseTime),
 		)
-		stats.AvgInterval = float64(interval)*emaAlpha + stats.AvgInterval*(1-emaAlpha)
+		// Store last reported interval (not averaged)
+		stats.LastInterval = interval
 	}
 	stats.SampleCount++
 	stats.mu.Unlock()
@@ -1512,43 +1345,11 @@ type forwarderStatsProvider struct {
 }
 
 func (p *forwarderStatsProvider) GetPendingCount() int {
+	// pendingJobs tracks all pending jobs (both in queue and scheduled)
+	// since markJobPending is called for both immediate and scheduled jobs
 	p.fm.pendingMu.Lock()
 	defer p.fm.pendingMu.Unlock()
 	return len(p.fm.pendingJobs)
-}
-
-func (p *forwarderStatsProvider) GetScheduledAnnounces() []observability.ScheduledAnnounce {
-	p.fm.Storage.mu.RLock()
-	defer p.fm.Storage.mu.RUnlock()
-
-	scheduledAnnounces := make([]observability.ScheduledAnnounce, 0)
-	for infoHash, forwarders := range p.fm.Storage.Entries {
-		for forwarderName, entry := range forwarders {
-			if entry.NextAnnounce.After(p.now) {
-				timeToExec := entry.NextAnnounce.Sub(p.now)
-				scheduledAnnounces = append(scheduledAnnounces, observability.ScheduledAnnounce{
-					InfoHash:      fmt.Sprintf("%x", infoHash),
-					ForwarderName: forwarderName,
-					TimeToExec:    timeToExec,
-				})
-			}
-		}
-	}
-
-	// Sort by time to execution
-	sort.Slice(scheduledAnnounces, func(i, j int) bool {
-		return scheduledAnnounces[i].TimeToExec < scheduledAnnounces[j].TimeToExec
-	})
-
-	// Limit to 10
-	limit := len(scheduledAnnounces)
-	if limit > 10 {
-		limit = 10
-	}
-	if limit > 0 {
-		return scheduledAnnounces[:limit]
-	}
-	return scheduledAnnounces
 }
 
 func (p *forwarderStatsProvider) GetTrackedHashes() int {
@@ -1593,7 +1394,7 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 	p.fm.statsMu.RLock()
 	forwarderStats := make(map[string]struct {
 		AvgResponseTime time.Duration
-		AvgInterval     int
+		LastInterval    int
 		Count           int
 	})
 
@@ -1602,11 +1403,11 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 		if stats.SampleCount > 0 {
 			forwarderStats[forwarderName] = struct {
 				AvgResponseTime time.Duration
-				AvgInterval     int
+				LastInterval    int
 				Count           int
 			}{
 				AvgResponseTime: stats.AvgResponseTime,
-				AvgInterval:     int(stats.AvgInterval + 0.5), // Round to nearest int
+				LastInterval:    stats.LastInterval,
 				Count:           stats.SampleCount,
 			}
 		}
@@ -1623,7 +1424,7 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 				Name:            forwarderName,
 				Protocol:        protocol,
 				AvgResponseTime: stats.AvgResponseTime,
-				AvgInterval:     stats.AvgInterval,
+				AvgInterval:     stats.LastInterval,
 				SampleCount:     stats.Count,
 				HasStats:        true,
 			}
@@ -1781,37 +1582,8 @@ func (p *forwarderStatsProvider) GetDropCounters() (droppedFull, rateLimited, th
 	return atomic.LoadUint64(&p.fm.droppedFullCount), atomic.LoadUint64(&p.fm.rateLimitedCount), atomic.LoadUint64(&p.fm.throttledForwardCount)
 }
 
-func (p *forwarderStatsProvider) GetConfig() *observability.ConfigInfo {
-	if p.cfg == nil {
-		return nil
-	}
-	return &observability.ConfigInfo{
-		HTTPListen:              p.cfg.Listen,
-		UDPListen:               p.cfg.UDPListen,
-		Debug:                   p.cfg.Debug,
-		XRealIP:                 p.cfg.XRealIP,
-		PrometheusEnabled:       p.cfg.PrometheusEnabled,
-		Age:                     p.cfg.Age,
-		AnnounceInterval:        p.cfg.AnnounceInterval,
-		TrackerID:               p.cfg.TrackerID,
-		StatsInterval:           p.cfg.StatsInterval,
-		ForwardTimeout:          p.cfg.ForwardTimeout,
-		ForwarderWorkers:        p.cfg.ForwarderWorkers,
-		MaxForwarderWorkers:     p.cfg.MaxForwarderWorkers,
-		ForwarderQueueSize:      p.cfg.ForwarderQueueSize,
-		QueueScaleThresholdPct:  p.cfg.QueueScaleThresholdPct,
-		QueueRateLimitThreshold: p.cfg.QueueRateLimitThreshold,
-		QueueThrottleThreshold:  p.cfg.QueueThrottleThreshold,
-		QueueThrottleTopN:       p.cfg.QueueThrottleTopN,
-		RateLimitInitialPerSec:  p.cfg.RateLimitInitialPerSec,
-		RateLimitInitialBurst:   p.cfg.RateLimitInitialBurst,
-		ForwarderSuspendSeconds: p.cfg.ForwarderSuspendSeconds,
-		ForwarderFailThreshold:  p.cfg.ForwarderFailThreshold,
-		ForwarderRetryAttempts:  p.cfg.ForwarderRetryAttempts,
-		ForwarderRetryBaseMs:    p.cfg.ForwarderRetryBaseMs,
-		ForwardersCount:         len(p.cfg.Forwards),
-		ForwardsFile:            p.cfg.ForwardsFile,
-	}
+func (p *forwarderStatsProvider) GetConfig() *config.Config {
+	return p.cfg
 }
 
 func (fm *ForwarderManager) printStats() {

@@ -9,13 +9,31 @@ import (
 	CoreCommon "github.com/fl0v/retracker/common"
 )
 
+// ForwarderPeerEntry stores the last response from a forwarder for a specific hash.
+// Interval is the last reported interval from the tracker for this hash+forwarder combination.
 type ForwarderPeerEntry struct {
 	Peers        []common.Peer
-	Interval     int // seconds from tracker response
+	Interval     int // Last reported interval in seconds from tracker response (per hash+forwarder)
 	LastUpdate   time.Time
-	NextAnnounce time.Time
+	NextAnnounce time.Time // Calculated as LastUpdate + Interval
 }
 
+// ForwarderStorage stores forwarder responses and intervals.
+//
+// Interval Tracking Structure:
+// - Intervals are tracked PER-HASH, PER-FORWARDER
+// - Structure: map[InfoHash]map[ForwarderName]ForwarderPeerEntry
+// - Each hash maintains separate intervals for each forwarder
+// - When a forwarder responds for a hash, only that hash's interval for that forwarder is updated
+// - Different hashes can have different intervals for the same forwarder
+//
+// Example:
+//
+//	Hash1 -> ForwarderA: interval=30s, ForwarderB: interval=60s
+//	Hash2 -> ForwarderA: interval=45s, ForwarderB: interval=60s
+//	Hash3 -> ForwarderA: interval=30s, ForwarderB: interval=90s
+//
+// This allows each hash to respect each forwarder's specific interval requirements.
 type ForwarderStorage struct {
 	// map[InfoHash]map[ForwarderName]ForwarderPeerEntry
 	Entries map[common.InfoHash]map[string]ForwarderPeerEntry

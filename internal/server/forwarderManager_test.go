@@ -486,3 +486,74 @@ func TestSuspendForwarderExpires(t *testing.T) {
 		t.Fatalf("forwarder suspension should expire after duration")
 	}
 }
+
+func TestQueueEligibleAnnouncesQueuesWhenDue(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fwd := corecommon.Forward{Name: "ready", Uri: "http://example.com"}
+	cfg.Forwards = []corecommon.Forward{fwd}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Set NextAnnounce in the past so it is due
+	ih := btcommon.InfoHash("announce-hash-00001") // 20 bytes
+	fs.mu.Lock()
+	fs.Entries[ih] = map[string]ForwarderPeerEntry{
+		fwd.GetName(): {
+			Interval:     30,
+			NextAnnounce: time.Now().Add(-1 * time.Minute),
+		},
+	}
+	fs.mu.Unlock()
+
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000000")}
+
+	fm.QueueEligibleAnnounces(ih, req)
+
+	if got := len(fm.jobQueue); got != 1 {
+		t.Fatalf("expected 1 job queued, got %d", got)
+	}
+
+	job := <-fm.jobQueue
+	if job.ForwarderName != fwd.GetName() {
+		t.Fatalf("queued job forwarder mismatch: got %s want %s", job.ForwarderName, fwd.GetName())
+	}
+}
+
+func TestQueueEligibleAnnouncesSkipsWhenNotDue(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fwd := corecommon.Forward{Name: "future", Uri: "http://example.com"}
+	cfg.Forwards = []corecommon.Forward{fwd}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Set NextAnnounce in the future so it is not due
+	ih := btcommon.InfoHash("announce-hash-00002") // 20 bytes
+	fs.mu.Lock()
+	fs.Entries[ih] = map[string]ForwarderPeerEntry{
+		fwd.GetName(): {
+			Interval:     30,
+			NextAnnounce: time.Now().Add(5 * time.Minute),
+		},
+	}
+	fs.mu.Unlock()
+
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000001")}
+
+	fm.QueueEligibleAnnounces(ih, req)
+
+	if got := len(fm.jobQueue); got != 0 {
+		t.Fatalf("expected 0 jobs queued when not due, got %d", got)
+	}
+}

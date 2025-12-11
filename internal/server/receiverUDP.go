@@ -495,35 +495,39 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 			clientAddr.String(), transactionID, len(infoHashes))
 	}
 
-	// Build scrape response
-	scrapeData := make([]UDPScrapeData, 0)
+	// Convert binary hashes to InfoHash list
+	infoHashList := make([]common.InfoHash, 0, len(infoHashes))
+	for _, hash := range infoHashes {
+		infoHash := common.InfoHash(string(hash[:]))
+		if infoHash.Valid() {
+			infoHashList = append(infoHashList, infoHash)
+		}
+	}
+
+	// Use unified scrape statistics collection
+	stats := getScrapeStats(ru.Storage, ru.ForwarderStorage, infoHashList)
+
+	// Build UDP scrape response
+	scrapeData := make([]UDPScrapeData, 0, len(infoHashes))
 	for _, hash := range infoHashes {
 		infoHash := common.InfoHash(string(hash[:]))
 		if !infoHash.Valid() {
+			// Invalid hash - return empty data
 			scrapeData = append(scrapeData, UDPScrapeData{})
 			continue
 		}
 
-		// Get statistics from storage
-		ru.Storage.requestsMu.Lock()
-		requestInfoHash, found := ru.Storage.Requests[infoHash]
-		seeders := uint32(0)
-		leechers := uint32(0)
-		if found {
-			for _, peerRequest := range requestInfoHash {
-				if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
-					seeders++
-				} else {
-					leechers++
-				}
-			}
+		stat, ok := stats[infoHash]
+		if !ok {
+			// Hash not found - return empty data
+			scrapeData = append(scrapeData, UDPScrapeData{})
+			continue
 		}
-		ru.Storage.requestsMu.Unlock()
 
 		scrapeData = append(scrapeData, UDPScrapeData{
-			Seeders:   seeders,
-			Completed: seeders, // We don't track actual completed count
-			Leechers:  leechers,
+			Seeders:   uint32(stat.Complete),
+			Completed: uint32(stat.Downloaded),
+			Leechers:  uint32(stat.Incomplete),
 		})
 	}
 

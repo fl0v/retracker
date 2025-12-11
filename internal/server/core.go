@@ -92,10 +92,6 @@ func (p *simpleStatsProvider) GetPendingCount() int {
 	return 0
 }
 
-func (p *simpleStatsProvider) GetScheduledAnnounces() []observability.ScheduledAnnounce {
-	return nil
-}
-
 func (p *simpleStatsProvider) GetTrackedHashes() int {
 	p.storage.requestsMu.Lock()
 	defer p.storage.requestsMu.Unlock()
@@ -202,35 +198,6 @@ func (p *simpleStatsProvider) GetDropCounters() (droppedFull, rateLimited, throt
 	return 0, 0, 0
 }
 
-func (p *simpleStatsProvider) GetConfig() *observability.ConfigInfo {
-	if p.cfg == nil {
-		return nil
-	}
-	return &observability.ConfigInfo{
-		HTTPListen:              p.cfg.Listen,
-		UDPListen:               p.cfg.UDPListen,
-		Debug:                   p.cfg.Debug,
-		XRealIP:                 p.cfg.XRealIP,
-		PrometheusEnabled:       p.cfg.PrometheusEnabled,
-		Age:                     p.cfg.Age,
-		AnnounceInterval:        p.cfg.AnnounceInterval,
-		TrackerID:               p.cfg.TrackerID,
-		StatsInterval:           p.cfg.StatsInterval,
-		ForwardTimeout:          p.cfg.ForwardTimeout,
-		ForwarderWorkers:        p.cfg.ForwarderWorkers,
-		MaxForwarderWorkers:     p.cfg.MaxForwarderWorkers,
-		ForwarderQueueSize:      p.cfg.ForwarderQueueSize,
-		QueueScaleThresholdPct:  p.cfg.QueueScaleThresholdPct,
-		QueueRateLimitThreshold: p.cfg.QueueRateLimitThreshold,
-		QueueThrottleThreshold:  p.cfg.QueueThrottleThreshold,
-		QueueThrottleTopN:       p.cfg.QueueThrottleTopN,
-		RateLimitInitialPerSec:  p.cfg.RateLimitInitialPerSec,
-		RateLimitInitialBurst:   p.cfg.RateLimitInitialBurst,
-		ForwarderSuspendSeconds: p.cfg.ForwarderSuspendSeconds,
-		ForwarderFailThreshold:  p.cfg.ForwarderFailThreshold,
-		ForwarderRetryAttempts:  p.cfg.ForwarderRetryAttempts,
-		ForwarderRetryBaseMs:    p.cfg.ForwarderRetryBaseMs,
-		ForwardersCount:         len(p.cfg.Forwards),
-		ForwardsFile:            p.cfg.ForwardsFile,
-	}
+func (p *simpleStatsProvider) GetConfig() *config.Config {
+	return p.cfg
 }

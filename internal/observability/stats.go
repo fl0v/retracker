@@ -6,66 +6,31 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/fl0v/retracker/internal/config"
 )
 
 // StatsCollector collects and formats statistics
 type StatsCollector struct{}
 
-// ConfigInfo holds server configuration information
-type ConfigInfo struct {
-	HTTPListen              string  `json:"http_listen"`
-	UDPListen               string  `json:"udp_listen"`
-	Debug                   bool    `json:"debug"`
-	XRealIP                 bool    `json:"x_real_ip"`
-	PrometheusEnabled       bool    `json:"prometheus_enabled"`
-	Age                     float64 `json:"age"`
-	AnnounceInterval        int     `json:"announce_interval"`
-	TrackerID               string  `json:"tracker_id,omitempty"`
-	StatsInterval           int     `json:"stats_interval"`
-	ForwardTimeout          int     `json:"forward_timeout"`
-	ForwarderWorkers        int     `json:"forwarder_workers"`
-	MaxForwarderWorkers     int     `json:"max_forwarder_workers"`
-	ForwarderQueueSize      int     `json:"forwarder_queue_size"`
-	QueueScaleThresholdPct  int     `json:"queue_scale_threshold_pct"`
-	QueueRateLimitThreshold int     `json:"queue_rate_limit_threshold"`
-	QueueThrottleThreshold  int     `json:"queue_throttle_threshold"`
-	QueueThrottleTopN       int     `json:"queue_throttle_top_n"`
-	RateLimitInitialPerSec  int     `json:"rate_limit_initial_per_sec"`
-	RateLimitInitialBurst   int     `json:"rate_limit_initial_burst"`
-	ForwarderSuspendSeconds int     `json:"forwarder_suspend_seconds"`
-	ForwarderFailThreshold  int     `json:"forwarder_fail_threshold"`
-	ForwarderRetryAttempts  int     `json:"forwarder_retry_attempts"`
-	ForwarderRetryBaseMs    int     `json:"forwarder_retry_base_ms"`
-	ForwardersCount         int     `json:"forwarders_count"`
-	ForwardsFile            string  `json:"forwards_file,omitempty"`
-}
-
 // Stats holds all collected statistics
 type Stats struct {
-	Config                 *ConfigInfo             `json:"config,omitempty"`
-	ScheduledAnnouncements int                     `json:"scheduled_announcements"`
-	ScheduledAnnounces     []ScheduledAnnounce     `json:"scheduled_announces,omitempty"`
-	TrackedHashes          int                     `json:"tracked_hashes"`
-	DisabledForwarders     int                     `json:"disabled_forwarders"`
-	ActiveForwarders       int                     `json:"active_forwarders"`
-	Forwarders             []ForwarderStat         `json:"forwarders,omitempty"`
-	HashPeerStats          map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
-	ClientStats            *ClientStats            `json:"client_stats,omitempty"`
-	QueueDepth             int                     `json:"queue_depth"`
-	QueueCapacity          int                     `json:"queue_capacity"`
-	QueueFillPct           int                     `json:"queue_fill_pct"`
-	ActiveWorkers          int                     `json:"active_workers"`
-	MaxWorkers             int                     `json:"max_workers"`
-	DroppedFull            uint64                  `json:"dropped_full"`
-	RateLimited            uint64                  `json:"rate_limited"`
-	ThrottledForwarders    uint64                  `json:"throttled_forwarders"`
-}
-
-// ScheduledAnnounce represents a scheduled announcement
-type ScheduledAnnounce struct {
-	InfoHash      string        `json:"info_hash"`
-	ForwarderName string        `json:"forwarder_name"`
-	TimeToExec    time.Duration `json:"time_to_exec_seconds"`
+	Config              *config.Config          `json:"config,omitempty"`
+	PendingJobs         int                     `json:"pending_jobs"`
+	TrackedHashes       int                     `json:"tracked_hashes"`
+	DisabledForwarders  int                     `json:"disabled_forwarders"`
+	ActiveForwarders    int                     `json:"active_forwarders"`
+	Forwarders          []ForwarderStat         `json:"forwarders,omitempty"`
+	HashPeerStats       map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
+	ClientStats         *ClientStats            `json:"client_stats,omitempty"`
+	QueueDepth          int                     `json:"queue_depth"`
+	QueueCapacity       int                     `json:"queue_capacity"`
+	QueueFillPct        int                     `json:"queue_fill_pct"`
+	ActiveWorkers       int                     `json:"active_workers"`
+	MaxWorkers          int                     `json:"max_workers"`
+	DroppedFull         uint64                  `json:"dropped_full"`
+	RateLimited         uint64                  `json:"rate_limited"`
+	ThrottledForwarders uint64                  `json:"throttled_forwarders"`
 }
 
 // ForwarderStat represents statistics for a forwarder
@@ -101,7 +66,6 @@ type ClientInfo struct {
 // StatsDataProvider interface for collecting stats data
 type StatsDataProvider interface {
 	GetPendingCount() int
-	GetScheduledAnnounces() []ScheduledAnnounce
 	GetTrackedHashes() int
 	GetDisabledForwarders() int
 	GetActiveForwarders() int
@@ -111,7 +75,7 @@ type StatsDataProvider interface {
 	GetQueueMetrics() (depth, capacity, fillPct int)
 	GetWorkerMetrics() (active, max int)
 	GetDropCounters() (droppedFull, rateLimited, throttled uint64)
-	GetConfig() *ConfigInfo
+	GetConfig() *config.Config
 }
 
 // NewStatsCollector creates a new stats collector
@@ -122,14 +86,13 @@ func NewStatsCollector() *StatsCollector {
 // CollectStats collects statistics from a data provider
 func (sc *StatsCollector) CollectStats(provider StatsDataProvider) *Stats {
 	stats := &Stats{
-		Config:                 provider.GetConfig(),
-		ScheduledAnnouncements: provider.GetPendingCount(),
-		ScheduledAnnounces:     provider.GetScheduledAnnounces(),
-		TrackedHashes:          provider.GetTrackedHashes(),
-		DisabledForwarders:     provider.GetDisabledForwarders(),
-		ActiveForwarders:       provider.GetActiveForwarders(),
-		HashPeerStats:          provider.GetHashPeerStats(),
-		ClientStats:            provider.GetClientStats(),
+		Config:             provider.GetConfig(),
+		PendingJobs:        provider.GetPendingCount(),
+		TrackedHashes:      provider.GetTrackedHashes(),
+		DisabledForwarders: provider.GetDisabledForwarders(),
+		ActiveForwarders:   provider.GetActiveForwarders(),
+		HashPeerStats:      provider.GetHashPeerStats(),
+		ClientStats:        provider.GetClientStats(),
 	}
 
 	// Get forwarder stats directly from provider
@@ -152,7 +115,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	// Print configuration section
 	if stats.Config != nil {
 		sb.WriteString("\n=== Configuration ===\n")
-		sb.WriteString(fmt.Sprintf("HTTP Listen: %s\n", stats.Config.HTTPListen))
+		sb.WriteString(fmt.Sprintf("HTTP Listen: %s\n", stats.Config.Listen))
 		if stats.Config.UDPListen != "" {
 			sb.WriteString(fmt.Sprintf("UDP Listen: %s\n", stats.Config.UDPListen))
 		} else {
@@ -167,8 +130,9 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			sb.WriteString(fmt.Sprintf("Tracker ID: %s\n", stats.Config.TrackerID))
 		}
 		sb.WriteString(fmt.Sprintf("Statistics Interval: %d seconds\n", stats.Config.StatsInterval))
-		if stats.Config.ForwardersCount > 0 {
-			sb.WriteString(fmt.Sprintf("Forwarders: %d configured\n", stats.Config.ForwardersCount))
+		forwardersCount := stats.Config.ForwardersCount()
+		if forwardersCount > 0 {
+			sb.WriteString(fmt.Sprintf("Forwarders: %d configured\n", forwardersCount))
 			if stats.Config.ForwardsFile != "" {
 				sb.WriteString(fmt.Sprintf("  Forwards File: %s\n", stats.Config.ForwardsFile))
 			}
@@ -177,7 +141,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			sb.WriteString(fmt.Sprintf("  Forwarder Queue Size: %d\n", stats.Config.ForwarderQueueSize))
 			sb.WriteString(fmt.Sprintf("  Queue Scale Threshold: %d%%\n", stats.Config.QueueScaleThresholdPct))
 			sb.WriteString(fmt.Sprintf("  Queue Rate Limit Threshold: %d%%\n", stats.Config.QueueRateLimitThreshold))
-			sb.WriteString(fmt.Sprintf("  Queue Throttle Threshold: %d%% (top %d forwarders)\n", stats.Config.QueueThrottleThreshold, stats.Config.QueueThrottleTopN))
+			sb.WriteString(fmt.Sprintf("  Queue Throttle Threshold: %d%% (limit to %d forwarders)\n", stats.Config.QueueThrottleThreshold, stats.Config.QueueThrottleTopN))
 			sb.WriteString(fmt.Sprintf("  Rate Limit Initial: %d/sec (burst %d)\n", stats.Config.RateLimitInitialPerSec, stats.Config.RateLimitInitialBurst))
 			sb.WriteString(fmt.Sprintf("  Forwarder suspend: %d seconds\n", stats.Config.ForwarderSuspendSeconds))
 			sb.WriteString(fmt.Sprintf("  Forwarder Fail Threshold: %d\n", stats.Config.ForwarderFailThreshold))
@@ -188,19 +152,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		}
 		sb.WriteString("==================\n")
 	}
-	sb.WriteString(fmt.Sprintf("Scheduled announcements: %d\n", stats.ScheduledAnnouncements))
-
-	if len(stats.ScheduledAnnounces) > 0 {
-		limit := len(stats.ScheduledAnnounces)
-		if limit > 10 {
-			limit = 10
-		}
-		sb.WriteString(fmt.Sprintf("Scheduled announces (next %d):\n", limit))
-		for _, sa := range stats.ScheduledAnnounces[:limit] {
-			sb.WriteString(fmt.Sprintf("  %s -> %s: %v\n", sa.InfoHash, sa.ForwarderName, sa.TimeToExec.Round(time.Second)))
-		}
-	}
-
+	sb.WriteString(fmt.Sprintf("Pending jobs: %d\n", stats.PendingJobs))
 	sb.WriteString(fmt.Sprintf("Tracked hashes: %d\n", stats.TrackedHashes))
 	sb.WriteString(fmt.Sprintf("Disabled forwarders: %d\n", stats.DisabledForwarders))
 	sb.WriteString(fmt.Sprintf("Active forwarders: %d\n", stats.ActiveForwarders))
@@ -263,49 +215,38 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	// Create a JSON-friendly version of stats
 	jsonStats := struct {
-		Config                 *ConfigInfo             `json:"config,omitempty"`
-		ScheduledAnnouncements int                     `json:"scheduled_announcements"`
-		ScheduledAnnounces     []ScheduledAnnounceJSON `json:"scheduled_announces,omitempty"`
-		TrackedHashes          int                     `json:"tracked_hashes"`
-		DisabledForwarders     int                     `json:"disabled_forwarders"`
-		ActiveForwarders       int                     `json:"active_forwarders"`
-		Forwarders             []ForwarderStatJSON     `json:"forwarders,omitempty"`
-		HashPeerStats          map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
-		ClientStats            *ClientStats            `json:"client_stats,omitempty"`
-		QueueDepth             int                     `json:"queue_depth"`
-		QueueCapacity          int                     `json:"queue_capacity"`
-		QueueFillPct           int                     `json:"queue_fill_pct"`
-		ActiveWorkers          int                     `json:"active_workers"`
-		MaxWorkers             int                     `json:"max_workers"`
-		DroppedFull            uint64                  `json:"dropped_full"`
-		RateLimited            uint64                  `json:"rate_limited"`
-		ThrottledForwarders    uint64                  `json:"throttled_forwarders"`
+		Config              *config.Config          `json:"config,omitempty"`
+		PendingJobs         int                     `json:"pending_jobs"`
+		TrackedHashes       int                     `json:"tracked_hashes"`
+		DisabledForwarders  int                     `json:"disabled_forwarders"`
+		ActiveForwarders    int                     `json:"active_forwarders"`
+		Forwarders          []ForwarderStatJSON     `json:"forwarders,omitempty"`
+		HashPeerStats       map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
+		ClientStats         *ClientStats            `json:"client_stats,omitempty"`
+		QueueDepth          int                     `json:"queue_depth"`
+		QueueCapacity       int                     `json:"queue_capacity"`
+		QueueFillPct        int                     `json:"queue_fill_pct"`
+		ActiveWorkers       int                     `json:"active_workers"`
+		MaxWorkers          int                     `json:"max_workers"`
+		DroppedFull         uint64                  `json:"dropped_full"`
+		RateLimited         uint64                  `json:"rate_limited"`
+		ThrottledForwarders uint64                  `json:"throttled_forwarders"`
 	}{
-		Config:                 stats.Config,
-		ScheduledAnnouncements: stats.ScheduledAnnouncements,
-		TrackedHashes:          stats.TrackedHashes,
-		DisabledForwarders:     stats.DisabledForwarders,
-		ActiveForwarders:       stats.ActiveForwarders,
-		HashPeerStats:          stats.HashPeerStats,
-		ClientStats:            stats.ClientStats,
-		QueueDepth:             stats.QueueDepth,
-		QueueCapacity:          stats.QueueCapacity,
-		QueueFillPct:           stats.QueueFillPct,
-		ActiveWorkers:          stats.ActiveWorkers,
-		MaxWorkers:             stats.MaxWorkers,
-		DroppedFull:            stats.DroppedFull,
-		RateLimited:            stats.RateLimited,
-		ThrottledForwarders:    stats.ThrottledForwarders,
-	}
-
-	// Convert scheduled announces
-	jsonStats.ScheduledAnnounces = make([]ScheduledAnnounceJSON, len(stats.ScheduledAnnounces))
-	for i, sa := range stats.ScheduledAnnounces {
-		jsonStats.ScheduledAnnounces[i] = ScheduledAnnounceJSON{
-			InfoHash:      sa.InfoHash,
-			ForwarderName: sa.ForwarderName,
-			TimeToExec:    int(sa.TimeToExec.Seconds()),
-		}
+		Config:              stats.Config,
+		PendingJobs:         stats.PendingJobs,
+		TrackedHashes:       stats.TrackedHashes,
+		DisabledForwarders:  stats.DisabledForwarders,
+		ActiveForwarders:    stats.ActiveForwarders,
+		HashPeerStats:       stats.HashPeerStats,
+		ClientStats:         stats.ClientStats,
+		QueueDepth:          stats.QueueDepth,
+		QueueCapacity:       stats.QueueCapacity,
+		QueueFillPct:        stats.QueueFillPct,
+		ActiveWorkers:       stats.ActiveWorkers,
+		MaxWorkers:          stats.MaxWorkers,
+		DroppedFull:         stats.DroppedFull,
+		RateLimited:         stats.RateLimited,
+		ThrottledForwarders: stats.ThrottledForwarders,
 	}
 
 	// Convert forwarder stats
@@ -322,13 +263,6 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(jsonStats, "", "  ")
-}
-
-// ScheduledAnnounceJSON is the JSON representation of ScheduledAnnounce
-type ScheduledAnnounceJSON struct {
-	InfoHash      string `json:"info_hash"`
-	ForwarderName string `json:"forwarder_name"`
-	TimeToExec    int    `json:"time_to_exec_seconds"`
 }
 
 // ForwarderStatJSON is the JSON representation of ForwarderStat

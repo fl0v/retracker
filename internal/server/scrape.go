@@ -23,42 +23,45 @@ var (
 	ErrBadInfohash  = errors.New(`bad infohash`)
 )
 
+// ScrapeStats holds statistics for a single info hash
+type ScrapeStats struct {
+	Complete   int // Number of seeders
+	Incomplete int // Number of leechers
+	Downloaded int // Number of completed downloads (not accurately tracked)
+}
+
+// ScrapeResponseHash is the HTTP bencoded response format
 type ScrapeResponseHash struct {
 	Complete   int `bencode:"complete"`
 	Incomplete int `bencode:"incomplete"`
 	Downloaded int `bencode:"downloaded"`
 }
 
+// ScrapeResponse is the HTTP bencoded response format
 type ScrapeResponse struct {
 	Files map[string]ScrapeResponseHash `bencode:"files"`
 }
 
-func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error) {
-	if len(infoHashes) == 0 {
-		ErrorLogScrape.Println(ErrNoInfohashes.Error())
-		return ScrapeResponse{}, ErrNoInfohashes
-	}
-	scrapeResponse := ScrapeResponse{
-		Files: make(map[string]ScrapeResponseHash),
-	}
+// getScrapeStats collects statistics for the given info hashes.
+// This is the unified logic used by both HTTP and UDP scrape handlers.
+func getScrapeStats(storage *Storage, forwarderStorage *ForwarderStorage, infoHashes []common.InfoHash) map[common.InfoHash]ScrapeStats {
+	stats := make(map[common.InfoHash]ScrapeStats)
 
-	core.Storage.requestsMu.Lock()
-	defer core.Storage.requestsMu.Unlock()
-	for _, infoHashString := range infoHashes {
-		infoHash := common.InfoHash(infoHashString)
-		infoHashHex := strings.ToUpper(hex.EncodeToString([]byte(infoHashString)))
+	storage.requestsMu.Lock()
+	defer storage.requestsMu.Unlock()
+
+	for _, infoHash := range infoHashes {
 		if !infoHash.Valid() {
-			ErrorLogScrape.Println(infoHashString, ErrBadInfohash.Error())
-			return ScrapeResponse{}, ErrBadInfohash
+			continue
 		}
 
-		srh := ScrapeResponseHash{}
+		srh := ScrapeStats{}
 
 		// Track unique IPs across local and forwarder peers
 		seenIPs := make(map[string]struct{})
 
 		// Local peers from in-memory storage
-		if requestInfoHash, found := core.Storage.Requests[infoHash]; found {
+		if requestInfoHash, found := storage.Requests[infoHash]; found {
 			for _, peerRequest := range requestInfoHash {
 				ipStr := string(peerRequest.Peer().IP)
 				if ipStr == "" {
@@ -75,13 +78,11 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 					srh.Incomplete++
 				}
 			}
-		} else {
-			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
 		}
 
 		// Forwarder peers (unique by IP, counted as seeders because we lack state)
-		if core.ForwarderStorage != nil {
-			for _, peer := range core.ForwarderStorage.GetAllPeers(infoHash) {
+		if forwarderStorage != nil {
+			for _, peer := range forwarderStorage.GetAllPeers(infoHash) {
 				ipStr := string(peer.IP)
 				if ipStr == "" {
 					continue
@@ -93,11 +94,54 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 				srh.Complete++ // assume forwarder peers are seeders
 			}
 		}
-		DebugLogScrape.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, srh.Complete, srh.Incomplete)
-		srh.Downloaded = srh.Complete // Unfortunately, we do not collect statistics to present the actual value.
 
-		scrapeResponse.Files[infoHashString] = srh
+		// Downloaded count is set to Complete (we don't track actual completed count)
+		srh.Downloaded = srh.Complete
+
+		stats[infoHash] = srh
 	}
+
+	return stats
+}
+
+func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error) {
+	if len(infoHashes) == 0 {
+		ErrorLogScrape.Println(ErrNoInfohashes.Error())
+		return ScrapeResponse{}, ErrNoInfohashes
+	}
+
+	// Convert string hashes to InfoHash
+	infoHashList := make([]common.InfoHash, 0, len(infoHashes))
+	for _, infoHashString := range infoHashes {
+		infoHash := common.InfoHash(infoHashString)
+		if !infoHash.Valid() {
+			ErrorLogScrape.Println(infoHashString, ErrBadInfohash.Error())
+			return ScrapeResponse{}, ErrBadInfohash
+		}
+		infoHashList = append(infoHashList, infoHash)
+	}
+
+	// Get unified statistics
+	stats := getScrapeStats(core.Storage, core.ForwarderStorage, infoHashList)
+
+	// Convert to HTTP response format
+	scrapeResponse := ScrapeResponse{
+		Files: make(map[string]ScrapeResponseHash),
+	}
+
+	for _, infoHashString := range infoHashes {
+		infoHash := common.InfoHash(infoHashString)
+		infoHashHex := strings.ToUpper(hex.EncodeToString([]byte(infoHashString)))
+		if stat, ok := stats[infoHash]; ok {
+			DebugLogScrape.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, stat.Complete, stat.Incomplete)
+			scrapeResponse.Files[infoHashString] = ScrapeResponseHash(stat)
+		} else {
+			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
+			// Include empty entry for invalid/missing hash
+			scrapeResponse.Files[infoHashString] = ScrapeResponseHash{}
+		}
+	}
+
 	return scrapeResponse, nil
 }
 

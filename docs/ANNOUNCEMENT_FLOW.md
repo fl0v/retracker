@@ -37,10 +37,19 @@ flowchart TD
     
     %% First Announce Path
     FirstCheck -->|Yes| FirstAnnounce[handleFirstAnnounce]
-    FirstAnnounce --> GetCachedPeers1[Get Cached Forwarder Peers - usually empty]
+    FirstAnnounce --> RateLimitCheck{Rate Limit Active?}
+    RateLimitCheck -->|Yes & Exceeded| RateLimitReject[Reject: Return retry interval]
+    RateLimitReject --> End3([Response to Client])
+    RateLimitCheck -->|No| QueueFullCheck{Queue Full?}
+    QueueFullCheck -->|Yes| QueueFullReject[Reject: Return retry interval]
+    QueueFullReject --> End3
+    QueueFullCheck -->|No| GetCachedPeers1[Get Cached Forwarder Peers - usually empty]
     GetCachedPeers1 --> CacheRequest2[Cache Request]
-    CacheRequest2 --> TriggerInitial[Trigger Initial Announce to All Forwarders]
-    TriggerInitial --> QueueJobs1[Queue Jobs to Worker Pool]
+    CacheRequest2 --> QueueEligible[QueueEligibleAnnounces]
+    QueueEligible --> ShouldAnnounce{ShouldAnnounceNow?}
+    ShouldAnnounce -->|Yes| QueueJobs1[Queue Jobs Immediately to Worker Pool]
+    ShouldAnnounce -->|No| SkipForwarder[Skip Forwarder - NextAnnounce not due]
+    SkipForwarder --> QueueJobs1
     QueueJobs1 --> FirstResponse[Return Response - interval 15s]
     FirstResponse --> End3([Response to Client])
     
@@ -52,13 +61,14 @@ flowchart TD
     CacheRequest3 --> CheckReannounce2[Check and Re-announce - Compare Intervals]
     CheckReannounce2 --> IntervalCheck{Client Interval vs Forwarder Interval?}
     
-    IntervalCheck -->|Client > Forwarder| ImmediateReannounce[Queue Immediate Re-announce Jobs]
-    IntervalCheck -->|Client < Forwarder| ScheduledReannounce[Queue Scheduled Re-announce Jobs]
+    IntervalCheck -->|Client > Forwarder| ReannounceCheck{ShouldAnnounceNow?}
+    IntervalCheck -->|Client < Forwarder| ReannounceCheck
     IntervalCheck -->|Equal| NoReannounce[No Re-announce Needed]
     
-    ImmediateReannounce --> QueueJobs2[Queue Jobs to Worker Pool]
-    ScheduledReannounce --> QueueJobs2
-    NoReannounce --> SubsequentResponse[Return Response with peers + interval]
+    ReannounceCheck -->|Yes| QueueJobs2[Queue Jobs to Worker Pool]
+    ReannounceCheck -->|No| SkipReannounce[Skip - NextAnnounce not due]
+    SkipReannounce --> SubsequentResponse[Return Response with peers + interval]
+    NoReannounce --> SubsequentResponse
     QueueJobs2 --> SubsequentResponse
     SubsequentResponse --> End4([Response to Client])
     
@@ -80,15 +90,24 @@ flowchart TD
     UDPAnnounce --> UDPResponseCheck{Response Valid?}
     
     HTTPResponseCheck -->|200 OK| ParseHTTPResponse[Parse Bencoded Response]
-    HTTPResponseCheck -->|Error| ErrorHandling[Log Error, Use Empty Peers, Interval 60s]
+    HTTPResponseCheck -->|BEP 31 Retry| HandleRetry[handleRetryError: Schedule Retry]
+    HTTPResponseCheck -->|Other Error| ErrorHandling[Log Error, Use Empty Peers, Interval 60s]
     
     UDPResponseCheck -->|Success| ParseUDPResponse[Parse Binary UDP Response, Extract Peers]
     UDPResponseCheck -->|Error| ErrorHandling
     
-    ParseHTTPResponse --> UpdateForwarderStorage[Update ForwarderStorage with Peers and Interval]
+    HandleRetry --> RetryCheck{Retry < 10min?}
+    RetryCheck -->|Yes| ScheduleRetry[Schedule Job for Retry Time]
+    RetryCheck -->|No| DisableForwarder[Disable Forwarder - Retry too long]
+    ScheduleRetry --> ScheduleMap2[Add to scheduledJobs Map]
+    ScheduleMap2 --> SchedulerRoutine2[Scheduler Routine will move to queue when ready]
+    SchedulerRoutine2 --> WorkerDone
+    
+    ParseHTTPResponse --> UpdateForwarderStorage[Update ForwarderStorage: Set NextAnnounce = now + interval]
     ParseUDPResponse --> UpdateForwarderStorage
     UpdateForwarderStorage --> RecordStats[Record Statistics: Response Time, Interval]
     RecordStats --> UnmarkJob[Unmark Job as Pending]
+    DisableForwarder --> UnmarkJob
     ErrorHandling --> UnmarkJob
     UnmarkJob --> WorkerDone([Worker Ready for Next Job])
     
@@ -135,11 +154,31 @@ flowchart TD
   - Binary packet encoding/decoding
   - IPv4/IPv6 peer format detection
 - **Worker Pool**: Parallel processing of forwarder requests (Config.ForwarderWorkers)
-- **Job Queue**: Buffered channel for announce jobs
-- **Re-announcing Logic**:
-  - If client interval > forwarder interval → immediate re-announce
-  - If client interval < forwarder interval → scheduled re-announce
-  - Jobs are deduplicated (pending job tracking)
+  - Base workers: Config.ForwarderWorkers
+  - Max workers: Config.MaxForwarderWorkers
+  - Auto-scaling based on queue fill percentage
+- **Job Queue**: Buffered channel for announce jobs (Config.ForwarderQueueSize)
+  - Immediate execution jobs go directly to queue
+  - Scheduled jobs stored in scheduledJobs map until ready
+- **Initial Announcements** (First announce for a hash):
+  - **NOT scheduled** - queued immediately via `QueueEligibleAnnounces()`
+  - Only queued if `ShouldAnnounceNow()` returns true (forwarder never seen hash OR NextAnnounce is due)
+  - Rate limiting applied when queue fill >= threshold
+  - Throttling: limits to top N forwarders when queue fill >= throttle threshold
+- **Re-announcing Logic** (Subsequent announces):
+  - Uses `QueueEligibleAnnounces()` with the same eligibility rules
+  - Only queues when `ShouldAnnounceNow()` is true (NextAnnounce due or zero)
+  - No forward scheduling; if not due, the forwarder is skipped
+  - Jobs are deduplicated (pending job tracking prevents duplicates)
+- **BEP 31 Retry Handling**:
+  - When forwarder returns retry error, schedules retry at specified time
+  - Only schedules if retry period < 10 minutes
+  - If retry period >= 10 minutes, forwarder is disabled
+- **Scheduler Routine**:
+  - Runs every 5 seconds
+  - Checks scheduledJobs map for jobs ready to execute
+  - Moves ready jobs to jobQueue
+  - If queue full, reschedules for 10 seconds later
 
 ### 4. Response Generation
 - **First Announce**: Returns interval=15s, triggers initial forwarder announces
@@ -150,6 +189,17 @@ flowchart TD
 
 1. **Non-blocking**: Forwarder operations don't block client responses
 2. **Parallel Execution**: Stopped/completed events sent to all forwarders in parallel
-3. **Deduplication**: Prevents duplicate jobs for same peer+forwarder+hash
+3. **Deduplication**: Prevents duplicate jobs for same peer+forwarder+hash using pendingJobs map
 4. **Interval Management**: Dynamically adjusts based on forwarder responses
+   - Each forwarder maintains its own NextAnnounce time
+   - Re-announcements respect forwarder's NextAnnounce to avoid rate limiting
 5. **Error Handling**: Failed forwarder requests don't affect client response
+6. **Scheduling vs Immediate Execution**:
+   - **Initial announcements**: Always immediate (no scheduling)
+   - **Re-announcements**: Immediate when due (via `QueueEligibleAnnounces`), skipped if not due
+   - **Retry errors**: Scheduled at tracker-specified retry time
+7. **Queue Management**:
+   - Rate limiting: Applied to initial announcements when queue fill >= threshold
+   - Throttling: Limits to top N forwarders when queue fill >= throttle threshold
+   - Worker scaling: Auto-scales workers based on queue fill percentage
+   - Queue full handling: Rejects new jobs or reschedules scheduled jobs
