@@ -1449,25 +1449,51 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 	for infoHash, forwarders := range p.fm.Storage.Entries {
 		seenLocal := make(map[common.PeerID]struct{})
 		seenForwarder := make(map[common.PeerID]struct{})
+		seenIPs := make(map[string]struct{})
+		complete := 0
+		incomplete := 0
 
-		// Count local peers (unique by peer ID)
+		// Count local peers (unique by peer ID) and calculate Complete/Incomplete
 		if p.fm.MainStorage != nil {
 			p.fm.MainStorage.requestsMu.Lock()
 			if requests, ok := p.fm.MainStorage.Requests[infoHash]; ok {
-				for peerID := range requests {
+				for peerID, peerRequest := range requests {
 					seenLocal[peerID] = struct{}{}
+
+					// Track unique IPs for Complete/Incomplete calculation
+					ipStr := string(peerRequest.Peer().IP)
+					if ipStr != "" {
+						if _, exists := seenIPs[ipStr]; !exists {
+							seenIPs[ipStr] = struct{}{}
+							if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
+								complete++
+							} else {
+								incomplete++
+							}
+						}
+					}
 				}
 			}
 			p.fm.MainStorage.requestsMu.Unlock()
 		}
 
-		// Count forwarder peers (unique by peer ID)
+		// Count forwarder peers (unique by peer ID) and add to Complete
 		for _, entry := range forwarders {
 			for _, peer := range entry.Peers {
 				if peer.PeerID == "" {
 					continue
 				}
 				seenForwarder[peer.PeerID] = struct{}{}
+
+				// Track unique IPs for Complete/Incomplete calculation
+				ipStr := string(peer.IP)
+				if ipStr != "" {
+					if _, exists := seenIPs[ipStr]; !exists {
+						seenIPs[ipStr] = struct{}{}
+						// Forwarder peers are counted as seeders (Complete)
+						complete++
+					}
+				}
 			}
 		}
 
@@ -1485,6 +1511,9 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 			LocalUnique:     len(seenLocal),
 			ForwarderUnique: len(seenForwarder),
 			TotalUnique:     len(totalSeen),
+			Complete:        complete,
+			Incomplete:      incomplete,
+			Downloaded:      complete, // Downloaded is same as Complete
 		}
 	}
 
@@ -1590,10 +1619,13 @@ func (fm *ForwarderManager) printStats() {
 	now := time.Now()
 	collector := observability.NewStatsCollector()
 	provider := &forwarderStatsProvider{fm: fm, cfg: fm.Config, now: now}
-	stats := collector.CollectStats(provider)
+	// Collect full stats for Prometheus
+	fullStats := collector.CollectStats(provider)
 	if fm.Prometheus != nil {
-		fm.updatePrometheusQueue(stats)
+		fm.updatePrometheusQueue(fullStats)
 	}
-	text := collector.FormatText(stats)
+	// Use simple stats for console output
+	simpleStats := collector.CollectSimpleStats(provider)
+	text := collector.FormatSimpleText(simpleStats)
 	fmt.Print(text)
 }

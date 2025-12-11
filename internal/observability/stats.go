@@ -43,11 +43,24 @@ type ForwarderStat struct {
 	HasStats        bool          `json:"has_stats"`
 }
 
+// SimpleStats holds only essential statistics for console output
+type SimpleStats struct {
+	PendingJobs        int `json:"pending_jobs"`
+	TrackedHashes      int `json:"tracked_hashes"`
+	DisabledForwarders int `json:"disabled_forwarders"`
+	ActiveForwarders   int `json:"active_forwarders"`
+	ActiveWorkers      int `json:"active_workers"`
+	ActiveClients      int `json:"active_clients"`
+}
+
 // HashPeerStat represents peer statistics for a hash
 type HashPeerStat struct {
 	LocalUnique     int `json:"local_unique"`
 	ForwarderUnique int `json:"forwarder_unique"`
 	TotalUnique     int `json:"total_unique"`
+	Complete        int `json:"complete"`
+	Incomplete      int `json:"incomplete"`
+	Downloaded      int `json:"downloaded"`
 }
 
 // ClientStats represents client statistics
@@ -106,7 +119,39 @@ func (sc *StatsCollector) CollectStats(provider StatsDataProvider) *Stats {
 	return stats
 }
 
-// FormatText formats stats as text (matching console output format)
+// CollectSimpleStats collects only essential statistics from a data provider
+func (sc *StatsCollector) CollectSimpleStats(provider StatsDataProvider) *SimpleStats {
+	activeClients := 0
+	if clientStats := provider.GetClientStats(); clientStats != nil {
+		activeClients = clientStats.ActiveClients
+	}
+	activeWorkers, _ := provider.GetWorkerMetrics()
+
+	return &SimpleStats{
+		PendingJobs:        provider.GetPendingCount(),
+		TrackedHashes:      provider.GetTrackedHashes(),
+		DisabledForwarders: provider.GetDisabledForwarders(),
+		ActiveForwarders:   provider.GetActiveForwarders(),
+		ActiveWorkers:      activeWorkers,
+		ActiveClients:      activeClients,
+	}
+}
+
+// FormatSimpleText formats simple stats as an aligned table for console output
+func (sc *StatsCollector) FormatSimpleText(stats *SimpleStats) string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Pending Jobs:", stats.PendingJobs))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Tracked Hashes:", stats.TrackedHashes))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Disabled Forwarders:", stats.DisabledForwarders))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Forwarders:", stats.ActiveForwarders))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Workers:", stats.ActiveWorkers))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Clients:", stats.ActiveClients))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// FormatText formats stats as text (detailed format for /stats endpoint)
 func (sc *StatsCollector) FormatText(stats *Stats) string {
 	var sb strings.Builder
 
@@ -162,26 +207,33 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	sb.WriteString(fmt.Sprintf("Rate limited: %d\n", stats.RateLimited))
 	sb.WriteString(fmt.Sprintf("Throttled forwarders skipped: %d\n", stats.ThrottledForwarders))
 
-	for _, forwarder := range stats.Forwarders {
-		if forwarder.HasStats {
-			protocolStr := ""
-			if forwarder.Protocol != "" {
-				protocolStr = fmt.Sprintf(" [%s]", forwarder.Protocol)
+	// Format forwarders as a table
+	if len(stats.Forwarders) > 0 {
+		sb.WriteString("\nForwarders:\n")
+		sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15s %-12s\n", "Name", "Protocol", "AvgResponseTime", "AvgInterval", "SampleCount"))
+		sb.WriteString(strings.Repeat("-", 92) + "\n")
+		for _, forwarder := range stats.Forwarders {
+			protocol := forwarder.Protocol
+			if protocol == "" {
+				protocol = "-"
 			}
-			sb.WriteString(fmt.Sprintf("  %s%s: avg response time %v, avg interval %ds (from %d samples)\n",
-				forwarder.Name, protocolStr, forwarder.AvgResponseTime.Round(time.Millisecond), forwarder.AvgInterval, forwarder.SampleCount))
-		} else {
-			protocolStr := ""
-			if forwarder.Protocol != "" {
-				protocolStr = fmt.Sprintf(" [%s]", forwarder.Protocol)
+			if forwarder.HasStats {
+				responseTime := forwarder.AvgResponseTime.Round(time.Millisecond).String()
+				sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15d %-12d\n",
+					forwarder.Name, protocol, responseTime, forwarder.AvgInterval, forwarder.SampleCount))
+			} else {
+				sb.WriteString(fmt.Sprintf("%-30s %-10s %-20s %-15s %-12s\n",
+					forwarder.Name, protocol, "no statistics yet", "-", "-"))
 			}
-			sb.WriteString(fmt.Sprintf("  %s%s: no statistics yet\n", forwarder.Name, protocolStr))
 		}
 	}
 
-	// Print per-hash unique peer counts
+	// Print per-hash stats as a table with scrape-like info
 	if len(stats.HashPeerStats) > 0 {
-		sb.WriteString("Hash unique peers (local/forwarders/total):\n")
+		sb.WriteString("\nTracked Hashes:\n")
+		sb.WriteString(fmt.Sprintf("%-40s %-10s %-12s %-12s %-15s %-18s %-12s\n",
+			"Hash", "Complete", "Incomplete", "Downloaded", "LocalUnique", "ForwarderUnique", "TotalUnique"))
+		sb.WriteString(strings.Repeat("-", 119) + "\n")
 		// Sort hashes for consistent output
 		hashes := make([]string, 0, len(stats.HashPeerStats))
 		for hash := range stats.HashPeerStats {
@@ -190,18 +242,22 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sort.Strings(hashes)
 		for _, hash := range hashes {
 			hashStats := stats.HashPeerStats[hash]
-			sb.WriteString(fmt.Sprintf("  %s: %d/%d/%d\n", hash, hashStats.LocalUnique, hashStats.ForwarderUnique, hashStats.TotalUnique))
+			sb.WriteString(fmt.Sprintf("%-40s %-10d %-12d %-12d %-15d %-18d %-12d\n",
+				hash, hashStats.Complete, hashStats.Incomplete, hashStats.Downloaded,
+				hashStats.LocalUnique, hashStats.ForwarderUnique, hashStats.TotalUnique))
 		}
 	}
 
-	// Print client statistics
+	// Print client statistics as a table
 	if stats.ClientStats != nil {
 		if stats.ClientStats.ActiveClients == 0 {
-			sb.WriteString("Active clients: 0\n")
+			sb.WriteString("\nActive clients: 0\n")
 		} else {
-			sb.WriteString(fmt.Sprintf("Active clients: %d\n", stats.ClientStats.ActiveClients))
+			sb.WriteString(fmt.Sprintf("\nActive clients: %d\n", stats.ClientStats.ActiveClients))
+			sb.WriteString(fmt.Sprintf("%-50s %-18s %-25s\n", "Key", "AnnouncedHashes", "SecondsSinceLastReq"))
+			sb.WriteString(strings.Repeat("-", 93) + "\n")
 			for _, client := range stats.ClientStats.Clients {
-				sb.WriteString(fmt.Sprintf("  %s: %d announced hash(es), %d seconds since last request\n",
+				sb.WriteString(fmt.Sprintf("%-50s %-18d %-25d\n",
 					client.Key, client.AnnouncedHashes, client.SecondsSinceLastReq))
 			}
 		}

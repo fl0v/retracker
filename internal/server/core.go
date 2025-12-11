@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/fl0v/retracker/internal/config"
 	"github.com/fl0v/retracker/internal/observability"
 )
@@ -111,7 +112,47 @@ func (p *simpleStatsProvider) GetForwarders() []observability.ForwarderStat {
 }
 
 func (p *simpleStatsProvider) GetHashPeerStats() map[string]observability.HashPeerStat {
-	return nil
+	hashPeerStats := make(map[string]observability.HashPeerStat)
+
+	p.storage.requestsMu.Lock()
+	defer p.storage.requestsMu.Unlock()
+
+	for infoHash, requests := range p.storage.Requests {
+		seenLocal := make(map[common.PeerID]struct{})
+		seenIPs := make(map[string]struct{})
+		complete := 0
+		incomplete := 0
+
+		// Count local peers (unique by peer ID) and calculate Complete/Incomplete
+		for peerID, peerRequest := range requests {
+			seenLocal[peerID] = struct{}{}
+
+			// Track unique IPs for Complete/Incomplete calculation
+			ipStr := string(peerRequest.Peer().IP)
+			if ipStr != "" {
+				if _, exists := seenIPs[ipStr]; !exists {
+					seenIPs[ipStr] = struct{}{}
+					if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
+						complete++
+					} else {
+						incomplete++
+					}
+				}
+			}
+		}
+
+		hashKey := fmt.Sprintf("%x", infoHash)
+		hashPeerStats[hashKey] = observability.HashPeerStat{
+			LocalUnique:     len(seenLocal),
+			ForwarderUnique: 0,
+			TotalUnique:     len(seenLocal),
+			Complete:        complete,
+			Incomplete:      incomplete,
+			Downloaded:      complete, // Downloaded is same as Complete
+		}
+	}
+
+	return hashPeerStats
 }
 
 func (p *simpleStatsProvider) GetClientStats() *observability.ClientStats {
