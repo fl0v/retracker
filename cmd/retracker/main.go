@@ -65,27 +65,8 @@ func main() {
 	configFile := flag.String("c", "", "Path to configuration file (YAML)")
 	listen := flag.String("l", ":6969", "Listen address:port for HTTP (overrides config file, default: :6969)")
 	udpListen := flag.String("u", "", "Listen address:port for UDP (empty to disable, overrides config file)")
-	age := flag.Float64("a", 0, "Keep 'n' minutes peer in memory (overrides config file)")
 	debug := flag.Bool("d", false, "Debug mode (overrides config file)")
-	xrealip := flag.Bool("x", false, "Get RemoteAddr from X-Real-IP header (overrides config file)")
 	forwards := flag.String("f", "", "Load forwards from YAML file")
-	forwardTimeout := flag.Int("t", 0, "Timeout (sec) for forward requests (overrides config file)")
-	forwarderWorkers := flag.Int("w", 0, "Number of workers for parallel forwarder processing (overrides config file)")
-	maxForwarderWorkers := flag.Int("W", 0, "Maximum workers for parallel forwarder processing (overrides config file)")
-	forwarderQueueSize := flag.Int("Q", 0, "Forwarder announce job queue size (overrides config file)")
-	queueScaleThreshold := flag.Int("queue-scale-threshold", 0, "Queue fill %% to trigger worker scaling (overrides config file)")
-	queueRateLimitThreshold := flag.Int("queue-rate-limit-threshold", 0, "Queue fill %% to trigger initial announce rate limiting (overrides config file)")
-	queueThrottleThreshold := flag.Int("queue-throttle-threshold", 0, "Queue fill %% to throttle forwarders to fastest subset (overrides config file)")
-	queueThrottleTopN := flag.Int("queue-throttle-top", 0, "Number of fastest forwarders to keep when throttling (overrides config file)")
-	rateLimitInitialPerSec := flag.Int("rate-limit-initial-ps", 0, "Initial announces per second when rate limiting is active (overrides config file)")
-	rateLimitInitialBurst := flag.Int("rate-limit-initial-burst", 0, "Burst for initial announce rate limit (overrides config file)")
-	forwarderSuspend := flag.Int("forwarder-suspend", 0, "Seconds to suspend a forwarder after overload errors (e.g., HTTP 429) (overrides config file)")
-	forwarderFailThreshold := flag.Int("F", 0, "Forwarder fail threshold before disabling (overrides config file)")
-	forwarderRetryAttempts := flag.Int("R", 0, "Forwarder retry attempts (UDP/HTTP) (overrides config file)")
-	forwarderRetryBaseMs := flag.Int("B", 0, "Forwarder retry base backoff in ms (exponential) (overrides config file)")
-	announceInterval := flag.Int("i", 0, "Announce interval (sec) (overrides config file)")
-	statsInterval := flag.Int("s", 0, "Statistics print interval (sec) (overrides config file)")
-	trackerID := flag.String("tracker-id", "", "Tracker ID to include in announce responses (overrides config file)")
 	ver := flag.Bool("v", false, "Show version")
 	help := flag.Bool("h", false, "print this help")
 	flag.Parse()
@@ -147,54 +128,6 @@ func main() {
 	if v := envBool("RETRACKER_DEBUG", false); v {
 		cfg.Debug = v
 	}
-	if v := envFloat64("RETRACKER_AGE", 0); v > 0 {
-		cfg.Age = v
-	}
-	if v := envBool("RETRACKER_X_REAL_IP", false); v {
-		cfg.XRealIP = v
-	}
-	if v := envInt("RETRACKER_FORWARD_TIMEOUT"); v > 0 {
-		cfg.ForwardTimeout = v
-	}
-	if v := envInt("FORWARDER_WORKERS"); v > 0 {
-		cfg.ForwarderWorkers = v
-	}
-	if v := envInt("MAX_FORWARDER_WORKERS"); v > 0 {
-		cfg.MaxForwarderWorkers = v
-	}
-	if v := envInt("FORWARDER_QUEUE_SIZE"); v > 0 {
-		cfg.ForwarderQueueSize = v
-	}
-	if v := envInt("QUEUE_SCALE_THRESHOLD"); v > 0 {
-		cfg.QueueScaleThresholdPct = v
-	}
-	if v := envInt("QUEUE_RATE_LIMIT_THRESHOLD"); v > 0 {
-		cfg.QueueRateLimitThreshold = v
-	}
-	if v := envInt("QUEUE_THROTTLE_THRESHOLD"); v > 0 {
-		cfg.QueueThrottleThreshold = v
-	}
-	if v := envInt("QUEUE_THROTTLE_TOP"); v > 0 {
-		cfg.QueueThrottleTopN = v
-	}
-	if v := envInt("RATE_LIMIT_INITIAL_PER_SEC"); v > 0 {
-		cfg.RateLimitInitialPerSec = v
-	}
-	if v := envInt("RATE_LIMIT_INITIAL_BURST"); v > 0 {
-		cfg.RateLimitInitialBurst = v
-	}
-	if v := envInt("FORWARDER_SUSPEND_SECONDS"); v > 0 {
-		cfg.ForwarderSuspendSeconds = v
-	}
-	if v := envInt("RETRACKER_ANNOUNCE_INTERVAL"); v > 0 {
-		cfg.AnnounceInterval = v
-	}
-	if v := envInt("RETRACKER_STATS_INTERVAL"); v > 0 {
-		cfg.StatsInterval = v
-	}
-	if v := envString("RETRACKER_TRACKER_ID", ""); v != "" {
-		cfg.TrackerID = v
-	}
 
 	// Step 3: Override with command-line flags (highest priority)
 	if *listen != "" {
@@ -221,69 +154,6 @@ func main() {
 	})
 	if debugSet {
 		cfg.Debug = *debug
-	}
-	if *age > 0 {
-		cfg.Age = *age
-	}
-	xrealipSet := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "x" {
-			xrealipSet = true
-		}
-	})
-	if xrealipSet {
-		cfg.XRealIP = *xrealip
-	}
-	if *forwardTimeout > 0 {
-		cfg.ForwardTimeout = *forwardTimeout
-	}
-	if *forwarderWorkers > 0 {
-		cfg.ForwarderWorkers = *forwarderWorkers
-	}
-	if *maxForwarderWorkers > 0 {
-		cfg.MaxForwarderWorkers = *maxForwarderWorkers
-	}
-	if *forwarderQueueSize > 0 {
-		cfg.ForwarderQueueSize = *forwarderQueueSize
-	}
-	if *queueScaleThreshold > 0 {
-		cfg.QueueScaleThresholdPct = *queueScaleThreshold
-	}
-	if *queueRateLimitThreshold > 0 {
-		cfg.QueueRateLimitThreshold = *queueRateLimitThreshold
-	}
-	if *queueThrottleThreshold > 0 {
-		cfg.QueueThrottleThreshold = *queueThrottleThreshold
-	}
-	if *queueThrottleTopN > 0 {
-		cfg.QueueThrottleTopN = *queueThrottleTopN
-	}
-	if *rateLimitInitialPerSec > 0 {
-		cfg.RateLimitInitialPerSec = *rateLimitInitialPerSec
-	}
-	if *rateLimitInitialBurst > 0 {
-		cfg.RateLimitInitialBurst = *rateLimitInitialBurst
-	}
-	if *forwarderSuspend > 0 {
-		cfg.ForwarderSuspendSeconds = *forwarderSuspend
-	}
-	if *forwarderFailThreshold > 0 {
-		cfg.ForwarderFailThreshold = *forwarderFailThreshold
-	}
-	if *forwarderRetryAttempts > 0 {
-		cfg.ForwarderRetryAttempts = *forwarderRetryAttempts
-	}
-	if *forwarderRetryBaseMs > 0 {
-		cfg.ForwarderRetryBaseMs = *forwarderRetryBaseMs
-	}
-	if *announceInterval > 0 {
-		cfg.AnnounceInterval = *announceInterval
-	}
-	if *statsInterval > 0 {
-		cfg.StatsInterval = *statsInterval
-	}
-	if *trackerID != "" {
-		cfg.TrackerID = *trackerID
 	}
 
 	// Validate announce interval

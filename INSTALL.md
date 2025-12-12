@@ -84,13 +84,22 @@ docker run -d -p 6969:6969 retracker
 cd docker
 docker-compose up -d
 ```
-Key environment variables (map to CLI flags):
-- `RETRACKER_CONFIG` → `-c` (path to config)
-- `RETRACKER_LISTEN` → `-l` (HTTP listen)
-- `RETRACKER_UDP_LISTEN` → `-u` (UDP listen, optional)
-- `RETRACKER_FORWARDS` → `-f` (forwarders file)
-- `RETRACKER_UPDATE_FORWARDERS` → when true, regenerate forwarders file on container start (writes to `RETRACKER_FORWARDS` path or default `configs/forwarders.yml`)
-- `RETRACKER_DEBUG` → `-d` (enable debug)
+
+#### Environment Variables
+
+All environment variables override config file settings. Priority: CLI flags > Environment variables > Config file > Defaults.
+
+**Basic Configuration:**
+- `RETRACKER_CONFIG` → `-c` - Path to configuration file (YAML)
+- `RETRACKER_LISTEN` → `-l` - HTTP listen address:port (e.g., `:6969`)
+- `RETRACKER_UDP_LISTEN` → `-u` - UDP listen address:port (empty to disable, e.g., `:6969`)
+- `RETRACKER_DEBUG` → `-d` - Enable debug mode (`true`/`false`)
+
+**Forwarders:**
+- `RETRACKER_FORWARDS` → `-f` - Path to forwarders YAML file
+- `RETRACKER_UPDATE_FORWARDERS` - Regenerate forwarders file on container start (`true`/`false`/`1`/`yes`/`on`/`enable`/`enabled`). Writes to `RETRACKER_FORWARDS` path or default `configs/forwarders.yml`
+- `TRACKER_LISTS_FILE` - Path to tracker lists file used by `update-forwarders.sh` (default: `configs/trackers-lists.txt`)
+- `ADDITIONAL_TRACKERS_FILE` - Path to additional trackers file used by `update-forwarders.sh` (default: `configs/trackers.txt`)
 
 ## From source
 ```bash
