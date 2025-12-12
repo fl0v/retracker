@@ -179,7 +179,7 @@ else
     touch "$ADDITIONAL_TRACKERS_FILE"
 fi
 
-# Normalize and deduplicate trackers
+# Normalize and deduplicate trackers with smart host-based deduplication
 echo "Normalizing and deduplicating trackers..."
 NORMALIZED="${LISTS_DIR}/_normalized.txt"
 > "$NORMALIZED"
@@ -189,20 +189,181 @@ if [[ -s "$ALL_TRACKERS" ]]; then
         # Skip empty lines
         [[ -z "$tracker" ]] && continue
         
-        # Normalize: convert to lowercase, remove trailing slashes, ensure /announce suffix
-        normalized=$(echo "$tracker" | tr '[:upper:]' '[:lower:]' | sed 's|/$||' | sed 's|/announce$||')
+        # Normalize: convert to lowercase, remove trailing slashes
+        normalized=$(echo "$tracker" | tr '[:upper:]' '[:lower:]' | sed 's|/$||')
         
         # Only process if it's HTTP/HTTPS/UDP and not empty
         if [[ "$normalized" =~ ^(https?|udp):// ]] && [[ -n "$normalized" ]]; then
-            echo "${normalized}/announce" >> "$NORMALIZED"
+            # Ensure /announce suffix if no path or empty path
+            if [[ "$normalized" =~ ^(https?|udp)://[^/]+$ ]] || [[ "$normalized" =~ ^(https?|udp)://[^/]+/$ ]]; then
+                normalized="${normalized%/}/announce"
+            elif [[ ! "$normalized" =~ / ]]; then
+                normalized="${normalized}/announce"
+            fi
+            echo "$normalized" >> "$NORMALIZED"
         fi
     done < "$ALL_TRACKERS"
 fi
 
-# Sort and remove duplicates
+# Function to extract host from URL (for grouping)
+extract_host() {
+    local url="$1"
+    # Remove protocol
+    url="${url#*://}"
+    # Extract host (everything up to first / or :)
+    local host="${url%%[:/]*}"
+    printf '%s' "$host"
+}
+
+# Function to parse URL components
+parse_url() {
+    local url="$1"
+    local protocol host port path
+    
+    # Extract protocol
+    if [[ "$url" =~ ^(https?|udp):// ]]; then
+        protocol="${BASH_REMATCH[1]}"
+    else
+        return 1
+    fi
+    
+    # Remove protocol
+    url="${url#*://}"
+    
+    # Extract host and port
+    if [[ "$url" =~ ^([^:/]+)(:([0-9]+))?(/.*)?$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[3]}"
+        path="${BASH_REMATCH[4]}"
+        
+        # Set default ports if not specified
+        if [[ -z "$port" ]]; then
+            if [[ "$protocol" == "http" ]]; then
+                port="80"
+            elif [[ "$protocol" == "https" ]]; then
+                port="443"
+            elif [[ "$protocol" == "udp" ]]; then
+                port="80"
+            fi
+        fi
+        
+        # Set default path if not specified
+        if [[ -z "$path" ]]; then
+            path="/announce"
+        fi
+        
+        printf '%s|%s|%s|%s' "$protocol" "$host" "$port" "$path"
+        return 0
+    fi
+    
+    return 1
+}
+
+# Smart deduplication: group by host and apply preference rules
 UNIQUE_TRACKERS="${LISTS_DIR}/_unique.txt"
 if [[ -s "$NORMALIZED" ]]; then
-    sort -u "$NORMALIZED" > "$UNIQUE_TRACKERS"
+    # Group trackers by host
+    declare -A host_groups
+    
+    while IFS= read -r tracker || [[ -n "$tracker" ]]; do
+        [[ -z "$tracker" ]] && continue
+        host=$(extract_host "$tracker")
+        if [[ -n "$host" ]]; then
+            host_groups["$host"]="${host_groups["$host"]}${host_groups["$host"]:+$'\n'}$tracker"
+        fi
+    done < "$NORMALIZED"
+    
+    # For each host, select the best tracker
+    > "$UNIQUE_TRACKERS"
+    for host in "${!host_groups[@]}"; do
+        # Check if we have both UDP and HTTP (first pass)
+        has_udp=false
+        has_http=false
+        while IFS= read -r tracker || [[ -n "$tracker" ]]; do
+            [[ -z "$tracker" ]] && continue
+            parsed=$(parse_url "$tracker")
+            if [[ -n "$parsed" ]]; then
+                IFS='|' read -r protocol _ _ _ <<< "$parsed"
+                if [[ "$protocol" == "udp" ]]; then
+                    has_udp=true
+                else
+                    has_http=true
+                fi
+            fi
+        done <<< "${host_groups["$host"]}"
+        
+        # Select best tracker (second pass)
+        best_tracker=""
+        best_protocol=""
+        best_port=""
+        best_path=""
+        
+        while IFS= read -r tracker || [[ -n "$tracker" ]]; do
+            [[ -z "$tracker" ]] && continue
+            parsed=$(parse_url "$tracker")
+            if [[ -z "$parsed" ]]; then
+                continue
+            fi
+            
+            IFS='|' read -r protocol _ current_port current_path <<< "$parsed"
+            # Normalize path for comparison (remove leading/trailing slashes)
+            current_path_norm="${current_path#/}"
+            current_path_norm="${current_path_norm%/}"
+            
+            # Rule 1: If we have both UDP and HTTP, prefer UDP
+            if [[ "$has_udp" == true ]] && [[ "$has_http" == true ]]; then
+                if [[ "$protocol" != "udp" ]]; then
+                    continue
+                fi
+            fi
+            
+            # If no best tracker yet, use this one
+            if [[ -z "$best_tracker" ]]; then
+                best_tracker="$tracker"
+                best_protocol="$protocol"
+                best_port="$current_port"
+                best_path="$current_path_norm"
+                continue
+            fi
+            
+            # Rule 2: If different paths and one is "announce", prefer that one
+            if [[ "$current_path_norm" == "announce" ]]; then
+                if [[ "$best_path" != "announce" ]]; then
+                    best_tracker="$tracker"
+                    best_protocol="$protocol"
+                    best_port="$current_port"
+                    best_path="$current_path_norm"
+                    continue
+                fi
+            elif [[ "$best_path" == "announce" ]]; then
+                continue
+            fi
+            
+            # Rule 3: If different ports, prefer 6969 or 1337
+            if [[ "$current_port" == "6969" ]] || [[ "$current_port" == "1337" ]]; then
+                if [[ "$best_port" != "6969" ]] && [[ "$best_port" != "1337" ]]; then
+                    best_tracker="$tracker"
+                    best_protocol="$protocol"
+                    best_port="$current_port"
+                    best_path="$current_path_norm"
+                    continue
+                fi
+            elif [[ "$best_port" == "6969" ]] || [[ "$best_port" == "1337" ]]; then
+                continue
+            fi
+            
+            # If all else equal, keep the first one we found
+        done <<< "${host_groups["$host"]}"
+        
+        if [[ -n "$best_tracker" ]]; then
+            echo "$best_tracker" >> "$UNIQUE_TRACKERS"
+        fi
+    done
+    
+    # Sort the final list
+    if [[ -s "$UNIQUE_TRACKERS" ]]; then
+        sort -u "$UNIQUE_TRACKERS" -o "$UNIQUE_TRACKERS"
+    fi
 else
     > "$UNIQUE_TRACKERS"
 fi
