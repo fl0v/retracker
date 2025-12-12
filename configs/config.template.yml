@@ -86,12 +86,17 @@
 # queue_rate_limit_threshold: 80
 
 # Queue fill percentage to throttle forwarders (default: 60)
-# When queue is this full, only fastest forwarders are used
+# When queue is this full, forwarder count per announce is limited
 # queue_throttle_threshold: 60
 
-# Number of fastest forwarders to keep when throttling (default: 20)
-# When throttling, only this many fastest forwarders will be used
+# Maximum forwarders to announce to when throttling (default: 20)
+# When throttling is active, limits announces to this many forwarders per request
 # queue_throttle_top_n: 20
+
+# Maximum forwarders to announce to per request (default: 100)
+# Limits how many forwarders receive each announce, even when not throttling
+# Forwarders are selected randomly to distribute load evenly
+# max_forwarders_per_announce: 100
 
 # Initial announces per second when rate limiting is active (default: 100)
 # rate_limit_initial_per_sec: 100

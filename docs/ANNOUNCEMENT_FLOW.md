@@ -24,8 +24,7 @@ flowchart TD
     UpdateStorage1 --> GetPeers1[Get Peers from Local + Forwarder Storage]
     GetPeers1 --> CalcInterval1[Calculate Interval from Forwarder Average]
     CalcInterval1 --> ForwardCompleted[Forward Completed Event to All Forwarders - Parallel]
-    ForwardCompleted --> CacheRequest1[Cache Request]
-    CacheRequest1 --> CheckReannounce1[Check and Re-announce if needed]
+    ForwardCompleted --> CheckReannounce1[Check and Re-announce if needed]
     CheckReannounce1 --> CompletedResponse[Return Response with peers + interval]
     CompletedResponse --> End2([Response to Client])
     
@@ -44,8 +43,7 @@ flowchart TD
     QueueFullCheck -->|Yes| QueueFullReject[Reject: Return retry interval]
     QueueFullReject --> End3
     QueueFullCheck -->|No| GetCachedPeers1[Get Cached Forwarder Peers - usually empty]
-    GetCachedPeers1 --> CacheRequest2[Cache Request]
-    CacheRequest2 --> QueueEligible[QueueEligibleAnnounces]
+    GetCachedPeers1 --> QueueEligible[QueueEligibleAnnounces]
     QueueEligible --> ShouldAnnounce{ShouldAnnounceNow?}
     ShouldAnnounce -->|Yes| QueueJobs1[Queue Jobs Immediately to Worker Pool]
     ShouldAnnounce -->|No| SkipForwarder[Skip Forwarder - NextAnnounce not due]
@@ -57,8 +55,7 @@ flowchart TD
     FirstCheck -->|No| SubsequentAnnounce[handleSubsequentAnnounce]
     SubsequentAnnounce --> GetCachedPeers2[Get Cached Forwarder Peers]
     GetCachedPeers2 --> CalcInterval2[Calculate Interval from Forwarder Average]
-    CalcInterval2 --> CacheRequest3[Cache Request]
-    CacheRequest3 --> CheckReannounce2[Check and Re-announce - Compare Intervals]
+    CalcInterval2 --> CheckReannounce2[Check and Re-announce - Compare Intervals]
     CheckReannounce2 --> IntervalCheck{Client Interval vs Forwarder Interval?}
     
     IntervalCheck -->|Client > Forwarder| ReannounceCheck{ShouldAnnounceNow?}
@@ -164,7 +161,8 @@ flowchart TD
   - **NOT scheduled** - queued immediately via `QueueEligibleAnnounces()`
   - Only queued if `ShouldAnnounceNow()` returns true (forwarder never seen hash OR NextAnnounce is due)
   - Rate limiting applied when queue fill >= threshold
-  - Throttling: limits to top N forwarders when queue fill >= throttle threshold
+  - Throttling: limits to N forwarders when queue fill >= throttle threshold (random selection)
+  - Max limit: `max_forwarders_per_announce` caps forwarders even when not throttling (default 100)
 - **Re-announcing Logic** (Subsequent announces):
   - Uses `QueueEligibleAnnounces()` with the same eligibility rules
   - Only queues when `ShouldAnnounceNow()` is true (NextAnnounce due or zero)
@@ -200,6 +198,8 @@ flowchart TD
    - **Retry errors**: Scheduled at tracker-specified retry time
 7. **Queue Management**:
    - Rate limiting: Applied to initial announcements when queue fill >= threshold
-   - Throttling: Limits to top N forwarders when queue fill >= throttle threshold
+   - Throttling: Limits to N forwarders when queue fill >= throttle threshold (random selection)
+   - Max forwarders: `max_forwarders_per_announce` limits forwarders per request (default 100)
+   - Random distribution: Forwarders are shuffled to distribute load evenly
    - Worker scaling: Auto-scales workers based on queue fill percentage
    - Queue full handling: Rejects new jobs or reschedules scheduled jobs

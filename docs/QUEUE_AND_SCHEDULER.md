@@ -15,7 +15,7 @@ The forwarder system uses a multi-tier queue architecture to manage announce job
 ### 1. Job Queue (`jobQueue`)
 
 **Type**: `chan AnnounceJob` (buffered channel)  
-**Size**: `Config.ForwarderQueueSize` (default: 1000)  
+**Size**: `Config.ForwarderQueueSize` (default: 10000)  
 **Purpose**: Holds jobs ready for immediate execution by worker pool
 
 **Characteristics**:
@@ -230,23 +230,33 @@ worker():
 
 ### Throttling
 
-**Function**: `selectForwardersByQueue()`  
-**Applies To**: Initial announcements only
+**Implemented In**: `QueueEligibleAnnounces()`  
+**Applies To**: All announcements (initial and subsequent)
 
 **Conditions**:
-- Queue fill percentage >= `queueThrottleThreshold` (default: 70%)
-- `queueThrottleTopN` > 0 (default: 5)
+- Queue fill percentage >= `queueThrottleThreshold` (default: 60%)
+- `queueThrottleTopN` > 0 (default: 20)
 
 **Behavior**:
-- Randomly selects top N forwarders (Fisher-Yates shuffle)
-- Skips remaining forwarders
-- Increments `throttledForwardCount` metric
+- Limits forwarders to `queueThrottleTopN` per announce
+- Forwarders are shuffled randomly before iteration
+- First N eligible forwarders are selected
 - Distributes load across forwarders when queue is full
 
-**Why Random?**
+**Why Random Shuffle?**
 - Prevents always selecting same forwarders
 - Ensures fair distribution of load
-- Avoids bias toward first forwarders in list
+- Avoids bias toward first forwarders in config
+
+### Max Forwarders Per Announce
+
+**Config**: `max_forwarders_per_announce` (default: 100)  
+**Applies To**: All announcements
+
+**Behavior**:
+- Limits forwarders even when not throttling
+- When throttling is active, uses `min(max_forwarders_per_announce, queueThrottleTopN)`
+- Forwarders are shuffled randomly for fair distribution
 
 ### Queue Full Handling
 
@@ -316,7 +326,6 @@ worker():
 
 - **Dropped Full**: Jobs dropped when queue full
 - **Rate Limited**: Initial announcements rejected by rate limiter
-- **Throttled Forwarders**: Forwarders skipped due to throttling
 
 ### Scheduled Jobs
 
@@ -327,15 +336,16 @@ worker():
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `ForwarderQueueSize` | 1000 | Size of job queue buffer |
-| `ForwarderWorkers` | - | Base number of workers (required) |
-| `MaxForwarderWorkers` | `ForwarderWorkers * 2` | Maximum workers for scaling |
+| `ForwarderQueueSize` | 10000 | Size of job queue buffer |
+| `ForwarderWorkers` | 10 | Base number of workers |
+| `MaxForwarderWorkers` | 20 | Maximum workers for scaling |
 | `QueueScaleThresholdPct` | 60 | Queue fill % to trigger scale up |
 | `QueueRateLimitThreshold` | 80 | Queue fill % to enable rate limiting |
-| `QueueThrottleThreshold` | 70 | Queue fill % to enable throttling |
-| `QueueThrottleTopN` | 5 | Number of forwarders to use when throttling |
-| `RateLimitInitialPerSec` | - | Tokens per second for rate limiter |
-| `RateLimitInitialBurst` | - | Burst size for rate limiter |
+| `QueueThrottleThreshold` | 60 | Queue fill % to enable throttling |
+| `QueueThrottleTopN` | 20 | Number of forwarders to use when throttling |
+| `MaxForwardersPerAnnounce` | 100 | Max forwarders per announce (even when not throttling) |
+| `RateLimitInitialPerSec` | 100 | Tokens per second for rate limiter |
+| `RateLimitInitialBurst` | 200 | Burst size for rate limiter |
 
 ## Performance Considerations
 

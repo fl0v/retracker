@@ -421,7 +421,38 @@ func TestRateLimitThresholdActive(t *testing.T) {
 	}
 }
 
-func TestSelectForwardersThrottleKeepsFastestTopN(t *testing.T) {
+func TestQueueEligibleAnnouncesRespectsMaxLimit(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderQueueSize = 100
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.maxForwardersPerAnnounce = 2 // Limit to 2
+	fm.queueThrottleThresh = 100    // Disable throttling
+
+	// Prepare 4 forwarders
+	f1 := corecommon.Forward{Name: "f1", Uri: "http://f1"}
+	f2 := corecommon.Forward{Name: "f2", Uri: "http://f2"}
+	f3 := corecommon.Forward{Name: "f3", Uri: "http://f3"}
+	f4 := corecommon.Forward{Name: "f4", Uri: "http://f4"}
+	fm.Forwarders = []corecommon.Forward{f1, f2, f3, f4}
+
+	ih := btcommon.InfoHash("max-limit-test-hash1") // 20 bytes
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000000")}
+
+	fm.QueueEligibleAnnounces(ih, req)
+
+	// Should be limited to 2 jobs
+	if got := len(fm.jobQueue); got != 2 {
+		t.Fatalf("expected 2 jobs queued (max limit); got %d", got)
+	}
+}
+
+func TestQueueEligibleAnnouncesThrottleLimitsCount(t *testing.T) {
 	cfg := makeCfg()
 	cfg.ForwarderQueueSize = 10
 	fs := NewForwarderStorage()
@@ -433,38 +464,69 @@ func TestSelectForwardersThrottleKeepsFastestTopN(t *testing.T) {
 	fm := NewForwarderManager(cfg, fs, st, nil, nil)
 	fm.queueThrottleThresh = 50
 	fm.queueThrottleTopN = 1
+	fm.maxForwardersPerAnnounce = 100
 	fm.jobQueue = make(chan AnnounceJob, 10)
-	for i := 0; i < 6; i++ { // 60%
+	for i := 0; i < 6; i++ { // 60% fill to trigger throttling
 		fm.jobQueue <- AnnounceJob{}
 	}
 
 	// Prepare forwarders
-	f1 := corecommon.Forward{Name: "fast", Uri: "http://fast"}
-	f2 := corecommon.Forward{Name: "slow", Uri: "http://slow"}
+	f1 := corecommon.Forward{Name: "f1", Uri: "http://f1"}
+	f2 := corecommon.Forward{Name: "f2", Uri: "http://f2"}
 	fm.Forwarders = []corecommon.Forward{f1, f2}
 
-	// Stats: fast = 10ms, slow = 100ms
-	fm.statsMu.Lock()
-	fm.stats["fast"] = &ForwarderStats{
-		AvgResponseTime: 10 * time.Millisecond,
-		SampleCount:     1,
-	}
-	fm.stats["slow"] = &ForwarderStats{
-		AvgResponseTime: 100 * time.Millisecond,
-		SampleCount:     1,
-	}
-	fm.statsMu.Unlock()
+	ih := btcommon.InfoHash("throttle-test-hash01") // 20 bytes
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000001")}
 
-	selected := fm.selectForwardersByQueue(fm.Forwarders)
-	// With random selection, we expect exactly 1 forwarder to be selected (queueThrottleTopN = 1)
-	// but it could be either "fast" or "slow" due to randomization
-	if len(selected) != 1 {
-		t.Fatalf("expected exactly 1 forwarder selected; got %d: %+v", len(selected), selected)
+	fm.QueueEligibleAnnounces(ih, req)
+
+	// With throttling (queueThrottleTopN = 1), only 1 job should be added (total 7)
+	if got := len(fm.jobQueue); got != 7 {
+		t.Fatalf("expected 7 jobs in queue (6 + 1 throttled); got %d", got)
 	}
-	// Verify the selected forwarder is one of the two we provided
-	selectedName := selected[0].GetName()
-	if selectedName != "fast" && selectedName != "slow" {
-		t.Fatalf("expected selected forwarder to be 'fast' or 'slow'; got %s", selectedName)
+}
+
+func TestQueueEligibleAnnouncesSkipsRecentlyAnnounced(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderQueueSize = 100
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.maxForwardersPerAnnounce = 100
+	fm.queueThrottleThresh = 100 // Disable throttling
+
+	// Prepare 3 forwarders
+	f1 := corecommon.Forward{Name: "ready", Uri: "http://ready"}
+	f2 := corecommon.Forward{Name: "notdue", Uri: "http://notdue"}
+	f3 := corecommon.Forward{Name: "alsoready", Uri: "http://alsoready"}
+	fm.Forwarders = []corecommon.Forward{f1, f2, f3}
+
+	ih := btcommon.InfoHash("skip-recent-test-001") // 20 bytes
+	now := time.Now()
+
+	// Set one forwarder as not due (NextAnnounce in future)
+	fs.mu.Lock()
+	fs.Entries[ih] = map[string]ForwarderPeerEntry{
+		"ready": {
+			NextAnnounce: now.Add(-1 * time.Minute), // Due
+		},
+		"notdue": {
+			NextAnnounce: now.Add(5 * time.Minute), // Not due (future)
+		},
+		// "alsoready" not in storage = never announced = due
+	}
+	fs.mu.Unlock()
+
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000002")}
+	fm.QueueEligibleAnnounces(ih, req)
+
+	// Should queue 2 jobs (ready + alsoready), skip notdue
+	if got := len(fm.jobQueue); got != 2 {
+		t.Fatalf("expected 2 jobs queued; got %d", got)
 	}
 }
 

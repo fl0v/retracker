@@ -58,12 +58,19 @@ retracker/
   - Always lock with `requestsMu` before accessing `Requests` map
 
 ### 3. Forwarder System
-- **ForwarderManager** (`forwarderManager.go`): Handles forwarding announces to external trackers
+- **ForwarderManager** (`forwarderManager.go`): Core forwarder orchestration
   - Uses worker pool pattern (`ForwarderWorkers` config)
-  - Manages job scheduling and cancellation
-  - Handles event types (started, completed, stopped) differently
+  - Manages job scheduling, cancellation, and queue management
+  - Handles forwarder enable/disable/suspend logic
   - **Protocol detection**: Automatically detects HTTP/HTTPS vs UDP from forwarder URI
-  - Routes to `executeHTTPAnnounce()` or `executeUDPAnnounce()` based on protocol
+- **ForwarderAnnounce** (`forwarderAnnounce.go`): Unified announce execution logic
+  - `executeAnnounce()` routes to appropriate protocol handler
+  - `doHTTPAnnounce()` and `doUDPAnnounce()` implement protocol-specific logic
+  - `handleAnnounceResult()` processes results uniformly for both protocols
+  - Event forwarding (`ForwardStoppedEvent`, `ForwardCompletedEvent`)
+- **ForwarderStats** (`forwarderStats.go`): Statistics collection and reporting
+  - Implements `StatsDataProvider` interface for observability
+  - Records response times with EMA (exponential moving average)
 - **UDPForwarder** (`udpForwarder.go`): UDP forwarder client implementation
   - Implements BEP 15 UDP tracker protocol as a client
   - Manages connection IDs with 2-minute lifetime (per BEP 15)
@@ -186,7 +193,9 @@ retracker/
 - **cmd/retracker/main.go**: Entry point, server setup, flag parsing
 - **internal/server/core.go**: Application structure initialization
 - **internal/server/storage.go**: Peer storage and purging logic
-- **internal/server/forwarderManager.go**: Complex forwarding logic with job scheduling (HTTP and UDP)
+- **internal/server/forwarderManager.go**: Core forwarder orchestration, queue management, worker pool
+- **internal/server/forwarderAnnounce.go**: Unified announce execution logic (HTTP and UDP)
+- **internal/server/forwarderStats.go**: Statistics collection and StatsDataProvider implementation
 - **internal/server/udpForwarder.go**: UDP forwarder client implementation (BEP 15)
 - **internal/server/receiverAnnounce.go**: HTTP announce request processing
 - **internal/server/receiverUDP.go**: UDP announce request processing (server-side)

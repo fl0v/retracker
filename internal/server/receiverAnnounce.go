@@ -238,7 +238,6 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 			response.Interval = ra.Config.AnnounceInterval
 			return
 		}
-		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
 		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
 	} else if len(ra.Config.Forwards) > 0 {
 		ErrorLogAnnounce.Printf("Forwarders configured (%d) but forwarder manager is nil; cannot forward initial announce for %x", len(ra.Config.Forwards), request.InfoHash)
@@ -255,7 +254,6 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 
 	// For regular announces, forward immediately if due or not yet contacted
 	if ra.ForwarderManager != nil {
-		ra.ForwarderManager.CacheRequest(request.InfoHash, *request)
 		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
 	}
 }

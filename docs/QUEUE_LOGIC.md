@@ -12,8 +12,9 @@ This document describes how the forwarder job queue, worker scaling, throttling,
 - Forwarder suspension duration (overload/429): `--forwarder-suspend` / `FORWARDER_SUSPEND_SECONDS` (default: 300s)
 
 ## Queue Flow
-- Incoming first announce enqueues one job per forwarder (unless throttled or suspended).
-- When queue fill exceeds the throttling threshold, only the fastest forwarders (top-N by recent avg response time) are selected; slower ones are skipped until pressure drops.
+- Incoming announces enqueue jobs to eligible forwarders (up to `max_forwarders_per_announce`, default 100).
+- Forwarders are shuffled randomly before selection to distribute load evenly.
+- When queue fill exceeds the throttling threshold, forwarder count is limited to `queue_throttle_top_n` (default 20).
 - When queue fill exceeds the rate-limit threshold, initial announces are rate limited by a token bucket; limited requests receive a tracker failure with a short retry hint. If the threshold is 0, rate limiting is disabled and no client-facing retry hint is sent.
 - If the queue is full, jobs are dropped and logged; counters increment (`dropped_full`). Clients are not explicitly informed of queue-full drops.
 
@@ -39,6 +40,12 @@ This document describes how the forwarder job queue, worker scaling, throttling,
 ## Tests
 - See `internal/server/forwarderManager_test.go` for coverage of:
   - Rate-limit threshold disabled and active cases
-  - Throttling fastest top-N selection
+  - Throttle limits forwarder count
+  - Max forwarders per announce limit
+  - Skip recently announced forwarders
   - Suspension expiration
+- See `internal/server/forwarderAnnounce_test.go` for coverage of:
+  - Announce result handling (success, failure, suspend)
+  - Job pending/cancellation logic
+  - HTTP status code handling
 

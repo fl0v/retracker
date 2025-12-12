@@ -17,32 +17,33 @@ var (
 )
 
 type Config struct {
-	AnnounceInterval        int              `yaml:"announce_interval" json:"announce_interval"`
-	RetryPeriod             int              `yaml:"retry_period" json:"-"` // Internal field, not exposed in stats
-	TrackerID               string           `yaml:"tracker_id" json:"tracker_id,omitempty"`
-	Listen                  string           `yaml:"listen" json:"http_listen"`
-	UDPListen               string           `yaml:"udp_listen" json:"udp_listen"`
-	Debug                   bool             `yaml:"debug" json:"debug"`
-	Age                     float64          `yaml:"age" json:"age"`
-	XRealIP                 bool             `yaml:"x_real_ip" json:"x_real_ip"`
-	Forwards                []common.Forward `yaml:"-" json:"-"`                       // Not loaded from main config file, excluded from JSON
-	ForwardsFile            string           `yaml:"-" json:"forwards_file,omitempty"` // Path to forwards YAML file (if loaded)
-	ForwardTimeout          int              `yaml:"forward_timeout" json:"forward_timeout"`
-	ForwarderWorkers        int              `yaml:"forwarder_workers" json:"forwarder_workers"`
-	ForwarderQueueSize      int              `yaml:"forwarder_queue_size" json:"forwarder_queue_size"`
-	MaxForwarderWorkers     int              `yaml:"max_forwarder_workers" json:"max_forwarder_workers"`
-	QueueScaleThresholdPct  int              `yaml:"queue_scale_threshold_pct" json:"queue_scale_threshold_pct"`
-	QueueRateLimitThreshold int              `yaml:"queue_rate_limit_threshold" json:"queue_rate_limit_threshold"`
-	QueueThrottleThreshold  int              `yaml:"queue_throttle_threshold" json:"queue_throttle_threshold"`
-	QueueThrottleTopN       int              `yaml:"queue_throttle_top_n" json:"queue_throttle_top_n"`
-	RateLimitInitialPerSec  int              `yaml:"rate_limit_initial_per_sec" json:"rate_limit_initial_per_sec"`
-	RateLimitInitialBurst   int              `yaml:"rate_limit_initial_burst" json:"rate_limit_initial_burst"`
-	ForwarderSuspendSeconds int              `yaml:"forwarder_suspend_seconds" json:"forwarder_suspend_seconds"`
-	ForwarderFailThreshold  int              `yaml:"forwarder_fail_threshold" json:"forwarder_fail_threshold"`
-	ForwarderRetryAttempts  int              `yaml:"forwarder_retry_attempts" json:"forwarder_retry_attempts"`
-	ForwarderRetryBaseMs    int              `yaml:"forwarder_retry_base_ms" json:"forwarder_retry_base_ms"`
-	StatsInterval           int              `yaml:"stats_interval" json:"stats_interval"`
-	PrometheusEnabled       bool             `yaml:"prometheus_enabled" json:"prometheus_enabled"`
+	AnnounceInterval         int              `yaml:"announce_interval" json:"announce_interval"`
+	RetryPeriod              int              `yaml:"retry_period" json:"-"` // Internal field, not exposed in stats
+	TrackerID                string           `yaml:"tracker_id" json:"tracker_id,omitempty"`
+	Listen                   string           `yaml:"listen" json:"http_listen"`
+	UDPListen                string           `yaml:"udp_listen" json:"udp_listen"`
+	Debug                    bool             `yaml:"debug" json:"debug"`
+	Age                      float64          `yaml:"age" json:"age"`
+	XRealIP                  bool             `yaml:"x_real_ip" json:"x_real_ip"`
+	Forwards                 []common.Forward `yaml:"-" json:"-"`                       // Not loaded from main config file, excluded from JSON
+	ForwardsFile             string           `yaml:"-" json:"forwards_file,omitempty"` // Path to forwards YAML file (if loaded)
+	ForwardTimeout           int              `yaml:"forward_timeout" json:"forward_timeout"`
+	ForwarderWorkers         int              `yaml:"forwarder_workers" json:"forwarder_workers"`
+	ForwarderQueueSize       int              `yaml:"forwarder_queue_size" json:"forwarder_queue_size"`
+	MaxForwarderWorkers      int              `yaml:"max_forwarder_workers" json:"max_forwarder_workers"`
+	QueueScaleThresholdPct   int              `yaml:"queue_scale_threshold_pct" json:"queue_scale_threshold_pct"`
+	QueueRateLimitThreshold  int              `yaml:"queue_rate_limit_threshold" json:"queue_rate_limit_threshold"`
+	QueueThrottleThreshold   int              `yaml:"queue_throttle_threshold" json:"queue_throttle_threshold"`
+	QueueThrottleTopN        int              `yaml:"queue_throttle_top_n" json:"queue_throttle_top_n"`
+	RateLimitInitialPerSec   int              `yaml:"rate_limit_initial_per_sec" json:"rate_limit_initial_per_sec"`
+	RateLimitInitialBurst    int              `yaml:"rate_limit_initial_burst" json:"rate_limit_initial_burst"`
+	ForwarderSuspendSeconds  int              `yaml:"forwarder_suspend_seconds" json:"forwarder_suspend_seconds"`
+	ForwarderFailThreshold   int              `yaml:"forwarder_fail_threshold" json:"forwarder_fail_threshold"`
+	ForwarderRetryAttempts   int              `yaml:"forwarder_retry_attempts" json:"forwarder_retry_attempts"`
+	ForwarderRetryBaseMs     int              `yaml:"forwarder_retry_base_ms" json:"forwarder_retry_base_ms"`
+	MaxForwardersPerAnnounce int              `yaml:"max_forwarders_per_announce" json:"max_forwarders_per_announce"`
+	StatsInterval            int              `yaml:"stats_interval" json:"stats_interval"`
+	PrometheusEnabled        bool             `yaml:"prometheus_enabled" json:"prometheus_enabled"`
 }
 
 // LoadFromFile loads configuration from a YAML file
@@ -139,6 +140,11 @@ func (config *Config) PrintConfig() {
 		fmt.Printf("  Forwarder Fail Threshold: %d\n", config.ForwarderFailThreshold)
 		fmt.Printf("  Forwarder Retry Attempts: %d\n", config.ForwarderRetryAttempts)
 		fmt.Printf("  Forwarder Retry Base (ms): %d\n", config.ForwarderRetryBaseMs)
+		maxFwd := config.MaxForwardersPerAnnounce
+		if maxFwd <= 0 {
+			maxFwd = 100
+		}
+		fmt.Printf("  Max Forwarders Per Announce: %d (throttled: %d)\n", maxFwd, config.QueueThrottleTopN)
 		fmt.Println("  Forwarder List:")
 		for i, forward := range config.Forwards {
 			forwardName := forward.GetName()
