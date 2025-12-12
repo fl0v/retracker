@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to download tracker lists, merge with local curated list, and regenerate forwarders.yml
+# Script to download tracker lists, merge with optional additional trackers, and regenerate forwarders.yml
 # Supports both HTTP and UDP trackers, removes duplicates
 
 set -euo pipefail
@@ -8,7 +8,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LISTS_DIR="${SCRIPT_DIR}/lists"
-CUSTOM_LIST="${LISTS_DIR}/_custom.txt"
 
 # Destination forwarders file (supports absolute or project-relative paths)
 DEST_PATH="${1:-configs/forwarders.yml}"
@@ -18,16 +17,93 @@ else
     OUTPUT_FILE="${PROJECT_ROOT}/${DEST_PATH}"
 fi
 
-# Define tracker list sources (URL and local filename)
-# Format: "URL|filename"
-TRACKER_LISTS=(
-    "https://newtrackon.com/api/stable|newtrackon.txt"
-    "https://trackerslist.com/best.txt|trackerslist_best.txt"
-    "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt|ngosang_best.txt"
-)
+# Tracker list sources are loaded from configs/trackers-lists.txt (one entry per line),
+# unless overridden via env var TRACKER_LISTS_FILE.
+# Supported formats (per line):
+#   - URL|filename
+#   - URL                      (filename will be derived)
+# Default: configs/trackers-lists.txt
+TRACKER_LISTS_FILE="${TRACKER_LISTS_FILE:-configs/trackers-lists.txt}"
 
-# Internal processing files to skip (files starting with underscore)
-SKIP_FILES=("_all.txt" "_normalized.txt" "_unique.txt" "_custom.txt" "forwarders.yml")
+# Optional additional trackers file (one tracker per line; can also contain mixed formats),
+# unless overridden via env var ADDITIONAL_TRACKERS_FILE.
+# Default: configs/trackers.txt
+ADDITIONAL_TRACKERS_FILE="${ADDITIONAL_TRACKERS_FILE:-configs/trackers.txt}"
+
+resolve_path() {
+    # Resolve path: absolute stays absolute; relative becomes project-root-relative.
+    local p="$1"
+    if [[ -z "$p" ]]; then
+        printf '%s' ""
+        return
+    fi
+    if [[ "$p" = /* ]]; then
+        printf '%s' "$p"
+    else
+        printf '%s' "${PROJECT_ROOT}/${p}"
+    fi
+}
+
+TRACKER_LISTS_FILE="$(resolve_path "$TRACKER_LISTS_FILE")"
+ADDITIONAL_TRACKERS_FILE="$(resolve_path "$ADDITIONAL_TRACKERS_FILE")"
+
+trim() {
+    # Trim leading/trailing whitespace from stdin
+    local s
+    s="$(cat)"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+derive_filename_from_url() {
+    local url="$1"
+    local base
+    base="$(basename "${url%%\?*}")"
+    if [[ -n "$base" ]] && [[ "$base" != "/" ]] && [[ "$base" != "." ]]; then
+        printf '%s\n' "$base"
+        return
+    fi
+    # Fallback: convert URL into a safe-ish filename
+    printf '%s\n' "$(echo "$url" | sed -E 's#^[a-zA-Z]+://##; s#[^a-zA-Z0-9._-]+#_#g').txt"
+}
+
+load_tracker_lists() {
+    local -a lists=()
+    if [[ ! -f "$TRACKER_LISTS_FILE" ]]; then
+        echo "Warning: Tracker lists file not found at ${TRACKER_LISTS_FILE}" >&2
+        echo "         Create it with one tracker-list URL per line (optionally URL|filename)." >&2
+        printf '%s\n' "${lists[@]}"
+        return
+    fi
+
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        # Strip comments and trim whitespace
+        local line url filename
+        line="${raw%%#*}"
+        line="$(printf '%s' "$line" | trim)"
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" == *"|"* ]]; then
+            url="${line%%|*}"
+            filename="${line#*|}"
+            url="$(printf '%s' "$url" | trim)"
+            filename="$(printf '%s' "$filename" | trim)"
+        else
+            url="$line"
+            filename="$(derive_filename_from_url "$url")"
+        fi
+
+        [[ -z "$url" ]] && continue
+        [[ -z "$filename" ]] && filename="$(derive_filename_from_url "$url")"
+
+        lists+=("${url}|${filename}")
+    done < "$TRACKER_LISTS_FILE"
+
+    printf '%s\n' "${lists[@]}"
+}
+
+mapfile -t TRACKER_LISTS < <(load_tracker_lists)
 
 # Create lists directory if it doesn't exist
 mkdir -p "$LISTS_DIR"
@@ -37,12 +113,17 @@ mkdir -p "$(dirname "${OUTPUT_FILE}")"
 echo "Downloading tracker lists to ${LISTS_DIR}..."
 
 # Download online lists (with timeout and error handling)
-for list_entry in "${TRACKER_LISTS[@]}"; do
-    IFS='|' read -r url filename <<< "$list_entry"
-    output_file="${LISTS_DIR}/${filename}"
-    echo "  Downloading ${filename}..."
-    curl -s -L --max-time 10 "$url" -o "$output_file" 2>/dev/null || echo "Warning: Failed to download ${filename} from ${url}" >&2
-done
+if (( ${#TRACKER_LISTS[@]} == 0 )); then
+    echo "Note: No tracker list sources configured (TRACKER_LISTS is empty)."
+    echo "      Add entries to ${TRACKER_LISTS_FILE} to enable downloading."
+else
+    for list_entry in "${TRACKER_LISTS[@]}"; do
+        IFS='|' read -r url filename <<< "$list_entry"
+        output_file="${LISTS_DIR}/${filename}"
+        echo "  Downloading ${filename}..."
+        curl -s -L --max-time 10 "$url" -o "$output_file" 2>/dev/null || echo "Warning: Failed to download ${filename} from ${url}" >&2
+    done
+fi
 
 # Function to extract HTTP and UDP trackers from a file
 extract_trackers() {
@@ -79,29 +160,23 @@ ALL_TRACKERS="${LISTS_DIR}/_all.txt"
 
 for file in "${LISTS_DIR}"/*.txt; do
     filename=$(basename "$file")
-    # Skip internal processing files
-    skip=false
-    for skip_file in "${SKIP_FILES[@]}"; do
-        if [[ "$filename" == "$skip_file" ]]; then
-            skip=true
-            break
-        fi
-    done
-    [[ "$skip" == true ]] && continue
+    # Skip internal processing files (underscore-prefixed)
+    [[ "$filename" == _* ]] && continue
     
     if [[ -f "$file" ]] && [[ -s "$file" ]]; then
         extract_trackers "$file" >> "$ALL_TRACKERS" 2>/dev/null || true
     fi
 done
 
-# Add custom curated list if it exists
-if [[ -f "$CUSTOM_LIST" ]] && [[ -s "$CUSTOM_LIST" ]]; then
-    echo "Adding custom curated trackers..."
-    extract_trackers "$CUSTOM_LIST" >> "$ALL_TRACKERS" 2>/dev/null || true
+# Add additional trackers from configs/trackers.txt (optional)
+if [[ -f "$ADDITIONAL_TRACKERS_FILE" ]] && [[ -s "$ADDITIONAL_TRACKERS_FILE" ]]; then
+    echo "Adding additional trackers from ${ADDITIONAL_TRACKERS_FILE}..."
+    extract_trackers "$ADDITIONAL_TRACKERS_FILE" >> "$ALL_TRACKERS" 2>/dev/null || true
 else
-    echo "Note: Custom curated list not found or empty at ${CUSTOM_LIST}"
+    echo "Note: Additional trackers file not found or empty at ${ADDITIONAL_TRACKERS_FILE}"
     echo "Creating empty file for future use..."
-    touch "$CUSTOM_LIST"
+    mkdir -p "$(dirname "${ADDITIONAL_TRACKERS_FILE}")"
+    touch "$ADDITIONAL_TRACKERS_FILE"
 fi
 
 # Normalize and deduplicate trackers

@@ -12,6 +12,9 @@ services:
       # Mount main config and forwarders files from host
       - ../configs/config.yml:/app/configs/config.yml
       - ../configs/forwarders.yml:/app/configs/forwarders.yml
+      # Tracker source lists used by scripts/update-forwarders.sh
+      - ../configs/trackers-lists.txt:/app/configs/trackers-lists.txt
+      - ../configs/trackers.txt:/app/configs/trackers.txt
     environment:
       # Configuration file path
       - RETRACKER_CONFIG=/app/configs/config.yml
@@ -21,6 +24,14 @@ services:
       - RETRACKER_UDP_LISTEN=:6969
       # Load forwards from YAML file
       - RETRACKER_FORWARDS=/app/configs/forwarders.yml
+      # Optionally refresh forwarders list on startup (runs /app/scripts/update-forwarders.sh)
+      # - RETRACKER_UPDATE_FORWARDERS=true
+      #
+      # Tracker sources consumed by scripts/update-forwarders.sh
+      # Defaults in the script are configs/trackers-lists.txt and configs/trackers.txt;
+      # we set explicit container paths here for clarity.
+      - TRACKER_LISTS_FILE=/app/configs/trackers-lists.txt
+      - ADDITIONAL_TRACKERS_FILE=/app/configs/trackers.txt
       # Debug mode (default: false)
       - RETRACKER_DEBUG=false
     restart: unless-stopped

@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/fl0v/retracker/bittorrent/common"
@@ -223,6 +224,11 @@ func (p *simpleStatsProvider) GetClientStats() *observability.ClientStats {
 			SecondsSinceLastReq: secondsSinceLastRequest,
 		})
 	}
+
+	// Sort clients by IP (Key format is "IP:ClientName")
+	sort.Slice(clientStats.Clients, func(i, j int) bool {
+		return clientStats.Clients[i].Key < clientStats.Clients[j].Key
+	})
 
 	return clientStats
 }

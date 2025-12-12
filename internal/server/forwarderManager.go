@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1444,16 +1445,44 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 		}
 	}
 
+	// Sort by avg response time ascending, entries without stats go last
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].HasStats && !result[j].HasStats {
+			return true
+		}
+		if !result[i].HasStats && result[j].HasStats {
+			return false
+		}
+		if !result[i].HasStats && !result[j].HasStats {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].AvgResponseTime < result[j].AvgResponseTime
+	})
+
 	return result
 }
 
 func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.HashPeerStat {
+	// Collect all unique hashes from both storages
+	allHashes := make(map[common.InfoHash]struct{})
+
 	p.fm.Storage.mu.RLock()
-	defer p.fm.Storage.mu.RUnlock()
+	for infoHash := range p.fm.Storage.Entries {
+		allHashes[infoHash] = struct{}{}
+	}
+	p.fm.Storage.mu.RUnlock()
+
+	if p.fm.MainStorage != nil {
+		p.fm.MainStorage.requestsMu.Lock()
+		for infoHash := range p.fm.MainStorage.Requests {
+			allHashes[infoHash] = struct{}{}
+		}
+		p.fm.MainStorage.requestsMu.Unlock()
+	}
 
 	hashPeerStats := make(map[string]observability.HashPeerStat)
 
-	for infoHash, forwarders := range p.fm.Storage.Entries {
+	for infoHash := range allHashes {
 		seenLocal := make(map[common.PeerID]struct{})
 		seenForwarder := make(map[common.PeerID]struct{})
 		seenIPs := make(map[string]struct{})
@@ -1485,24 +1514,28 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 		}
 
 		// Count forwarder peers (unique by peer ID) and add to Complete
-		for _, entry := range forwarders {
-			for _, peer := range entry.Peers {
-				if peer.PeerID == "" {
-					continue
-				}
-				seenForwarder[peer.PeerID] = struct{}{}
+		p.fm.Storage.mu.RLock()
+		if forwarders, ok := p.fm.Storage.Entries[infoHash]; ok {
+			for _, entry := range forwarders {
+				for _, peer := range entry.Peers {
+					if peer.PeerID == "" {
+						continue
+					}
+					seenForwarder[peer.PeerID] = struct{}{}
 
-				// Track unique IPs for Complete/Incomplete calculation
-				ipStr := string(peer.IP)
-				if ipStr != "" {
-					if _, exists := seenIPs[ipStr]; !exists {
-						seenIPs[ipStr] = struct{}{}
-						// Forwarder peers are counted as seeders (Complete)
-						complete++
+					// Track unique IPs for Complete/Incomplete calculation
+					ipStr := string(peer.IP)
+					if ipStr != "" {
+						if _, exists := seenIPs[ipStr]; !exists {
+							seenIPs[ipStr] = struct{}{}
+							// Forwarder peers are counted as seeders (Complete)
+							complete++
+						}
 					}
 				}
 			}
 		}
+		p.fm.Storage.mu.RUnlock()
 
 		// Build totals
 		totalSeen := make(map[common.PeerID]struct{})
@@ -1599,6 +1632,11 @@ func (p *forwarderStatsProvider) GetClientStats() *observability.ClientStats {
 			SecondsSinceLastReq: secondsSinceLastRequest,
 		})
 	}
+
+	// Sort clients by IP (Key format is "IP:ClientName")
+	sort.Slice(clientStats.Clients, func(i, j int) bool {
+		return clientStats.Clients[i].Key < clientStats.Clients[j].Key
+	})
 
 	return clientStats
 }
