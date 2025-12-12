@@ -73,7 +73,6 @@ load_tracker_lists() {
     if [[ ! -f "$TRACKER_LISTS_FILE" ]]; then
         echo "Warning: Tracker lists file not found at ${TRACKER_LISTS_FILE}" >&2
         echo "         Create it with one tracker-list URL per line (optionally URL|filename)." >&2
-        printf '%s\n' "${lists[@]}"
         return
     fi
 
@@ -100,7 +99,8 @@ load_tracker_lists() {
         lists+=("${url}|${filename}")
     done < "$TRACKER_LISTS_FILE"
 
-    printf '%s\n' "${lists[@]}"
+    # Only print if we have entries (avoid blank line for empty array)
+    (( ${#lists[@]} > 0 )) && printf '%s\n' "${lists[@]}"
 }
 
 mapfile -t TRACKER_LISTS < <(load_tracker_lists)
@@ -148,8 +148,14 @@ extract_trackers() {
     sed 's/[[:space:]]*$//' | \
     grep -iE '^(https?|udp)://' | \
     sed 's|/$||' | \
-    sed 's|/announce$||' | \
-    awk '{if (length($0) > 0) print $0 "/announce"}' | \
+    awk '{
+        # Only add /announce if URL has no path or path is just /
+        if ($0 ~ /^(https?|udp):\/\/[^\/]+$/) {
+            print $0 "/announce"
+        } else {
+            print $0
+        }
+    }' | \
     sort -u
 }
 
@@ -158,15 +164,18 @@ echo "Extracting HTTP and UDP trackers..."
 ALL_TRACKERS="${LISTS_DIR}/_all.txt"
 > "$ALL_TRACKERS"
 
+# Use nullglob to handle case where no .txt files exist
+shopt -s nullglob
 for file in "${LISTS_DIR}"/*.txt; do
     filename=$(basename "$file")
     # Skip internal processing files (underscore-prefixed)
     [[ "$filename" == _* ]] && continue
     
-    if [[ -f "$file" ]] && [[ -s "$file" ]]; then
+    if [[ -s "$file" ]]; then
         extract_trackers "$file" >> "$ALL_TRACKERS" 2>/dev/null || true
     fi
 done
+shopt -u nullglob
 
 # Add additional trackers from configs/trackers.txt (optional)
 if [[ -f "$ADDITIONAL_TRACKERS_FILE" ]] && [[ -s "$ADDITIONAL_TRACKERS_FILE" ]]; then
@@ -197,8 +206,6 @@ if [[ -s "$ALL_TRACKERS" ]]; then
             # Ensure /announce suffix if no path or empty path
             if [[ "$normalized" =~ ^(https?|udp)://[^/]+$ ]] || [[ "$normalized" =~ ^(https?|udp)://[^/]+/$ ]]; then
                 normalized="${normalized%/}/announce"
-            elif [[ ! "$normalized" =~ / ]]; then
-                normalized="${normalized}/announce"
             fi
             echo "$normalized" >> "$NORMALIZED"
         fi
@@ -269,7 +276,7 @@ if [[ -s "$NORMALIZED" ]]; then
         [[ -z "$tracker" ]] && continue
         host=$(extract_host "$tracker")
         if [[ -n "$host" ]]; then
-            host_groups["$host"]="${host_groups["$host"]}${host_groups["$host"]:+$'\n'}$tracker"
+            host_groups["$host"]="${host_groups["$host"]:-}${host_groups["$host"]:+$'\n'}$tracker"
         fi
     done < "$NORMALIZED"
     
