@@ -239,7 +239,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			} else {
 				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s\n", maxNameLen)
 				sb.WriteString(fmt.Sprintf(rowFormat,
-					protocol, forwarder.Name, "no statistics yet", "-", "-", "-"))
+					protocol, forwarder.Name, "-", "-", "-", "-"))
 			}
 		}
 	}
