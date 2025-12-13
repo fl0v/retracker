@@ -1,3 +1,6 @@
+// forwarderStorage.go - Storage for forwarder state and cached peer responses.
+// Tracks per-hash, per-forwarder: peers, intervals, and NextAnnounce times.
+// Structure: map[InfoHash]map[ForwarderName]ForwarderPeerEntry
 package server
 
 import (

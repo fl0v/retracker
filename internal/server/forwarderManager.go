@@ -1,3 +1,6 @@
+// forwarderManager.go - Core forwarder orchestration and worker pool management.
+// Manages job queue, worker scaling, rate limiting, throttling, and forwarder lifecycle.
+// Handles job scheduling, deduplication, and forwarder enable/disable/suspend logic.
 package server
 
 import (

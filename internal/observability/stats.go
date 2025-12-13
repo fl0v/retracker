@@ -58,10 +58,8 @@ type SimpleStats struct {
 type HashPeerStat struct {
 	LocalUnique     int `json:"local_unique"`
 	ForwarderUnique int `json:"forwarder_unique"`
-	TotalUnique     int `json:"total_unique"`
 	Complete        int `json:"complete"`
 	Incomplete      int `json:"incomplete"`
-	Downloaded      int `json:"downloaded"`
 }
 
 // ClientStats represents client statistics
@@ -249,9 +247,9 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	// Print per-hash stats as a table with scrape-like info
 	if len(stats.HashPeerStats) > 0 {
 		sb.WriteString("\nTracked Hashes:\n")
-		sb.WriteString(fmt.Sprintf("%-40s %-10s %-12s %-12s %-15s %-18s %-12s\n",
-			"Hash", "Complete", "Incomplete", "Downloaded", "LocalUnique", "ForwarderUnique", "TotalUnique"))
-		sb.WriteString(strings.Repeat("-", 119) + "\n")
+		sb.WriteString(fmt.Sprintf("%-40s %-10s %-12s %-15s %-18s\n",
+			"Hash", "Complete", "Incomplete", "LocalUnique", "ForwarderUnique"))
+		sb.WriteString(strings.Repeat("-", 95) + "\n")
 		// Sort hashes for consistent output
 		hashes := make([]string, 0, len(stats.HashPeerStats))
 		for hash := range stats.HashPeerStats {
@@ -260,9 +258,9 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sort.Strings(hashes)
 		for _, hash := range hashes {
 			hashStats := stats.HashPeerStats[hash]
-			sb.WriteString(fmt.Sprintf("%-40s %-10d %-12d %-12d %-15d %-18d %-12d\n",
-				hash, hashStats.Complete, hashStats.Incomplete, hashStats.Downloaded,
-				hashStats.LocalUnique, hashStats.ForwarderUnique, hashStats.TotalUnique))
+			sb.WriteString(fmt.Sprintf("%-40s %-10d %-12d %-15d %-18d\n",
+				hash, hashStats.Complete, hashStats.Incomplete,
+				hashStats.LocalUnique, hashStats.ForwarderUnique))
 		}
 	}
 

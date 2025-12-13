@@ -1,3 +1,7 @@
+// receiverAnnounce.go - HTTP announce request handler.
+// Processes BitTorrent announce requests, manages peer storage updates,
+// triggers forwarder announces, and builds responses with aggregated peers.
+// Key function: getPeersForResponse() collects peers and counts seeders/leechers.
 package server
 
 import (
@@ -146,9 +150,11 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 	response.Interval = ra.clampInterval(response.Interval)
 	response.MinInterval = ra.Config.AnnounceInterval
 
-	seeders, leechers := ra.countLocalPeers(request.InfoHash)
+	// Get peers, seeders, and leechers from both local and forwarder storage
+	seeders, leechers, peers := ra.getPeersForResponse(request.InfoHash)
 	response.Complete = seeders
 	response.Incomplete = leechers
+	response.Peers = peers
 
 	if trackerID := ra.Config.TrackerID; trackerID != "" {
 		response.TrackerID = trackerID
@@ -181,7 +187,8 @@ func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, respo
 	ra.Storage.Update(*request)
 
 	// Get peers for response
-	response.Peers = ra.getPeersForResponse(request.InfoHash)
+	_, _, peers := ra.getPeersForResponse(request.InfoHash)
+	response.Peers = peers
 
 	// Use general interval setting from config
 	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
@@ -191,9 +198,6 @@ func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, respo
 func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, response *Response.Response) {
 	// Update storage
 	ra.Storage.Update(*request)
-
-	// Get peers from both local and forwarder storage
-	response.Peers = ra.getPeersForResponse(request.InfoHash)
 
 	// Check if this is first announce for this info_hash
 	if ra.isFirstAnnounce(request.InfoHash) {
@@ -259,15 +263,66 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 }
 
 // getPeersForResponse collects peers from both local storage and forwarder storage
-func (ra *ReceiverAnnounce) getPeersForResponse(infoHash common.InfoHash) []common.Peer {
-	peers := ra.Storage.GetPeers(infoHash)
+// and counts seeders and leechers. Returns (seeders, leechers, peers)
+func (ra *ReceiverAnnounce) getPeersForResponse(infoHash common.InfoHash) (int, int, []common.Peer) {
+	seeders := 0
+	leechers := 0
+	seenIPs := make(map[string]struct{})
 
+	// Get local and forwarder peers first to estimate capacity
+	var localPeers []common.Peer
+	var forwarderPeers []common.Peer
+
+	if ra.Storage != nil {
+		localPeers = ra.Storage.GetPeers(infoHash)
+	}
 	if ra.ForwarderStorage != nil {
-		forwarderPeers := ra.ForwarderStorage.GetAllPeers(infoHash)
-		peers = append(peers, forwarderPeers...)
+		forwarderPeers = ra.ForwarderStorage.GetAllPeers(infoHash)
 	}
 
-	return peers
+	// Pre-allocate slice with estimated capacity to avoid reallocations
+	estimatedCapacity := len(localPeers) + len(forwarderPeers)
+	peers := make([]common.Peer, 0, estimatedCapacity)
+
+	// Collect and count local peers (unique by IP)
+	if ra.Storage != nil {
+		peers = append(peers, localPeers...)
+
+		ra.Storage.requestsMu.Lock()
+		if requestInfoHash, found := ra.Storage.Requests[infoHash]; found {
+			for _, peerRequest := range requestInfoHash {
+				ipStr := string(peerRequest.Peer().IP)
+				if ipStr != "" {
+					if _, exists := seenIPs[ipStr]; !exists {
+						seenIPs[ipStr] = struct{}{}
+						if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
+							seeders++
+						} else {
+							leechers++
+						}
+					}
+				}
+			}
+		}
+		ra.Storage.requestsMu.Unlock()
+	}
+
+	// Collect and count forwarder peers (unique by IP, counted as seeders since we lack state)
+	if ra.ForwarderStorage != nil {
+		peers = append(peers, forwarderPeers...)
+
+		for _, peer := range forwarderPeers {
+			ipStr := string(peer.IP)
+			if ipStr != "" {
+				if _, exists := seenIPs[ipStr]; !exists {
+					seenIPs[ipStr] = struct{}{}
+					seeders++ // Forwarder peers are counted as seeders (we don't have state info)
+				}
+			}
+		}
+	}
+
+	return seeders, leechers, peers
 }
 
 // isFirstAnnounce checks if this is the first announce for the given info_hash
@@ -288,29 +343,6 @@ func (ra *ReceiverAnnounce) clampInterval(interval int) int {
 	}
 	// No maximum clamping - allow longer intervals from forwarders
 	return interval
-}
-
-func (ra *ReceiverAnnounce) countLocalPeers(infoHash common.InfoHash) (int, int) {
-	if ra.Storage == nil {
-		return 0, 0
-	}
-
-	seeders := 0
-	leechers := 0
-
-	ra.Storage.requestsMu.Lock()
-	if requestInfoHash, found := ra.Storage.Requests[infoHash]; found {
-		for _, peerRequest := range requestInfoHash {
-			if peerRequest.Event == EventCompleted || peerRequest.Left == 0 {
-				seeders++
-			} else {
-				leechers++
-			}
-		}
-	}
-	ra.Storage.requestsMu.Unlock()
-
-	return seeders, leechers
 }
 
 func (ra *ReceiverAnnounce) filterPeers(peers []common.Peer, requester common.Peer, numWant uint64) []common.Peer {

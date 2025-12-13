@@ -99,7 +99,7 @@
 # max_forwarders_per_announce: 100
 
 # Initial announces per second when rate limiting is active (default: 100)
-# rate_limit_initial_per_sec: 100
+# rate_limit_initial_per_sec: 10
 
 # Burst size for initial announce rate limit (default: 200)
 # rate_limit_initial_burst: 200

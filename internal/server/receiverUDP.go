@@ -1,3 +1,7 @@
+// receiverUDP.go - UDP tracker server implementation (BEP 15).
+// Handles connect, announce, and scrape requests over UDP.
+// Manages connection state with TempStorage for connection ID validation.
+// Supports both IPv4 and IPv6 peer formats.
 package server
 
 import (

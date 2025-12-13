@@ -1,3 +1,7 @@
+// forwarderStats.go - Statistics collection and reporting for forwarders.
+// Implements StatsDataProvider interface for observability.
+// Records response times (EMA), tracks per-hash peer stats, client stats.
+// Key function: GetHashPeerStats() returns seeders/leechers per hash.
 package server
 
 import (
@@ -210,17 +214,18 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 	hashPeerStats := make(map[string]observability.HashPeerStat)
 
 	for infoHash := range allHashes {
-		seenLocal := make(map[common.PeerID]struct{})
-		seenForwarder := make(map[common.PeerID]struct{})
+		localUnique := 0
+		forwarderUnique := 0
 		seenIPs := make(map[string]struct{})
 		complete := 0
 		incomplete := 0
 
+		// Count local peers (unique by IP)
 		if p.fm.MainStorage != nil {
 			p.fm.MainStorage.requestsMu.Lock()
 			if requests, ok := p.fm.MainStorage.Requests[infoHash]; ok {
-				for peerID, peerRequest := range requests {
-					seenLocal[peerID] = struct{}{}
+				localUnique = len(requests)
+				for _, peerRequest := range requests {
 					ipStr := string(peerRequest.Peer().IP)
 					if ipStr != "" {
 						if _, exists := seenIPs[ipStr]; !exists {
@@ -237,19 +242,17 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 			p.fm.MainStorage.requestsMu.Unlock()
 		}
 
+		// Count forwarder peers (unique by IP, counted as seeders since we lack state)
 		p.fm.Storage.mu.RLock()
 		if forwarders, ok := p.fm.Storage.Entries[infoHash]; ok {
 			for _, entry := range forwarders {
+				forwarderUnique += len(entry.Peers)
 				for _, peer := range entry.Peers {
-					if peer.PeerID == "" {
-						continue
-					}
-					seenForwarder[peer.PeerID] = struct{}{}
 					ipStr := string(peer.IP)
 					if ipStr != "" {
 						if _, exists := seenIPs[ipStr]; !exists {
 							seenIPs[ipStr] = struct{}{}
-							complete++
+							complete++ // Forwarder peers counted as seeders
 						}
 					}
 				}
@@ -257,22 +260,12 @@ func (p *forwarderStatsProvider) GetHashPeerStats() map[string]observability.Has
 		}
 		p.fm.Storage.mu.RUnlock()
 
-		totalSeen := make(map[common.PeerID]struct{})
-		for peerID := range seenLocal {
-			totalSeen[peerID] = struct{}{}
-		}
-		for peerID := range seenForwarder {
-			totalSeen[peerID] = struct{}{}
-		}
-
 		hashKey := fmt.Sprintf("%x", infoHash)
 		hashPeerStats[hashKey] = observability.HashPeerStat{
-			LocalUnique:     len(seenLocal),
-			ForwarderUnique: len(seenForwarder),
-			TotalUnique:     len(totalSeen),
+			LocalUnique:     localUnique,
+			ForwarderUnique: forwarderUnique,
 			Complete:        complete,
 			Incomplete:      incomplete,
-			Downloaded:      complete,
 		}
 	}
 

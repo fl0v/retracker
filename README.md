@@ -40,6 +40,13 @@ Full installation and deployment options are in [INSTALL.md](INSTALL.md).
 
 See [INSTALL.md](INSTALL.md) for configuration env vars and examples.
 
+## Documentation
+
+- [INSTALL.md](INSTALL.md) - Installation and deployment options
+- [docs/ANNOUNCE_LOGIC.md](docs/ANNOUNCE_LOGIC.md) - Announce handling logic and diagram
+- [docs/QUEUE_AND_SCHEDULER.md](docs/QUEUE_AND_SCHEDULER.md) - Queue and scheduler implementation
+- [docs/BITTORRENT.md](docs/BITTORRENT.md) - BitTorrent protocol reference
+
 ## Development
 - Format: `make fmt` (gofumpt)
 - Lint: `make lint` (golangci-lint)

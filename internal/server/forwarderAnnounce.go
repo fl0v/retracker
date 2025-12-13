@@ -1,3 +1,7 @@
+// forwarderAnnounce.go - Unified announce execution logic for forwarders.
+// Routes to HTTP or UDP protocol handlers, processes results, handles retries.
+// Key functions: executeAnnounce(), doHTTPAnnounce(), doUDPAnnounce(), handleAnnounceResult()
+// Also handles event forwarding (ForwardStoppedEvent, ForwardCompletedEvent).
 package server
 
 import (
@@ -75,8 +79,8 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 
 		secs := result.Duration.Seconds()
 		protocol := job.Forwarder.GetProtocol()
-		fmt.Printf("%s response from %s (%d bytes, %.3fs, interval=%d, peers=%d)\n",
-			protocol, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
+		fmt.Printf("%s response %x from %s \n\t(%d bytes, %.3fs, interval=%d, peers=%d)\n",
+			protocol, job.InfoHash, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
 		return
 	}
 

@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 
 	"github.com/fl0v/retracker/internal/config"
 	"github.com/fl0v/retracker/internal/observability"
@@ -24,15 +23,6 @@ var (
 	faviconIco []byte
 )
 
-func envInt(key string) int {
-	if v := os.Getenv(key); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
-			return parsed
-		}
-	}
-	return 0
-}
-
 func envString(key string, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -43,15 +33,6 @@ func envString(key string, def string) string {
 func envBool(key string, def bool) bool {
 	if v := os.Getenv(key); v != "" {
 		return v == "true" || v == "1"
-	}
-	return def
-}
-
-func envFloat64(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
-			return parsed
-		}
 	}
 	return def
 }
@@ -98,7 +79,7 @@ func main() {
 		QueueRateLimitThreshold: 80,
 		QueueThrottleThreshold:  60,
 		QueueThrottleTopN:       20,
-		RateLimitInitialPerSec:  100,
+		RateLimitInitialPerSec:  10,
 		RateLimitInitialBurst:   200,
 		ForwarderSuspendSeconds: 300,
 		ForwarderFailThreshold:  10,

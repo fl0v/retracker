@@ -1,3 +1,6 @@
+// udpForwarder.go - UDP tracker client for forwarding to external UDP trackers (BEP 15).
+// Manages connection IDs with 2-minute lifetime, handles connect/announce protocol,
+// supports IPv4/IPv6 peer formats, and implements retry with exponential backoff.
 package server
 
 import (

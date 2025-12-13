@@ -1,3 +1,6 @@
+// scrape.go - HTTP and UDP scrape request handler (BEP 48).
+// Returns statistics (complete/incomplete/downloaded) for requested info_hashes.
+// Aggregates counts from both local storage and forwarder storage.
 package server
 
 import (

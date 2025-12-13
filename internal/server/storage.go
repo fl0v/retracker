@@ -1,3 +1,6 @@
+// storage.go - Thread-safe in-memory peer storage.
+// Structure: map[InfoHash]map[PeerID]Request with mutex protection.
+// Includes background purgeRoutine that removes stale peers based on Config.Age.
 package server
 
 import (
