@@ -221,10 +221,10 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		}
 
 		sb.WriteString("\nForwarders:\n")
-		// Order: Protocol, Tracker, AvgResponse, LastInterval, AnnounceCount, SecondsFromLastAnnounce
-		headerFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15s %%-15s %%-25s\n", maxNameLen)
-		sb.WriteString(fmt.Sprintf(headerFormat, "Protocol", "Tracker", "AvgResponse", "LastInterval", "AnnounceCount", "SecondsFromLastAnnounce"))
-		sb.WriteString(strings.Repeat("-", 10+maxNameLen+20+15+15+25+5) + "\n")
+		// Order: Proto, Tracker, AvgResp, Interval, AnnCount, LastAnn
+		headerFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s\n", maxNameLen)
+		sb.WriteString(fmt.Sprintf(headerFormat, "Proto", "Tracker", "AvgResp", "Interval", "AnnCount", "LastAnn"))
+		sb.WriteString(strings.Repeat("-", 6+maxNameLen+12+10+10+10+5) + "\n")
 		for _, forwarder := range stats.Forwarders {
 			protocol := forwarder.Protocol
 			if protocol == "" {
@@ -232,12 +232,12 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			}
 			if forwarder.HasStats {
 				responseTime := forwarder.AvgResponseTime.Round(time.Millisecond).String()
-				rowFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15d %%-15d %%-25d\n", maxNameLen)
+				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10d %%10d %%9ds\n", maxNameLen)
 				sb.WriteString(fmt.Sprintf(rowFormat,
 					protocol, forwarder.Name, responseTime, forwarder.LastInterval,
 					forwarder.SampleCount, forwarder.SecondsSinceLastAnnounce))
 			} else {
-				rowFormat := fmt.Sprintf("%%-10s %%-%ds %%-20s %%-15s %%-15s %%-25s\n", maxNameLen)
+				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s\n", maxNameLen)
 				sb.WriteString(fmt.Sprintf(rowFormat,
 					protocol, forwarder.Name, "no statistics yet", "-", "-", "-"))
 			}
