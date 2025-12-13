@@ -247,7 +247,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	// Print per-hash stats as a table with scrape-like info
 	if len(stats.HashPeerStats) > 0 {
 		sb.WriteString("\nTracked Hashes:\n")
-		sb.WriteString(fmt.Sprintf("%-40s %-10s %-12s %-15s %-18s\n",
+		sb.WriteString(fmt.Sprintf("%-40s %10s %12s %15s %18s\n",
 			"Hash", "Complete", "Incomplete", "LocalUnique", "ForwarderUnique"))
 		sb.WriteString(strings.Repeat("-", 95) + "\n")
 		// Sort hashes for consistent output
@@ -258,7 +258,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sort.Strings(hashes)
 		for _, hash := range hashes {
 			hashStats := stats.HashPeerStats[hash]
-			sb.WriteString(fmt.Sprintf("%-40s %-10d %-12d %-15d %-18d\n",
+			sb.WriteString(fmt.Sprintf("%-40s %10d %12d %15d %18d\n",
 				hash, hashStats.Complete, hashStats.Incomplete,
 				hashStats.LocalUnique, hashStats.ForwarderUnique))
 		}
