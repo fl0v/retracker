@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -197,6 +199,13 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 	for _, forwarder := range cfg.Forwards {
 		fm.stats[forwarder.GetName()] = &ForwarderStats{SampleCount: 0}
 	}
+
+	// Check and remove forwarders with invalid configuration
+	fm.validateAndRemoveInvalidForwarders()
+
+	// Check and remove forwarders that resolve to blocked IPs (localhost/private)
+	fm.checkAndRemoveBlockedForwarders()
+
 	return fm
 }
 
@@ -455,6 +464,160 @@ func shouldSuspendForwarder(statusCode int, err error) bool {
 	}
 	_ = err
 	return false
+}
+
+// DNS blocking checks
+
+// isBlockedIP checks if an IP address is in a blocked range
+// Returns true for 127.x.x.x (localhost) or private network ranges per RFC 1918:
+// - 10.0.0.0/8 (10.0.0.0 to 10.255.255.255)
+// - 172.16.0.0/12 (172.16.0.0 to 172.31.255.255)
+// - 192.168.0.0/16 (192.168.0.0 to 192.168.255.255)
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return false
+	}
+
+	first, second := ipv4[0], ipv4[1]
+
+	// Check for 127.0.0.0/8 (localhost) or RFC 1918 private network ranges
+	return first == 127 || // localhost
+		first == 10 || // 10.0.0.0/8
+		(first == 172 && second >= 16 && second <= 31) || // 172.16.0.0/12
+		(first == 192 && second == 168) // 192.168.0.0/16
+}
+
+// isBlockedByDNS checks if a hostname resolves to blocked IPs
+// Returns true if any resolved IP is in blocked ranges (127.x.x.x or 192.168.x.x)
+func isBlockedByDNS(hostname string) (bool, []net.IP, error) {
+	if hostname == "" {
+		return false, nil, fmt.Errorf("empty hostname")
+	}
+
+	// Resolve hostname to IP addresses
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return false, nil, fmt.Errorf("DNS lookup failed: %w", err)
+	}
+
+	// Check if any IP is blocked
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return true, ips, nil
+		}
+	}
+
+	return false, ips, nil
+}
+
+// checkAndRemoveBlockedForwarders checks all forwarders and immediately removes
+// any that resolve to localhost (127.x.x.x) or private IPs per RFC 1918
+// (10.x.x.x, 172.16.x.x-172.31.x.x, 192.168.x.x)
+func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
+	if len(fm.Forwarders) == 0 {
+		return
+	}
+
+	// Make a copy of forwarders to iterate over (since disableForwarder modifies the list)
+	fm.forwardersMu.RLock()
+	forwardersCopy := make([]CoreCommon.Forward, len(fm.Forwarders))
+	copy(forwardersCopy, fm.Forwarders)
+	fm.forwardersMu.RUnlock()
+
+	blockedCount := 0
+
+	for _, forwarder := range forwardersCopy {
+		// Extract hostname from URI
+		u, err := url.Parse(forwarder.Uri)
+		if err != nil {
+			// If we can't parse the URI, skip DNS check (let other error handling deal with it)
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping DNS check for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err)
+			}
+			continue
+		}
+
+		hostname := u.Hostname()
+		if hostname == "" {
+			// No hostname to check
+			continue
+		}
+
+		// Check if hostname resolves to blocked IPs
+		blocked, resolvedIPs, err := isBlockedByDNS(hostname)
+		if err != nil {
+			// DNS lookup failed - keep the forwarder (let it fail during announce)
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("DNS lookup failed for forwarder %s (%s): %v\n", forwarder.GetName(), hostname, err)
+			}
+			continue
+		}
+
+		if blocked {
+			// This forwarder resolves to blocked IPs - remove it immediately
+			blockedCount++
+			ipStrs := make([]string, len(resolvedIPs))
+			for i, ip := range resolvedIPs {
+				ipStrs[i] = ip.String()
+			}
+			reason := fmt.Sprintf("blocked by DNS: resolves to localhost/private IPs (%v)", ipStrs)
+			fm.disableForwarder(forwarder.GetName(), reason)
+			ErrorLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), hostname, reason)
+		}
+	}
+
+	if blockedCount > 0 {
+		ErrorLogFwd.Printf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount)
+	}
+}
+
+// validateAndRemoveInvalidForwarders checks all forwarders and removes those with invalid configuration
+// Currently validates: UDP forwarders must have an explicit port in the URL
+func (fm *ForwarderManager) validateAndRemoveInvalidForwarders() {
+	if len(fm.Forwarders) == 0 {
+		return
+	}
+
+	// Make a copy of forwarders to iterate over (since disableForwarder modifies the list)
+	fm.forwardersMu.RLock()
+	forwardersCopy := make([]CoreCommon.Forward, len(fm.Forwarders))
+	copy(forwardersCopy, fm.Forwarders)
+	fm.forwardersMu.RUnlock()
+
+	invalidCount := 0
+
+	for _, forwarder := range forwardersCopy {
+		// Extract hostname and port from URI
+		u, err := url.Parse(forwarder.Uri)
+		if err != nil {
+			// If we can't parse the URI, skip validation (let other error handling deal with it)
+			if fm.Config.Debug {
+				DebugLogFwd.Printf("Skipping validation for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err)
+			}
+			continue
+		}
+
+		// Check if UDP forwarder has explicit port
+		if u.Scheme == protocolUDP {
+			hostname := u.Hostname()
+			port := u.Port()
+			if port == "" {
+				// UDP forwarder without explicit port is invalid
+				invalidCount++
+				reason := fmt.Sprintf("invalid UDP URL: missing port (hostname: %s)", hostname)
+				fm.disableForwarder(forwarder.GetName(), reason)
+				ErrorLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), forwarder.Uri, reason)
+			}
+		}
+	}
+
+	if invalidCount > 0 {
+		ErrorLogFwd.Printf("Removed %d forwarder(s) with invalid configuration\n", invalidCount)
+	}
 }
 
 // Queue management

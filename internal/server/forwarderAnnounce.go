@@ -20,6 +20,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	protocolUDP   = "udp"
+	protocolHTTP  = "http"
+	protocolHTTPS = "https"
+)
+
 // AnnounceResult represents the outcome of an announce attempt
 type AnnounceResult struct {
 	Success      bool
@@ -53,7 +59,7 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	protocol := forward.GetProtocol()
 	var result AnnounceResult
 
-	if protocol == "udp" {
+	if protocol == protocolUDP {
 		result = fm.doUDPAnnounce(job)
 	} else {
 		result = fm.doHTTPAnnounce(job)
@@ -62,10 +68,56 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	fm.handleAnnounceResult(job, result)
 }
 
+// logAnnounceResult logs the outcome of an announce attempt in a unified format
+func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash string, result AnnounceResult) {
+	// Extract host:port from URL
+	u, err := url.Parse(trackerURL)
+	if err != nil {
+		// Fallback to full URL if parsing fails
+		if result.Success {
+			secs := result.Duration.Seconds()
+			fmt.Printf("%s %s %s - (%d bytes, %.3fs, interval=%d, peers=%d)\n",
+				hash, protocol, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
+		} else {
+			fmt.Printf("%s %s %s - (error: %s)\n",
+				hash, protocol, trackerURL, result.Error.Error())
+		}
+		return
+	}
+
+	// Format host:port
+	hostPort := u.Host
+	// Check if port is already included using u.Port() to correctly handle IPv6 addresses
+	if u.Port() == "" {
+		// Add default port if not specified
+		switch u.Scheme {
+		case protocolHTTPS:
+			hostPort += ":443"
+		case protocolHTTP:
+			hostPort += ":80"
+		case protocolUDP:
+			// UDP URLs must have an explicit port - if missing, use hostname only
+			// (this should not happen if validation is working, but handle gracefully)
+			hostPort = u.Hostname()
+		}
+	}
+
+	// Log based on result
+	if result.Success {
+		secs := result.Duration.Seconds()
+		fmt.Printf("%s %s %s - (%d bytes, %.3fs, interval=%d, peers=%d)\n",
+			hash, protocol, hostPort, result.ResponseSize, secs, result.Interval, len(result.Peers))
+	} else {
+		fmt.Printf("%s %s %s - (error: %s)\n",
+			hash, protocol, hostPort, result.Error.Error())
+	}
+}
+
 // handleAnnounceResult processes the result of an announce attempt
 func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result AnnounceResult) {
 	forwardName := job.Forwarder.GetName()
 	trackerURL := job.Forwarder.Uri
+	hash := fmt.Sprintf("%x", job.InfoHash)
 
 	if result.Success {
 		// Update storage with peers
@@ -77,16 +129,12 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `200`}).Inc()
 		}
 
-		secs := result.Duration.Seconds()
 		protocol := job.Forwarder.GetProtocol()
-		fmt.Printf("%s response %x from %s \n\t(%d bytes, %.3fs, interval=%d, peers=%d)\n",
-			protocol, job.InfoHash, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
+		fm.logAnnounceResult(protocol, trackerURL, hash, result)
 		return
 	}
 
 	// Handle failure
-	hash := fmt.Sprintf("%x", job.InfoHash)
-
 	if result.Suspend {
 		suspendFor := time.Duration(fm.Config.ForwarderSuspendSeconds) * time.Second
 		if suspendFor <= 0 {
@@ -99,7 +147,8 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		return
 	}
 
-	ErrorLogFwd.Printf("Announce error %s to %s: %s\n", hash, trackerURL, result.Error.Error())
+	protocol := job.Forwarder.GetProtocol()
+	fm.logAnnounceResult(protocol, trackerURL, hash, result)
 	if fm.Config.Debug {
 		ErrorLogFwd.Printf("  Duration: %v\n", result.Duration)
 	}
@@ -122,9 +171,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 func (fm *ForwarderManager) doUDPAnnounce(job AnnounceJob) AnnounceResult {
 	startTime := time.Now()
 	forward := job.Forwarder
-	hash := fmt.Sprintf("%x", job.InfoHash)
 
-	fmt.Printf("UDP announce %s to %s\n", hash, forward.Uri)
 	if fm.Config.Debug && forward.Ip != "" {
 		DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
 	}
@@ -155,12 +202,9 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 	startTime := time.Now()
 	forward := job.Forwarder
 	request := job.Request
-	hash := fmt.Sprintf("%x", job.InfoHash)
-	trackerURL := forward.Uri
 
 	uri := fm.buildAnnounceURI(forward, request, "")
 
-	fmt.Printf("HTTP announce %s to %s\n", hash, trackerURL)
 	if fm.Config.Debug {
 		DebugLogFwd.Printf("  Request URI: %s\n", uri)
 		if forward.Ip != "" {
@@ -431,7 +475,7 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 	}
 
 	var err error
-	if protocol == "udp" {
+	if protocol == protocolUDP {
 		_, _, err = fm.udpForwarder.Announce(forwarder, request)
 	} else {
 		err = fm.doHTTPEventRequest(forwarder, request)

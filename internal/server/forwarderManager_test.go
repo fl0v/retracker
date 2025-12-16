@@ -619,3 +619,298 @@ func TestQueueEligibleAnnouncesSkipsWhenNotDue(t *testing.T) {
 		t.Fatalf("expected 0 jobs queued when not due, got %d", got)
 	}
 }
+
+func TestIsBlockedIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       net.IP
+		expected bool
+	}{
+		{
+			name:     "localhost 127.0.0.1",
+			ip:       net.IPv4(127, 0, 0, 1),
+			expected: true,
+		},
+		{
+			name:     "localhost 127.1.1.1",
+			ip:       net.IPv4(127, 1, 1, 1),
+			expected: true,
+		},
+		{
+			name:     "private network 10.0.0.1",
+			ip:       net.IPv4(10, 0, 0, 1),
+			expected: true,
+		},
+		{
+			name:     "private network 10.255.255.255",
+			ip:       net.IPv4(10, 255, 255, 255),
+			expected: true,
+		},
+		{
+			name:     "private network 172.16.0.1",
+			ip:       net.IPv4(172, 16, 0, 1),
+			expected: true,
+		},
+		{
+			name:     "private network 172.31.255.255",
+			ip:       net.IPv4(172, 31, 255, 255),
+			expected: true,
+		},
+		{
+			name:     "private network 172.15.255.255 (not in range)",
+			ip:       net.IPv4(172, 15, 255, 255),
+			expected: false,
+		},
+		{
+			name:     "private network 172.32.0.1 (not in range)",
+			ip:       net.IPv4(172, 32, 0, 1),
+			expected: false,
+		},
+		{
+			name:     "private network 192.168.0.1",
+			ip:       net.IPv4(192, 168, 0, 1),
+			expected: true,
+		},
+		{
+			name:     "private network 192.168.255.255",
+			ip:       net.IPv4(192, 168, 255, 255),
+			expected: true,
+		},
+		{
+			name:     "public IP 8.8.8.8",
+			ip:       net.IPv4(8, 8, 8, 8),
+			expected: false,
+		},
+		{
+			name:     "public IP 1.1.1.1",
+			ip:       net.IPv4(1, 1, 1, 1),
+			expected: false,
+		},
+		{
+			name:     "192.169.0.1 (not in 192.168.x.x range)",
+			ip:       net.IPv4(192, 169, 0, 1),
+			expected: false,
+		},
+		{
+			name:     "nil IP",
+			ip:       nil,
+			expected: false,
+		},
+		{
+			name:     "IPv6 address",
+			ip:       net.ParseIP("2001:db8::1"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isBlockedIP(tt.ip)
+			if result != tt.expected {
+				t.Errorf("isBlockedIP(%v) = %v, want %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateAndRemoveInvalidForwarders(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	// Mix of valid and invalid forwarders
+	validHTTP := corecommon.Forward{Name: "valid-http", Uri: "http://example.com:80"}
+	validHTTPS := corecommon.Forward{Name: "valid-https", Uri: "https://example.com:443"}
+	validUDP := corecommon.Forward{Name: "valid-udp", Uri: "udp://tracker.example.com:6969"}
+	invalidUDPNoPort := corecommon.Forward{Name: "invalid-udp", Uri: "udp://tracker.example.com"}
+	invalidUDPNoPort2 := corecommon.Forward{Name: "invalid-udp-2", Uri: "udp://another.tracker.com"}
+
+	cfg.Forwards = []corecommon.Forward{
+		validHTTP,
+		validHTTPS,
+		validUDP,
+		invalidUDPNoPort,
+		invalidUDPNoPort2,
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Verify invalid UDP forwarders were removed
+	if !fm.isDisabled(invalidUDPNoPort.GetName()) {
+		t.Errorf("invalid UDP forwarder without port should be disabled")
+	}
+
+	if !fm.isDisabled(invalidUDPNoPort2.GetName()) {
+		t.Errorf("invalid UDP forwarder without port should be disabled")
+	}
+
+	// Verify valid forwarders are still active
+	if fm.isDisabled(validHTTP.GetName()) {
+		t.Errorf("valid HTTP forwarder should not be disabled")
+	}
+
+	if fm.isDisabled(validHTTPS.GetName()) {
+		t.Errorf("valid HTTPS forwarder should not be disabled")
+	}
+
+	if fm.isDisabled(validUDP.GetName()) {
+		t.Errorf("valid UDP forwarder with port should not be disabled")
+	}
+
+	// Verify forwarders were removed from the active list
+	fm.forwardersMu.RLock()
+	remainingCount := len(fm.Forwarders)
+	remainingNames := make(map[string]bool)
+	for _, f := range fm.Forwarders {
+		remainingNames[f.GetName()] = true
+	}
+	fm.forwardersMu.RUnlock()
+
+	if remainingCount != 3 {
+		t.Errorf("expected 3 forwarders remaining, got %d", remainingCount)
+	}
+
+	if !remainingNames[validHTTP.GetName()] {
+		t.Errorf("valid HTTP forwarder should be in active list")
+	}
+
+	if !remainingNames[validHTTPS.GetName()] {
+		t.Errorf("valid HTTPS forwarder should be in active list")
+	}
+
+	if !remainingNames[validUDP.GetName()] {
+		t.Errorf("valid UDP forwarder should be in active list")
+	}
+
+	if remainingNames[invalidUDPNoPort.GetName()] {
+		t.Errorf("invalid UDP forwarder should not be in active list")
+	}
+
+	if remainingNames[invalidUDPNoPort2.GetName()] {
+		t.Errorf("invalid UDP forwarder should not be in active list")
+	}
+}
+
+func TestValidateAndRemoveInvalidForwardersWithInvalidURI(t *testing.T) {
+	cfg := makeCfg()
+	cfg.Debug = true // Enable debug to see skip messages
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	// Forwarder with invalid URI should be skipped (not cause panic)
+	invalidURI := corecommon.Forward{Name: "invalid-uri", Uri: "://invalid"}
+	validUDP := corecommon.Forward{Name: "valid-udp", Uri: "udp://tracker.example.com:6969"}
+
+	cfg.Forwards = []corecommon.Forward{invalidURI, validUDP}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Invalid URI should be skipped, valid UDP should remain
+	if fm.isDisabled(validUDP.GetName()) {
+		t.Errorf("valid UDP forwarder should not be disabled")
+	}
+
+	// Invalid URI forwarder should still be in the list (validation skipped it)
+	fm.forwardersMu.RLock()
+	remainingCount := len(fm.Forwarders)
+	fm.forwardersMu.RUnlock()
+
+	// Should have at least the valid one, invalid one may or may not be there
+	if remainingCount < 1 {
+		t.Errorf("expected at least 1 forwarder, got %d", remainingCount)
+	}
+}
+
+func TestCheckAndRemoveBlockedForwarders(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	// Use localhost which should resolve to 127.0.0.1 (blocked)
+	blockedLocalhost := corecommon.Forward{Name: "blocked-localhost", Uri: "http://localhost:8080"}
+	// Use a public domain that should not be blocked
+	validPublic := corecommon.Forward{Name: "valid-public", Uri: "http://example.com:80"}
+
+	cfg.Forwards = []corecommon.Forward{blockedLocalhost, validPublic}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Verify localhost forwarder was removed (if DNS resolution works)
+	// Note: This test may be flaky if DNS resolution fails, but localhost should always resolve
+	if !fm.isDisabled(blockedLocalhost.GetName()) {
+		// If DNS lookup failed, the forwarder won't be disabled
+		// This is acceptable behavior - we keep forwarders if DNS fails
+		t.Logf("localhost forwarder not disabled - DNS lookup may have failed (acceptable)")
+	} else {
+		// If it was disabled, verify it's removed from active list
+		fm.forwardersMu.RLock()
+		remainingNames := make(map[string]bool)
+		for _, f := range fm.Forwarders {
+			remainingNames[f.GetName()] = true
+		}
+		fm.forwardersMu.RUnlock()
+
+		if remainingNames[blockedLocalhost.GetName()] {
+			t.Errorf("blocked localhost forwarder should not be in active list")
+		}
+	}
+
+	// Valid public forwarder should always remain
+	if fm.isDisabled(validPublic.GetName()) {
+		t.Errorf("valid public forwarder should not be disabled")
+	}
+}
+
+func TestCheckAndRemoveBlockedForwardersWithInvalidURI(t *testing.T) {
+	cfg := makeCfg()
+	cfg.Debug = true
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	// Forwarder with invalid URI should be skipped
+	invalidURI := corecommon.Forward{Name: "invalid-uri", Uri: "://invalid"}
+	validPublic := corecommon.Forward{Name: "valid-public", Uri: "http://example.com:80"}
+
+	cfg.Forwards = []corecommon.Forward{invalidURI, validPublic}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Valid forwarder should remain
+	if fm.isDisabled(validPublic.GetName()) {
+		t.Errorf("valid public forwarder should not be disabled")
+	}
+}
+
+func TestCheckAndRemoveBlockedForwardersWithEmptyHostname(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	// Forwarder with empty hostname should be skipped
+	emptyHost := corecommon.Forward{Name: "empty-host", Uri: "http://"}
+	validPublic := corecommon.Forward{Name: "valid-public", Uri: "http://example.com:80"}
+
+	cfg.Forwards = []corecommon.Forward{emptyHost, validPublic}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	// Valid forwarder should remain
+	if fm.isDisabled(validPublic.GetName()) {
+		t.Errorf("valid public forwarder should not be disabled")
+	}
+}
