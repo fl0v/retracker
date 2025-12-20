@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -205,6 +206,9 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 
 	// Check and remove forwarders that resolve to blocked IPs (localhost/private)
 	fm.checkAndRemoveBlockedForwarders()
+
+	// Remove duplicate forwarders by main domain
+	fm.removeDuplicateForwardersByDomain()
 
 	return fm
 }
@@ -573,6 +577,154 @@ func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
 	if blockedCount > 0 {
 		ErrorLogFwd.Printf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount)
 	}
+}
+
+// extractMainDomain extracts the main domain from a hostname
+// e.g., "tracker.example.com" -> "example.com", "sub.tracker.example.com" -> "example.com"
+func extractMainDomain(hostname string) string {
+	if hostname == "" {
+		return ""
+	}
+	parts := strings.Split(hostname, ".")
+	if len(parts) < 2 {
+		return hostname
+	}
+	// Return last two parts (e.g., "example.com")
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
+// forwarderScore calculates a priority score for a forwarder
+// Higher score = higher priority. Priority order:
+// 1. UDP protocol (1000 points)
+// 2. Has /announce path (100 points)
+// 3. Port 6969 (50 points)
+// 4. Has "tracker." subdomain (25 points)
+// 5. Longer URL (1 point per character)
+func forwarderScore(forwarder CoreCommon.Forward) int {
+	score := 0
+	u, err := url.Parse(forwarder.Uri)
+	if err != nil {
+		return 0
+	}
+
+	// 1. UDP protocol (highest priority)
+	if u.Scheme == protocolUDP {
+		score += 1000
+	}
+
+	// 2. Has /announce path
+	if strings.HasSuffix(u.Path, "/announce") {
+		score += 100
+	}
+
+	// 3. Port 6969
+	port := u.Port()
+	if port == "6969" {
+		score += 50
+	}
+
+	// 4. Has "tracker." subdomain
+	hostname := u.Hostname()
+	if strings.HasPrefix(hostname, "tracker.") {
+		score += 25
+	}
+
+	// 5. Longer URL (tiebreaker)
+	score += len(forwarder.Uri)
+
+	return score
+}
+
+// removeDuplicateForwardersByDomain removes duplicate forwarders based on main domain
+// For forwarders with the same main domain, keeps the one with highest priority:
+// UDP > /announce path > port 6969 > tracker. subdomain > longer URL
+func (fm *ForwarderManager) removeDuplicateForwardersByDomain() {
+	if len(fm.Forwarders) == 0 {
+		return
+	}
+
+	// Group forwarders by main domain only (regardless of protocol or port)
+	domainGroups := make(map[string][]CoreCommon.Forward)
+	for _, forwarder := range fm.Forwarders {
+		u, err := url.Parse(forwarder.Uri)
+		if err != nil {
+			// Skip invalid URIs (will be caught by validation later)
+			continue
+		}
+		hostname := u.Hostname()
+		if hostname == "" {
+			continue
+		}
+		mainDomain := extractMainDomain(hostname)
+		if mainDomain == "" {
+			continue
+		}
+		domainGroups[mainDomain] = append(domainGroups[mainDomain], forwarder)
+	}
+
+	// For each domain group, keep only the highest scoring forwarder
+	removedCount := 0
+	toKeep := make(map[string]bool)       // Track forwarders to keep by URI (more reliable than name)
+	removedNames := make(map[string]bool) // Track names of removed forwarders for stats cleanup
+
+	for mainDomain, forwarders := range domainGroups {
+		if len(forwarders) <= 1 {
+			// Mark single forwarder to keep
+			if len(forwarders) == 1 {
+				toKeep[forwarders[0].Uri] = true
+			}
+			continue // No duplicates for this domain
+		}
+
+		// Find the forwarder with highest score
+		bestForwarder := forwarders[0]
+		bestScore := forwarderScore(bestForwarder)
+
+		for i := 1; i < len(forwarders); i++ {
+			score := forwarderScore(forwarders[i])
+			if score > bestScore {
+				bestForwarder = forwarders[i]
+				bestScore = score
+			}
+		}
+
+		// Mark the best forwarder to keep, mark others for removal
+		toKeep[bestForwarder.Uri] = true
+		for _, forwarder := range forwarders {
+			if forwarder.Uri != bestForwarder.Uri {
+				removedNames[forwarder.GetName()] = true
+			}
+		}
+		removedCount += len(forwarders) - 1
+		if fm.Config.Debug {
+			DebugLogFwd.Printf("Domain %s: keeping forwarder %s (score: %d), removing %d duplicate(s)\n",
+				mainDomain, bestForwarder.GetName(), bestScore, len(forwarders)-1)
+		}
+	}
+
+	if removedCount == 0 {
+		return
+	}
+
+	// Remove forwarders that are not marked to keep
+	fm.forwardersMu.Lock()
+	newForwarders := make([]CoreCommon.Forward, 0, len(fm.Forwarders))
+	for _, forwarder := range fm.Forwarders {
+		if toKeep[forwarder.Uri] {
+			newForwarders = append(newForwarders, forwarder)
+		}
+	}
+	fm.Forwarders = newForwarders
+	fm.forwardersMu.Unlock()
+
+	// Clean up stats for removed forwarders
+	fm.statsMu.Lock()
+	for name := range removedNames {
+		delete(fm.stats, name)
+	}
+	fm.statsMu.Unlock()
+
+	ErrorLogFwd.Printf("Removed %d duplicate forwarder(s) by main domain\n", removedCount)
 }
 
 // validateAndRemoveInvalidForwarders checks all forwarders and removes those with invalid configuration

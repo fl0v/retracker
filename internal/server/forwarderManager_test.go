@@ -318,14 +318,15 @@ func TestDisabledForwarderRemovedFromActiveLists(t *testing.T) {
 		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
 	}
 
+	// Use different main domains to avoid deduplication
 	fwd1 := corecommon.Forward{Name: "active1", Uri: "http://example.com"}
-	fwd2 := corecommon.Forward{Name: "disabled", Uri: "http://invalid"}
-	fwd3 := corecommon.Forward{Name: "active2", Uri: "http://example.com"}
+	fwd2 := corecommon.Forward{Name: "disabled", Uri: "http://invalid.com"}
+	fwd3 := corecommon.Forward{Name: "active2", Uri: "http://another.com"}
 	cfg.Forwards = []corecommon.Forward{fwd1, fwd2, fwd3}
 
 	fm := NewForwarderManager(cfg, fs, st, nil, nil)
 
-	// Verify all forwarders are in the list
+	// Verify all forwarders are in the list (different domains, so no deduplication)
 	fm.forwardersMu.RLock()
 	initialCount := len(fm.Forwarders)
 	fm.forwardersMu.RUnlock()
@@ -761,6 +762,8 @@ func TestValidateAndRemoveInvalidForwarders(t *testing.T) {
 	}
 
 	// Verify forwarders were removed from the active list
+	// Note: All three valid forwarders share the same main domain (example.com),
+	// so deduplication will keep only the UDP one (highest priority: UDP + port 6969 + tracker. subdomain)
 	fm.forwardersMu.RLock()
 	remainingCount := len(fm.Forwarders)
 	remainingNames := make(map[string]bool)
@@ -769,20 +772,22 @@ func TestValidateAndRemoveInvalidForwarders(t *testing.T) {
 	}
 	fm.forwardersMu.RUnlock()
 
-	if remainingCount != 3 {
-		t.Errorf("expected 3 forwarders remaining, got %d", remainingCount)
+	if remainingCount != 1 {
+		t.Errorf("expected 1 forwarder remaining (UDP wins due to deduplication by main domain), got %d", remainingCount)
 	}
 
-	if !remainingNames[validHTTP.GetName()] {
-		t.Errorf("valid HTTP forwarder should be in active list")
-	}
-
-	if !remainingNames[validHTTPS.GetName()] {
-		t.Errorf("valid HTTPS forwarder should be in active list")
-	}
-
+	// UDP forwarder should be kept (highest priority)
 	if !remainingNames[validUDP.GetName()] {
-		t.Errorf("valid UDP forwarder should be in active list")
+		t.Errorf("valid UDP forwarder should be in active list (highest priority)")
+	}
+
+	// HTTP and HTTPS should be removed due to deduplication (same main domain as UDP)
+	if remainingNames[validHTTP.GetName()] {
+		t.Errorf("valid HTTP forwarder should be removed due to deduplication (same main domain as UDP)")
+	}
+
+	if remainingNames[validHTTPS.GetName()] {
+		t.Errorf("valid HTTPS forwarder should be removed due to deduplication (same main domain as UDP)")
 	}
 
 	if remainingNames[invalidUDPNoPort.GetName()] {
@@ -912,5 +917,168 @@ func TestCheckAndRemoveBlockedForwardersWithEmptyHostname(t *testing.T) {
 	// Valid forwarder should remain
 	if fm.isDisabled(validPublic.GetName()) {
 		t.Errorf("valid public forwarder should not be disabled")
+	}
+}
+
+// TestRemoveDuplicateForwardersByDomain tests the deduplication logic
+func TestRemoveDuplicateForwardersByDomain(t *testing.T) {
+	tests := []struct {
+		name           string
+		forwarders     []corecommon.Forward
+		expectedCount  int
+		expectedToKeep string // Name of forwarder that should be kept
+		description    string
+	}{
+		{
+			name: "UDP wins over HTTP/HTTPS",
+			forwarders: []corecommon.Forward{
+				{Name: "http", Uri: "http://example.com:80"},
+				{Name: "https", Uri: "https://example.com:443"},
+				{Name: "udp", Uri: "udp://tracker.example.com:6969"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "udp",
+			description:    "UDP has highest priority (1000 points)",
+		},
+		{
+			name: "/announce path wins over plain path",
+			forwarders: []corecommon.Forward{
+				{Name: "plain", Uri: "http://example.com:80"},
+				{Name: "announce", Uri: "http://example.com:80/announce"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "announce",
+			description:    "/announce path has higher priority (100 points)",
+		},
+		{
+			name: "Port 6969 wins over other ports",
+			forwarders: []corecommon.Forward{
+				{Name: "port80", Uri: "http://example.com:80"},
+				{Name: "port6969", Uri: "http://example.com:6969"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "port6969",
+			description:    "Port 6969 has higher priority (50 points)",
+		},
+		{
+			name: "tracker. subdomain wins",
+			forwarders: []corecommon.Forward{
+				{Name: "plain", Uri: "http://example.com:80"},
+				{Name: "tracker", Uri: "http://tracker.example.com:80"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "tracker",
+			description:    "tracker. subdomain has higher priority (25 points)",
+		},
+		{
+			name: "Longer URL wins as tiebreaker",
+			forwarders: []corecommon.Forward{
+				{Name: "short", Uri: "http://example.com:80"},
+				{Name: "long", Uri: "http://example.com:80/very/long/path/here"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "long",
+			description:    "Longer URL wins as tiebreaker (1 point per character)",
+		},
+		{
+			name: "UDP with port 6969 wins over UDP without",
+			forwarders: []corecommon.Forward{
+				{Name: "udp-no-port", Uri: "udp://tracker.example.com:8080"},
+				{Name: "udp-6969", Uri: "udp://tracker.example.com:6969"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "udp-6969",
+			description:    "UDP with port 6969 has highest score",
+		},
+		{
+			name: "Different domains are not deduplicated",
+			forwarders: []corecommon.Forward{
+				{Name: "example", Uri: "http://example.com:80"},
+				{Name: "test", Uri: "http://test.com:80"},
+				{Name: "other", Uri: "http://other.com:80"},
+			},
+			expectedCount:  3,
+			expectedToKeep: "", // All should be kept
+			description:    "Different main domains should not be deduplicated",
+		},
+		{
+			name: "Complex priority: UDP with announce and 6969",
+			forwarders: []corecommon.Forward{
+				{Name: "http-plain", Uri: "http://example.com:80"},
+				{Name: "http-announce", Uri: "http://example.com:80/announce"},
+				{Name: "udp-6969", Uri: "udp://tracker.example.com:6969/announce"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "udp-6969",
+			description:    "UDP with port 6969 and /announce should win",
+		},
+		{
+			name: "Subdomain extraction works correctly",
+			forwarders: []corecommon.Forward{
+				{Name: "sub1", Uri: "http://sub1.example.com:80"},
+				{Name: "sub2", Uri: "http://sub2.example.com:80"},
+				{Name: "tracker", Uri: "http://tracker.example.com:80"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "tracker",
+			description:    "All share main domain example.com, tracker. subdomain wins",
+		},
+		{
+			name: "Single forwarder is kept",
+			forwarders: []corecommon.Forward{
+				{Name: "single", Uri: "http://example.com:80"},
+			},
+			expectedCount:  1,
+			expectedToKeep: "single",
+			description:    "Single forwarder should be kept",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := makeCfg()
+			fs := NewForwarderStorage()
+			st := &Storage{
+				Config:   cfg,
+				Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+			}
+
+			cfg.Forwards = tt.forwarders
+			fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+			fm.forwardersMu.RLock()
+			remainingCount := len(fm.Forwarders)
+			remainingNames := make(map[string]bool)
+			for _, f := range fm.Forwarders {
+				remainingNames[f.GetName()] = true
+			}
+			fm.forwardersMu.RUnlock()
+
+			if remainingCount != tt.expectedCount {
+				t.Errorf("%s: expected %d forwarder(s) remaining, got %d", tt.description, tt.expectedCount, remainingCount)
+			}
+
+			if tt.expectedToKeep != "" {
+				if !remainingNames[tt.expectedToKeep] {
+					t.Errorf("%s: expected forwarder '%s' to be kept, but it was removed", tt.description, tt.expectedToKeep)
+				}
+
+				// Verify other forwarders were removed
+				for _, fwd := range tt.forwarders {
+					if fwd.GetName() != tt.expectedToKeep {
+						if remainingNames[fwd.GetName()] {
+							t.Errorf("%s: expected forwarder '%s' to be removed, but it was kept", tt.description, fwd.GetName())
+						}
+					}
+				}
+			} else {
+				// All should be kept
+				for _, fwd := range tt.forwarders {
+					if !remainingNames[fwd.GetName()] {
+						t.Errorf("%s: expected forwarder '%s' to be kept, but it was removed", tt.description, fwd.GetName())
+					}
+				}
+			}
+		})
 	}
 }

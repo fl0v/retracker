@@ -76,10 +76,10 @@ func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash 
 		// Fallback to full URL if parsing fails
 		if result.Success {
 			secs := result.Duration.Seconds()
-			fmt.Printf("%s %s %s - (%d bytes, %.3fs, interval=%d, peers=%d)\n",
+			fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
 				hash, protocol, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
 		} else {
-			fmt.Printf("%s %s %s - (error: %s)\n",
+			fmt.Printf("%s %s %s\n    --> (error: %s)\n",
 				hash, protocol, trackerURL, result.Error.Error())
 		}
 		return
@@ -105,10 +105,10 @@ func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash 
 	// Log based on result
 	if result.Success {
 		secs := result.Duration.Seconds()
-		fmt.Printf("%s %s %s - (%d bytes, %.3fs, interval=%d, peers=%d)\n",
+		fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
 			hash, protocol, hostPort, result.ResponseSize, secs, result.Interval, len(result.Peers))
 	} else {
-		fmt.Printf("%s %s %s - (error: %s)\n",
+		fmt.Printf("%s %s %s\n    --> (error: %s)\n",
 			hash, protocol, hostPort, result.Error.Error())
 	}
 }
