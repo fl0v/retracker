@@ -141,6 +141,23 @@ func (fs *ForwarderStorage) ShouldAnnounceNow(infoHash common.InfoHash, forwarde
 	return !entry.NextAnnounce.After(now)
 }
 
+// GetAnnounceState returns whether the forwarder has an entry for the hash,
+// plus the stored NextAnnounce time (zero if no entry).
+func (fs *ForwarderStorage) GetAnnounceState(infoHash common.InfoHash, forwarderName string) (bool, time.Time) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	forwarders, ok := fs.Entries[infoHash]
+	if !ok {
+		return false, time.Time{}
+	}
+	entry, ok := forwarders[forwarderName]
+	if !ok {
+		return false, time.Time{}
+	}
+	return true, entry.NextAnnounce
+}
+
 func (fs *ForwarderStorage) HasInfoHash(infoHash common.InfoHash) bool {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()

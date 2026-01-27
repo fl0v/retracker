@@ -531,6 +531,63 @@ func TestQueueEligibleAnnouncesSkipsRecentlyAnnounced(t *testing.T) {
 	}
 }
 
+func TestQueueEligibleAnnouncesPrioritizesNeverAnnouncedAndOverdue(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderQueueSize = 100
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.maxForwardersPerAnnounce = 2
+	fm.queueThrottleThresh = 100 // Disable throttling
+
+	fNew := corecommon.Forward{Name: "new", Uri: "http://new"}
+	fOld := corecommon.Forward{Name: "overdue-long", Uri: "http://overdue-long"}
+	fRecent := corecommon.Forward{Name: "overdue-short", Uri: "http://overdue-short"}
+	fm.Forwarders = []corecommon.Forward{fNew, fOld, fRecent}
+
+	ih := btcommon.InfoHash("prioritize-test-hash1") // 20 bytes
+	now := time.Now()
+
+	fs.mu.Lock()
+	fs.Entries[ih] = map[string]ForwarderPeerEntry{
+		fOld.GetName(): {
+			NextAnnounce: now.Add(-10 * time.Minute),
+		},
+		fRecent.GetName(): {
+			NextAnnounce: now.Add(-1 * time.Minute),
+		},
+	}
+	fs.mu.Unlock()
+
+	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000003")}
+	fm.QueueEligibleAnnounces(ih, req)
+
+	if got := len(fm.jobQueue); got != 2 {
+		t.Fatalf("expected 2 jobs queued; got %d", got)
+	}
+
+	job1 := <-fm.jobQueue
+	job2 := <-fm.jobQueue
+	names := map[string]bool{
+		job1.ForwarderName: true,
+		job2.ForwarderName: true,
+	}
+
+	if !names[fNew.GetName()] {
+		t.Fatalf("expected never-announced forwarder to be queued")
+	}
+	if !names[fOld.GetName()] {
+		t.Fatalf("expected most-overdue forwarder to be queued")
+	}
+	if names[fRecent.GetName()] {
+		t.Fatalf("did not expect less-overdue forwarder to be queued")
+	}
+}
+
 func TestSuspendForwarderExpires(t *testing.T) {
 	cfg := makeCfg()
 	fs := NewForwarderStorage()

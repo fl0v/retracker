@@ -159,6 +159,7 @@ flowchart TD
 - Same code path as initial announces
 - `ShouldAnnounceNow()` must return true (NextAnnounce due)
 - If not due → forwarder is skipped (no job created)
+  - When more than `max_forwarders_per_announce`, prioritize forwarders that have never announced for the hash, then those most overdue
 
 **Retry Jobs** (BEP 31):
 - Created by `handleRetryError()` when forwarder requests retry
@@ -178,10 +179,11 @@ Returns `false` if:
 ### Queue Flow
 
 1. Incoming announces call `QueueEligibleAnnounces()`
-2. Forwarders are shuffled randomly for load distribution
+2. Forwarders are shuffled for load distribution
 3. Each forwarder checked: disabled? suspended? `ShouldAnnounceNow()`?
-4. Eligible jobs queued (up to limits)
-5. Workers execute jobs and update `NextAnnounce` per forwarder
+4. Eligible forwarders are ordered: never-announced first, then most overdue
+5. Eligible jobs queued in that order (up to limits)
+6. Workers execute jobs and update `NextAnnounce` per forwarder
 
 ## Rate Limiting (Initial Announces Only)
 
@@ -213,8 +215,8 @@ Limits forwarders per announce when queue is filling up.
 
 **Behavior**:
 - Limits to `queue_throttle_top_n` forwarders
-- Forwarders shuffled randomly before selection
-- Distributes load evenly across forwarders
+- Forwarders shuffled for load distribution, then prioritized by announce state
+- Prioritizes never-announced, then most overdue; shuffle breaks ties
 
 ## Max Forwarders Per Announce
 
@@ -222,7 +224,7 @@ Limits forwarders per announce when queue is filling up.
 
 - Limits forwarders even when not throttling
 - When throttling: uses `min(max_forwarders_per_announce, queue_throttle_top_n)`
-- Random shuffle ensures fair distribution
+- Prioritization selects never-announced first, then most overdue; shuffle breaks ties
 
 ## Queue Full Handling
 
@@ -316,4 +318,3 @@ Limits forwarders per announce when queue is filling up.
 - Announce result handling
 - Job pending/cancellation logic
 - Suspension trigger conditions
-

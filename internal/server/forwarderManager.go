@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -805,22 +806,24 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 	now := time.Now()
 	queued := 0
 
-forwarderLoop:
-	for _, forwarder := range forwarders {
-		if queued >= limit {
-			break
-		}
+	type eligibleForwarder struct {
+		forwarder     CoreCommon.Forward
+		forwarderName string
+		order         int
+		overdue       time.Duration
+		hasEntry      bool
+	}
 
+	eligibleNew := make([]eligibleForwarder, 0)
+	eligibleDue := make([]eligibleForwarder, 0)
+
+	for idx, forwarder := range forwarders {
 		forwarderName := forwarder.GetName()
 
 		if fm.isSuspended(forwarderName) {
 			if fm.Config.Debug {
 				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
 			}
-			continue
-		}
-
-		if !fm.Storage.ShouldAnnounceNow(infoHash, forwarderName, now) {
 			continue
 		}
 
@@ -831,30 +834,87 @@ forwarderLoop:
 			continue
 		}
 
+		hasEntry, nextAnnounce := fm.Storage.GetAnnounceState(infoHash, forwarderName)
+		if hasEntry && nextAnnounce.After(now) {
+			continue
+		}
+
+		candidate := eligibleForwarder{
+			forwarder:     forwarder,
+			forwarderName: forwarderName,
+			order:         idx,
+			hasEntry:      hasEntry,
+		}
+
+		if !hasEntry {
+			eligibleNew = append(eligibleNew, candidate)
+			continue
+		}
+
+		if !nextAnnounce.IsZero() {
+			candidate.overdue = now.Sub(nextAnnounce)
+			if candidate.overdue < 0 {
+				candidate.overdue = 0
+			}
+		}
+		eligibleDue = append(eligibleDue, candidate)
+	}
+
+	sort.SliceStable(eligibleDue, func(i, j int) bool {
+		if eligibleDue[i].overdue == eligibleDue[j].overdue {
+			return eligibleDue[i].order < eligibleDue[j].order
+		}
+		return eligibleDue[i].overdue > eligibleDue[j].overdue
+	})
+
+	enqueue := func(candidate eligibleForwarder) bool {
+		if queued >= limit {
+			return false
+		}
+
 		job := AnnounceJob{
 			InfoHash:      infoHash,
-			ForwarderName: forwarderName,
+			ForwarderName: candidate.forwarderName,
 			PeerID:        request.PeerID,
-			Forwarder:     forwarder,
+			Forwarder:     candidate.forwarder,
 			Request:       request,
 		}
 
-		fm.markJobPending(infoHash, forwarderName, request.PeerID)
+		fm.markJobPending(infoHash, candidate.forwarderName, request.PeerID)
 
 		select {
 		case fm.jobQueue <- job:
 			queued++
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Queued announce for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+				DebugLogFwd.Printf("Queued announce for %x to %s (peer %x)\n", infoHash, candidate.forwarderName, request.PeerID)
 			}
+			return true
 		default:
-			fm.unmarkJobPending(infoHash, forwarderName, request.PeerID)
+			fm.unmarkJobPending(infoHash, candidate.forwarderName, request.PeerID)
 			atomic.AddUint64(&fm.droppedFullCount, 1)
 			if fm.Prometheus != nil {
 				fm.Prometheus.DroppedFull.Inc()
 			}
 			ErrorLogFwd.Printf("Job queue full, stopping announce queueing for %x", infoHash)
-			break forwarderLoop
+			return false
+		}
+	}
+
+	for _, candidate := range eligibleNew {
+		if queued >= limit {
+			break
+		}
+		if !enqueue(candidate) {
+			return
+		}
+	}
+
+	for _, candidate := range eligibleDue {
+		if queued >= limit {
+			break
+		}
+		if !enqueue(candidate) {
+			return
 		}
 	}
 
