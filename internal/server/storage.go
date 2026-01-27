@@ -26,31 +26,31 @@ type Storage struct {
 	disableStatsRoutine bool // If true, don't start separate stats routine (stats printed by ForwarderManager)
 }
 
-func (self *Storage) Update(request tracker.Request) {
-	self.requestsMu.Lock()
-	defer self.requestsMu.Unlock()
-	if _, ok := self.Requests[request.InfoHash]; !ok {
-		self.Requests[request.InfoHash] = make(map[common.PeerID]tracker.Request)
+func (s *Storage) Update(request tracker.Request) {
+	s.requestsMu.Lock()
+	defer s.requestsMu.Unlock()
+	if _, ok := s.Requests[request.InfoHash]; !ok {
+		s.Requests[request.InfoHash] = make(map[common.PeerID]tracker.Request)
 	}
-	self.Requests[request.InfoHash][request.PeerID] = request
+	s.Requests[request.InfoHash][request.PeerID] = request
 }
 
-func (self *Storage) Delete(request tracker.Request) {
-	self.requestsMu.Lock()
-	defer self.requestsMu.Unlock()
-	if requests, ok := self.Requests[request.InfoHash]; ok {
+func (s *Storage) Delete(request tracker.Request) {
+	s.requestsMu.Lock()
+	defer s.requestsMu.Unlock()
+	if requests, ok := s.Requests[request.InfoHash]; ok {
 		delete(requests, request.PeerID)
 		if len(requests) == 0 {
-			delete(self.Requests, request.InfoHash)
+			delete(s.Requests, request.InfoHash)
 		}
 	}
 }
 
-func (self *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
-	self.requestsMu.Lock()
-	defer self.requestsMu.Unlock()
+func (s *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
+	s.requestsMu.Lock()
+	defer s.requestsMu.Unlock()
 	peers := make([]common.Peer, 0)
-	if requests, ok := self.Requests[infoHash]; ok {
+	if requests, ok := s.Requests[infoHash]; ok {
 		for _, request := range requests {
 			peers = append(peers, request.Peer())
 		}
@@ -58,66 +58,66 @@ func (self *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
 	return peers
 }
 
-func (self *Storage) purgeRoutine() {
+func (s *Storage) purgeRoutine() {
 	for {
 		time.Sleep(1 * time.Minute)
-		if self.Config.Debug {
-			DebugLog.Printf("In memory %d hashes\n", len(self.Requests))
+		if s.Config.Debug {
+			DebugLog.Printf("In memory %d hashes\n", len(s.Requests))
 			DebugLog.Println(`Locking...`)
 		}
-		self.requestsMu.Lock()
-		for hash, requests := range self.Requests {
-			if self.Config.Debug {
+		s.requestsMu.Lock()
+		for hash, requests := range s.Requests {
+			if s.Config.Debug {
 				DebugLog.Printf("%d peer in hash %x\n", len(requests), hash)
 			}
 			for peerId, request := range requests {
 				timestampDelta := request.TimeStampDelta()
-				if self.Config.Debug {
+				if s.Config.Debug {
 					DebugLog.Printf(" %x %s:%d %v\n", peerId, request.Peer().IP, request.Peer().Port, timestampDelta)
 				}
-				if timestampDelta > self.Config.Age {
+				if timestampDelta > s.Config.Age {
 					DebugLog.Printf("delete peer %x in hash %x\n", peerId, hash)
-					delete(self.Requests[hash], peerId)
+					delete(s.Requests[hash], peerId)
 				}
 			}
 			if len(requests) == 0 {
 				DebugLog.Printf("delete hash %x\n", hash)
-				delete(self.Requests, hash)
+				delete(s.Requests, hash)
 			}
 		}
-		self.requestsMu.Unlock()
-		if self.Config.Debug {
+		s.requestsMu.Unlock()
+		if s.Config.Debug {
 			DebugLog.Println(`Unlocked`)
 		}
 	}
 }
 
-func (self *Storage) statsRoutine() {
-	if self.Config.StatsInterval <= 0 {
+func (s *Storage) statsRoutine() {
+	if s.Config.StatsInterval <= 0 {
 		return
 	}
 	// Check if stats are being handled by ForwarderManager
-	if self.disableStatsRoutine {
+	if s.disableStatsRoutine {
 		return
 	}
-	ticker := time.NewTicker(time.Duration(self.Config.StatsInterval) * time.Second)
+	ticker := time.NewTicker(time.Duration(s.Config.StatsInterval) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		// Double-check in case flag was set after routine started
-		if self.disableStatsRoutine {
+		if s.disableStatsRoutine {
 			return
 		}
-		self.printClientStats()
+		s.printClientStats()
 	}
 }
 
-func (self *Storage) printClientStats() {
+func (s *Storage) printClientStats() {
 	now := time.Now()
-	self.printClientStatsInline(now)
+	s.printClientStatsInline(now)
 }
 
-func (self *Storage) printClientStatsInline(now time.Time) {
+func (s *Storage) printClientStatsInline(now time.Time) {
 	// Map to track clients: "IP:ClientName" -> {hashCount, lastRequestTime}
 	type clientInfo struct {
 		hashCount       int
@@ -127,8 +127,8 @@ func (self *Storage) printClientStatsInline(now time.Time) {
 
 	clients := make(map[string]*clientInfo)
 
-	self.requestsMu.Lock()
-	for hash, requests := range self.Requests {
+	s.requestsMu.Lock()
+	for hash, requests := range s.Requests {
 		hashStr := fmt.Sprintf("%x", hash)
 		for _, request := range requests {
 			// Use IP from request (Peer() already handles fallback to remoteAddr)
@@ -170,7 +170,7 @@ func (self *Storage) printClientStatsInline(now time.Time) {
 			}
 		}
 	}
-	self.requestsMu.Unlock()
+	s.requestsMu.Unlock()
 
 	// Print client statistics inline (without separate header/footer)
 	if len(clients) == 0 {

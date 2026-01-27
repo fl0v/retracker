@@ -132,7 +132,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 ## Code Style Guidelines
 
 ### Naming
-- Receiver names: Use descriptive abbreviations (e.g., `ra` for ReceiverAnnounce, `fm` for ForwarderManager, `fs` for ForwarderStorage). Some older code uses `self`.
+- Receiver names: Use descriptive abbreviations (e.g., `ra` for ReceiverAnnounce, `fm` for ForwarderManager, `fs` for ForwarderStorage). Do not use `self`/`this` in new changes; rename when touched and before committing.
 - Package-level variables use PascalCase (e.g., `ErrorLog`, `DebugLog`)
 - Struct fields use PascalCase
 - Local variables use camelCase
