@@ -4,6 +4,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -61,6 +62,8 @@ type SuspendedForwarder struct {
 }
 
 const maxReasonLength = 200
+
+var ErrForwarderAlreadyExists = errors.New("forwarder already exists")
 
 // ForwarderManager manages forwarding announces to external trackers
 type ForwarderManager struct {
@@ -246,6 +249,69 @@ func (fm *ForwarderManager) Stop() {
 	if fm.udpForwarder != nil {
 		fm.udpForwarder.Stop()
 	}
+}
+
+// AddRuntimeForwarder adds a new forwarder in memory at runtime.
+// The forwarder is not persisted and is lost on restart.
+func (fm *ForwarderManager) AddRuntimeForwarder(forwarderURL string) (CoreCommon.Forward, error) {
+	uri := strings.TrimSpace(forwarderURL)
+	if uri == "" {
+		return CoreCommon.Forward{}, fmt.Errorf("missing forwarder url")
+	}
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return CoreCommon.Forward{}, fmt.Errorf("invalid forwarder url: %w", err)
+	}
+	if u.Scheme != protocolHTTP && u.Scheme != protocolHTTPS && u.Scheme != protocolUDP {
+		return CoreCommon.Forward{}, fmt.Errorf("unsupported forwarder protocol: %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return CoreCommon.Forward{}, fmt.Errorf("invalid forwarder url: missing hostname")
+	}
+	if u.Scheme == protocolUDP && u.Port() == "" {
+		return CoreCommon.Forward{}, fmt.Errorf("invalid UDP URL: missing port (hostname: %s)", u.Hostname())
+	}
+
+	forwarder := CoreCommon.Forward{Uri: uri}
+	name := forwarder.GetName()
+
+	fm.forwardersMu.RLock()
+	for _, existing := range fm.Forwarders {
+		if strings.EqualFold(existing.Uri, uri) || existing.GetName() == name {
+			fm.forwardersMu.RUnlock()
+			return CoreCommon.Forward{}, fmt.Errorf("%w: %s", ErrForwarderAlreadyExists, existing.GetName())
+		}
+	}
+	fm.forwardersMu.RUnlock()
+
+	fm.pendingMu.Lock()
+	delete(fm.disabledForwarders, name)
+	delete(fm.failCounts, name)
+	fm.pendingMu.Unlock()
+
+	fm.suspendedMu.Lock()
+	delete(fm.suspendedForwarders, name)
+	fm.suspendedMu.Unlock()
+
+	fm.forwardersMu.Lock()
+	for _, existing := range fm.Forwarders {
+		if strings.EqualFold(existing.Uri, uri) || existing.GetName() == name {
+			fm.forwardersMu.Unlock()
+			return CoreCommon.Forward{}, fmt.Errorf("%w: %s", ErrForwarderAlreadyExists, existing.GetName())
+		}
+	}
+	fm.Forwarders = append(fm.Forwarders, forwarder)
+	fm.forwardersMu.Unlock()
+
+	fm.statsMu.Lock()
+	if _, ok := fm.stats[name]; !ok {
+		fm.stats[name] = &ForwarderStats{SampleCount: 0}
+	}
+	fm.statsMu.Unlock()
+
+	InfoLogFwd.Printf("Added runtime forwarder %s (%s)", name, uri)
+	return forwarder, nil
 }
 
 // Job management

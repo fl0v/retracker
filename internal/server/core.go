@@ -4,9 +4,13 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fl0v/retracker/internal/config"
@@ -19,6 +23,7 @@ type Core struct {
 	ForwarderStorage *ForwarderStorage
 	ForwarderManager *ForwarderManager
 	Receiver         *Receiver
+	forwarderMu      sync.Mutex
 }
 
 func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
@@ -83,6 +88,144 @@ func (core *Core) HTTPStatsHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(text))
 	}
+}
+
+type addForwarderRequest struct {
+	URLs []string `json:"urls"`
+}
+
+type addForwarderResult struct {
+	URL    string `json:"url"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+type addForwardersResponse struct {
+	Status  string               `json:"status"`
+	Added   int                  `json:"added"`
+	Failed  int                  `json:"failed"`
+	Results []addForwarderResult `json:"results"`
+}
+
+func (core *Core) ensureForwarderManager() *ForwarderManager {
+	core.forwarderMu.Lock()
+	defer core.forwarderMu.Unlock()
+
+	if core.ForwarderManager != nil {
+		return core.ForwarderManager
+	}
+
+	if core.ForwarderStorage == nil {
+		core.ForwarderStorage = NewForwarderStorage()
+	}
+
+	// ForwarderManager provides combined stats updates when forwarding is active.
+	core.Storage.disableStatsRoutine = true
+
+	var prom *observability.Prometheus
+	var tempStorage *TempStorage
+	if core.Receiver != nil && core.Receiver.Announce != nil {
+		prom = core.Receiver.Announce.Prometheus
+		tempStorage = core.Receiver.Announce.TempStorage
+	}
+
+	core.ForwarderManager = NewForwarderManager(core.Config, core.ForwarderStorage, core.Storage, prom, tempStorage)
+	core.ForwarderManager.Start()
+
+	if core.Receiver != nil {
+		if core.Receiver.Announce != nil {
+			core.Receiver.Announce.ForwarderStorage = core.ForwarderStorage
+			core.Receiver.Announce.ForwarderManager = core.ForwarderManager
+		}
+		if core.Receiver.UDP != nil {
+			core.Receiver.UDP.ForwarderStorage = core.ForwarderStorage
+			core.Receiver.UDP.ForwarderManager = core.ForwarderManager
+		}
+	}
+
+	return core.ForwarderManager
+}
+
+// HTTPAddForwarderHandler handles POST /add-forwarder and adds runtime forwarders in memory only.
+func (core *Core) HTTPAddForwarderHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	forwarderURLs := make([]string, 0, 8)
+	if queryURLs := strings.TrimSpace(r.URL.Query().Get("urls")); queryURLs != "" {
+		parts := strings.Split(queryURLs, ",")
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				forwarderURLs = append(forwarderURLs, trimmed)
+			}
+		}
+	}
+
+	if r.Method == http.MethodPost {
+		var req addForwarderRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, u := range req.URLs {
+			if trimmed := strings.TrimSpace(u); trimmed != "" {
+				forwarderURLs = append(forwarderURLs, trimmed)
+			}
+		}
+	}
+
+	if len(forwarderURLs) == 0 {
+		http.Error(w, "missing forwarder urls (use urls array or ?urls=url1,url2)", http.StatusBadRequest)
+		return
+	}
+
+	fm := core.ensureForwarderManager()
+
+	resp := addForwardersResponse{
+		Status:  "added",
+		Results: make([]addForwarderResult, 0, len(forwarderURLs)),
+	}
+
+	allDuplicates := true
+	for _, forwarderURL := range forwarderURLs {
+		forwarder, err := fm.AddRuntimeForwarder(forwarderURL)
+		if err != nil {
+			resp.Failed++
+			resp.Results = append(resp.Results, addForwarderResult{
+				URL:    forwarderURL,
+				Status: "error",
+				Error:  err.Error(),
+			})
+			if !errors.Is(err, ErrForwarderAlreadyExists) {
+				allDuplicates = false
+			}
+			continue
+		}
+
+		resp.Added++
+		resp.Results = append(resp.Results, addForwarderResult{
+			URL:    forwarder.Uri,
+			Name:   forwarder.GetName(),
+			Status: "added",
+		})
+	}
+
+	statusCode := http.StatusOK
+	switch {
+	case resp.Added > 0 && resp.Failed > 0:
+		resp.Status = "partial"
+	case resp.Added == 0 && resp.Failed > 0:
+		resp.Status = "failed"
+		if allDuplicates {
+			statusCode = http.StatusConflict
+		} else {
+			statusCode = http.StatusBadRequest
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // simpleStatsProvider provides stats when no forwarders are configured

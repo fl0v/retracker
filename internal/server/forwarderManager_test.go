@@ -1246,6 +1246,40 @@ func TestCheckAndRemoveBlockedForwardersWithEmptyHostname(t *testing.T) {
 	}
 }
 
+func TestAddRuntimeForwarder(t *testing.T) {
+	cfg := makeCfg()
+	cfg.Forwards = []corecommon.Forward{}
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	added, err := fm.AddRuntimeForwarder("https://new-tracker.example.com:443/announce")
+	if err != nil {
+		t.Fatalf("unexpected add error: %v", err)
+	}
+	if added.GetName() != "new-tracker.example.com:443" {
+		t.Fatalf("unexpected forwarder name: %s", added.GetName())
+	}
+
+	fm.forwardersMu.RLock()
+	if len(fm.Forwarders) != 1 {
+		fm.forwardersMu.RUnlock()
+		t.Fatalf("expected 1 forwarder, got %d", len(fm.Forwarders))
+	}
+	fm.forwardersMu.RUnlock()
+
+	if _, err := fm.AddRuntimeForwarder("https://new-tracker.example.com:443/announce"); !errors.Is(err, ErrForwarderAlreadyExists) {
+		t.Fatalf("expected ErrForwarderAlreadyExists for duplicate, got: %v", err)
+	}
+
+	if _, err := fm.AddRuntimeForwarder("udp://missing-port.example.com/announce"); err == nil {
+		t.Fatalf("expected validation error for UDP URL without port")
+	}
+}
+
 // TestRemoveDuplicateForwardersByDomain tests the deduplication logic
 func TestRemoveDuplicateForwardersByDomain(t *testing.T) {
 	tests := []struct {

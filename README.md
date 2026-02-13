@@ -33,6 +33,31 @@ Full installation and deployment options are in [INSTALL.md](INSTALL.md).
   ```
 - Prometheus metrics: `GET /metrics` (when enabled in config)
 
+## HTTP API
+- `GET /announce` - BitTorrent announce endpoint.
+- `GET /scrape` - BitTorrent scrape endpoint.
+- `GET /stats` - text stats (`GET /stats?format=json` for JSON).
+- `POST /add-forwarder` - add forwarder URLs at runtime (in-memory only, lost on restart).
+  - Request body JSON (multiple only): `{"urls":["https://t1.example.com/announce","udp://t2.example.com:6969/announce"]}`
+- `GET /add-forwarder` - add forwarder URLs from query string.
+  - Query format: `?urls=url1,url2,` (comma-separated, trailing comma allowed)
+  - Responses:
+    - `200` when all are added, or when partially added (`status: "partial"`)
+    - `400` when all requested URLs fail validation
+    - `409` when all requested URLs already exist
+  - Response body includes per-URL result list and counters: `added`, `failed`, `results[]`
+
+Example:
+```bash
+curl -X POST http://127.0.0.1:6969/add-forwarder \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["udp://tracker.example.com:6969/announce","https://tracker2.example.com/announce"]}'
+```
+
+```bash
+curl "http://127.0.0.1:6969/add-forwarder?urls=udp://tracker.example.com:6969/announce,https://tracker2.example.com/announce,"
+```
+
 ## Docker
 - Build: `cd docker && docker build -t retracker .`
 - Run: `docker run -d -p 6969:6969 retracker`
