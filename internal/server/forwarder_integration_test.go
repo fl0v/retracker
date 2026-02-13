@@ -252,8 +252,8 @@ func TestForwarderIntegrationCycle(t *testing.T) {
 			t.Fatalf("disabled forwarder details should be present")
 		}
 		reasonLower := strings.ToLower(disabled.Reason)
-		if !strings.Contains(reasonLower, "lookup no-such-forwarder") {
-			t.Fatalf("expected disable reason to include lookup host prefix, got: %q", disabled.Reason)
+		if !strings.Contains(reasonLower, "dns lookup failed") {
+			t.Fatalf("expected normalized DNS disable reason, got: %q", disabled.Reason)
 		}
 	})
 

@@ -264,7 +264,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	}
 
 	if result.NonRetryable {
-		fm.disableForwarder(forwardName, result.Error.Error())
+		fm.disableForwarder(forwardName, disableReasonForError(result.Error))
 	} else {
 		fm.registerFailure(forwardName)
 	}

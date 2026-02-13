@@ -201,3 +201,39 @@ func isTimeoutErr(err error) bool {
 func isTrackerRejection(statusCode int) bool {
 	return statusCode == 400 || statusCode == 403 || statusCode == 404
 }
+
+func disableReasonForError(err error) string {
+	classified := classifyForwarderError(err)
+	if classified == nil {
+		return "permanent forwarder error"
+	}
+
+	msg := strings.ToLower(classified.Error())
+	switch {
+	case strings.Contains(msg, "http status 400"):
+		return "HTTP 400 (tracker rejection)"
+	case strings.Contains(msg, "http status 403"):
+		return "HTTP 403 (tracker rejection)"
+	case strings.Contains(msg, "http status 404"):
+		return "HTTP 404 (tracker rejection)"
+	case strings.Contains(msg, "tracker rejection"):
+		return "tracker rejection"
+	case strings.Contains(msg, "no such host"), strings.Contains(msg, "unknown host"):
+		return "DNS lookup failed"
+	case strings.Contains(msg, "tls: unrecognized name"):
+		return "TLS server name mismatch"
+	case strings.Contains(msg, "x509:"), strings.Contains(msg, "certificate is not valid for"), strings.Contains(msg, "tls: failed to verify certificate"):
+		return "TLS certificate validation failed"
+	case strings.Contains(msg, "permission denied"):
+		return "permission denied"
+	case strings.Contains(msg, "connection refused"):
+		return "connection refused"
+	case strings.Contains(msg, "no route to host"), strings.Contains(msg, "network is unreachable"):
+		return "network unreachable"
+	default:
+		if classified.Type == ForwarderErrorPermanent {
+			return "permanent forwarder error"
+		}
+		return classified.Error()
+	}
+}
