@@ -190,6 +190,41 @@ func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash 
 	}
 }
 
+// logRetryableAnnounceResult logs retryable announce failures with failure-count context in one warning.
+func (fm *ForwarderManager) logRetryableAnnounceResult(protocol, trackerURL, hash string, result AnnounceResult, failureCount, threshold int) {
+	u, err := url.Parse(trackerURL)
+	if err != nil {
+		if threshold > 0 {
+			WarnLogFwd.Printf("%s %s %s [%d/%d]\n    --> (error: %s)\n",
+				hash, protocol, trackerURL, failureCount, threshold, result.Error.Error())
+		} else {
+			WarnLogFwd.Printf("%s %s %s [%d]\n    --> (error: %s)\n",
+				hash, protocol, trackerURL, failureCount, result.Error.Error())
+		}
+		return
+	}
+
+	hostPort := u.Host
+	if u.Port() == "" {
+		switch u.Scheme {
+		case protocolHTTPS:
+			hostPort += ":443"
+		case protocolHTTP:
+			hostPort += ":80"
+		case protocolUDP:
+			hostPort = u.Hostname()
+		}
+	}
+
+	if threshold > 0 {
+		WarnLogFwd.Printf("%s %s %s [%d/%d]\n    --> (error: %s)\n",
+			hash, protocol, hostPort, failureCount, threshold, result.Error.Error())
+	} else {
+		WarnLogFwd.Printf("%s %s %s [%d]\n    --> (error: %s)\n",
+			hash, protocol, hostPort, failureCount, result.Error.Error())
+	}
+}
+
 // handleAnnounceResult processes the result of an announce attempt
 func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result AnnounceResult) {
 	forwardName := job.Forwarder.GetName()
@@ -241,20 +276,15 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		return
 	}
 
-	if !result.NonRetryable {
-		currentFailures := fm.getFailureCount(forwardName)
-		threshold := fm.Config.ForwarderFailThreshold
-		if threshold > 0 {
-			WarnLogFwd.Printf("Forwarder %s retryable failure count before error: %d/%d\n",
-				forwardName, currentFailures, threshold)
-		} else {
-			WarnLogFwd.Printf("Forwarder %s retryable failure count before error: %d\n",
-				forwardName, currentFailures)
-		}
-	}
-
 	protocol := job.Forwarder.GetProtocol()
-	fm.logAnnounceResult(protocol, trackerURL, hash, result)
+	if result.NonRetryable {
+		fm.logAnnounceResult(protocol, trackerURL, hash, result)
+	} else {
+		currentFailures := fm.getFailureCount(forwardName)
+		nextFailures := currentFailures + 1
+		threshold := fm.Config.ForwarderFailThreshold
+		fm.logRetryableAnnounceResult(protocol, trackerURL, hash, result, nextFailures, threshold)
+	}
 	if fm.Config.Debug {
 		ErrorLogFwd.Printf("  Duration: %v\n", result.Duration)
 	}
