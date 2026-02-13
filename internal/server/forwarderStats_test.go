@@ -7,6 +7,7 @@ import (
 
 	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/fl0v/retracker/bittorrent/tracker"
+	corecommon "github.com/fl0v/retracker/common"
 	"github.com/fl0v/retracker/internal/config"
 )
 
@@ -462,5 +463,55 @@ func TestGetSuspendedForwarderDetails(t *testing.T) {
 	fm.suspendedMu.Unlock()
 	if stillExists {
 		t.Fatalf("expected expired suspended forwarder to be cleaned up")
+	}
+}
+
+func TestGetForwardersIncludesFailCount(t *testing.T) {
+	cfg := makeTestConfig()
+	mainStorage := &Storage{
+		Config:   cfg,
+		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
+	}
+	forwarderStorage := NewForwarderStorage()
+
+	fm := &ForwarderManager{
+		Config:      cfg,
+		Storage:     forwarderStorage,
+		MainStorage: mainStorage,
+		Forwarders: []corecommon.Forward{
+			{Name: "f1", Uri: "http://f1.example/announce"},
+			{Name: "f2", Uri: "http://f2.example/announce"},
+		},
+		stats: map[string]*ForwarderStats{
+			"f1": {
+				AvgResponseTime:  120 * time.Millisecond,
+				LastInterval:     1800,
+				LastAnnounceTime: time.Now().Add(-10 * time.Second),
+				SampleCount:      4,
+			},
+		},
+		failCounts: make(map[string]int),
+	}
+
+	fm.failCounts["f1"] = 2
+	fm.failCounts["f2"] = 1
+
+	provider := &forwarderStatsProvider{fm: fm, cfg: cfg, now: time.Now()}
+	forwarders := provider.GetForwarders()
+
+	if len(forwarders) != 2 {
+		t.Fatalf("expected 2 forwarders, got %d", len(forwarders))
+	}
+
+	got := map[string]int{}
+	for _, f := range forwarders {
+		got[f.Name] = f.FailCount
+	}
+
+	if got["f1"] != 2 {
+		t.Fatalf("expected fail count 2 for f1, got %d", got["f1"])
+	}
+	if got["f2"] != 1 {
+		t.Fatalf("expected fail count 1 for f2, got %d", got["f2"])
 	}
 }

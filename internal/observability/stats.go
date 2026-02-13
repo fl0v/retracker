@@ -44,6 +44,7 @@ type ForwarderStat struct {
 	AvgResponseTime          time.Duration `json:"avg_response_time_ms"`
 	LastInterval             int           `json:"last_interval_seconds"`
 	SampleCount              int           `json:"sample_count"`
+	FailCount                int           `json:"fail_count"`
 	SecondsSinceLastAnnounce int           `json:"seconds_since_last_announce"`
 	HasStats                 bool          `json:"has_stats"`
 }
@@ -305,10 +306,10 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		}
 
 		sb.WriteString("\nForwarders:\n")
-		// Order: Proto, Tracker, AvgResp, Interval, AnnCount, LastAnn
-		headerFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s\n", maxNameLen)
-		sb.WriteString(fmt.Sprintf(headerFormat, "Proto", "Tracker", "AvgResp", "Interval", "AnnCount", "LastAnn"))
-		sb.WriteString(strings.Repeat("-", 6+maxNameLen+12+10+10+10+5) + "\n")
+		// Order: Proto, Tracker, AvgResp, Interval, AnnCount, FailCount, LastAnn
+		headerFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s %%10s\n", maxNameLen)
+		sb.WriteString(fmt.Sprintf(headerFormat, "Proto", "Tracker", "AvgResp", "Interval", "AnnCount", "FailCount", "LastAnn"))
+		sb.WriteString(strings.Repeat("-", 6+maxNameLen+12+10+10+10+10+6) + "\n")
 		for _, forwarder := range stats.Forwarders {
 			protocol := forwarder.Protocol
 			if protocol == "" {
@@ -316,32 +317,42 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			}
 			if forwarder.HasStats {
 				responseTime := forwarder.AvgResponseTime.Round(time.Millisecond).String()
-				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10d %%10d %%9ds\n", maxNameLen)
+				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10d %%10d %%10d %%9ds\n", maxNameLen)
 				sb.WriteString(fmt.Sprintf(rowFormat,
 					protocol, forwarder.Name, responseTime, forwarder.LastInterval,
-					forwarder.SampleCount, forwarder.SecondsSinceLastAnnounce))
+					forwarder.SampleCount, forwarder.FailCount, forwarder.SecondsSinceLastAnnounce))
 			} else {
-				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s\n", maxNameLen)
+				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10d %%10d %%10s\n", maxNameLen)
 				sb.WriteString(fmt.Sprintf(rowFormat,
-					protocol, forwarder.Name, "-", "-", "-", "-"))
+					protocol, forwarder.Name, "-", "-", 0, forwarder.FailCount, "-"))
 			}
 		}
 	}
 
 	if len(stats.DisabledDetails) > 0 {
+		disabledNameWidth := 20
+		for _, d := range stats.DisabledDetails {
+			if len(d.Name) > disabledNameWidth {
+				disabledNameWidth = len(d.Name)
+			}
+		}
+
 		sb.WriteString("\nDisabled Forwarders:\n")
-		sb.WriteString(fmt.Sprintf("%-28s %-10s %-20s %s\n", "Name", "Failures", "DisabledAt", "Reason"))
-		sb.WriteString(strings.Repeat("-", 111) + "\n")
+		headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%s\n", disabledNameWidth, 10, 20)
+		sb.WriteString(fmt.Sprintf(headerFormat, "Name", "Failures", "DisabledAt", "Reason"))
+		sb.WriteString(strings.Repeat("-", disabledNameWidth+10+20+50+5) + "\n")
 		for _, d := range stats.DisabledDetails {
 			disabledAt := time.Unix(d.DisabledAtUnix, 0).Format(time.RFC3339)
 			reasonLines := wrapTextCell(d.Reason, 50)
 			for i, line := range reasonLines {
 				if i == 0 {
-					sb.WriteString(fmt.Sprintf("%-28s %-10d %-20s %s\n",
+					rowFormat := fmt.Sprintf("%%-%ds %%-%dd %%-%ds %%s\n", disabledNameWidth, 10, 20)
+					sb.WriteString(fmt.Sprintf(rowFormat,
 						d.Name, d.FailureCount, disabledAt, line))
 					continue
 				}
-				sb.WriteString(fmt.Sprintf("%-28s %-10s %-20s %s\n", "", "", "", line))
+				contFormat := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%s\n", disabledNameWidth, 10, 20)
+				sb.WriteString(fmt.Sprintf(contFormat, "", "", "", line))
 			}
 		}
 	}
@@ -350,17 +361,27 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	if len(stats.SuspendedDetails) == 0 {
 		sb.WriteString("(none)\n")
 	} else {
-		sb.WriteString(fmt.Sprintf("%-28s %-12s %s\n", "Name", "Remaining(s)", "Reason"))
-		sb.WriteString(strings.Repeat("-", 92) + "\n")
+		suspendedNameWidth := 20
+		for _, s := range stats.SuspendedDetails {
+			if len(s.Name) > suspendedNameWidth {
+				suspendedNameWidth = len(s.Name)
+			}
+		}
+
+		headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%s\n", suspendedNameWidth, 12)
+		sb.WriteString(fmt.Sprintf(headerFormat, "Name", "Remaining(s)", "Reason"))
+		sb.WriteString(strings.Repeat("-", suspendedNameWidth+12+50+3) + "\n")
 		for _, s := range stats.SuspendedDetails {
 			reasonLines := wrapTextCell(s.Reason, 50)
 			for i, line := range reasonLines {
 				if i == 0 {
-					sb.WriteString(fmt.Sprintf("%-28s %-12d %s\n",
+					rowFormat := fmt.Sprintf("%%-%ds %%-%dd %%s\n", suspendedNameWidth, 12)
+					sb.WriteString(fmt.Sprintf(rowFormat,
 						s.Name, s.SecondsRemaining, line))
 					continue
 				}
-				sb.WriteString(fmt.Sprintf("%-28s %-12s %s\n", "", "", line))
+				contFormat := fmt.Sprintf("%%-%ds %%-%ds %%s\n", suspendedNameWidth, 12)
+				sb.WriteString(fmt.Sprintf(contFormat, "", "", line))
 			}
 		}
 	}
@@ -457,6 +478,7 @@ func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 			AvgResponseTime:          int(f.AvgResponseTime.Milliseconds()),
 			LastInterval:             f.LastInterval,
 			SampleCount:              f.SampleCount,
+			FailCount:                f.FailCount,
 			SecondsSinceLastAnnounce: f.SecondsSinceLastAnnounce,
 			HasStats:                 f.HasStats,
 		}
@@ -472,6 +494,7 @@ type ForwarderStatJSON struct {
 	AvgResponseTime          int    `json:"avg_response_time_ms"`
 	LastInterval             int    `json:"last_interval_seconds"`
 	SampleCount              int    `json:"sample_count"`
+	FailCount                int    `json:"fail_count"`
 	SecondsSinceLastAnnounce int    `json:"seconds_since_last_announce"`
 	HasStats                 bool   `json:"has_stats"`
 }

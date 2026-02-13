@@ -225,10 +225,18 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 	}
 	p.fm.statsMu.RUnlock()
 
+	p.fm.pendingMu.Lock()
+	failCounts := make(map[string]int, len(p.fm.failCounts))
+	for name, count := range p.fm.failCounts {
+		failCounts[name] = count
+	}
+	p.fm.pendingMu.Unlock()
+
 	result := make([]observability.ForwarderStat, len(forwarders))
 	for i, forwarder := range forwarders {
 		forwarderName := forwarder.GetName()
 		protocol := forwarder.GetProtocol()
+		failCount := failCounts[forwarderName]
 		if stats, ok := forwarderStats[forwarderName]; ok {
 			secondsSinceLastAnnounce := int(p.now.Sub(stats.LastAnnounceTime).Seconds())
 			result[i] = observability.ForwarderStat{
@@ -237,14 +245,16 @@ func (p *forwarderStatsProvider) GetForwarders() []observability.ForwarderStat {
 				AvgResponseTime:          stats.AvgResponseTime,
 				LastInterval:             stats.LastInterval,
 				SampleCount:              stats.Count,
+				FailCount:                failCount,
 				SecondsSinceLastAnnounce: secondsSinceLastAnnounce,
 				HasStats:                 true,
 			}
 		} else {
 			result[i] = observability.ForwarderStat{
-				Name:     forwarderName,
-				Protocol: protocol,
-				HasStats: false,
+				Name:      forwarderName,
+				Protocol:  protocol,
+				FailCount: failCount,
+				HasStats:  false,
 			}
 		}
 	}
