@@ -142,6 +142,11 @@ func isPermanentMessage(message string) bool {
 		"no such host",
 		"unknown host",
 		"connection refused",
+		"permission denied",
+		"tls: unrecognized name",
+		"x509:",
+		"certificate is not valid for",
+		"tls: failed to verify certificate",
 		"no route to host",
 		"network is unreachable",
 	}
@@ -169,6 +174,9 @@ func isPermanentTransportError(err error) bool {
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Err != nil {
 		if errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+			return true
+		}
+		if errors.Is(opErr.Err, syscall.EACCES) || errors.Is(opErr.Err, syscall.EPERM) {
 			return true
 		}
 		if strings.Contains(strings.ToLower(opErr.Err.Error()), "no such host") {

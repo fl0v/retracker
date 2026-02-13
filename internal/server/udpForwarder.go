@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +36,7 @@ const (
 	udpActionError    = 3
 
 	// Connection ID lifetime per BEP 15 (2 minutes)
-	connectionIDLifetime = 5 * time.Minute
+	connectionIDLifetime = 2 * time.Minute
 
 	// Default timeout for UDP operations
 	defaultUDPTimeout = 30 * time.Second
@@ -293,9 +294,11 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get connection ID: %w", err)
 	}
-	defer conn.Close()
-
-	transactionID := generateTransactionID()
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
 
 	// Determine IP to use
 	var ipUint32 uint32 = 0
@@ -325,34 +328,40 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		numWant = int32(request.NumWant)
 	}
 
-	// Build announce request (98 bytes for IPv4)
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, connectionID)
-	binary.Write(buf, binary.BigEndian, uint32(udpActionAnnounce))
-	binary.Write(buf, binary.BigEndian, transactionID)
-	buf.Write([]byte(request.InfoHash[:])) // 20 bytes
-	buf.Write([]byte(request.PeerID[:]))   // 20 bytes
-	binary.Write(buf, binary.BigEndian, request.Downloaded)
-	binary.Write(buf, binary.BigEndian, request.Left)
-	binary.Write(buf, binary.BigEndian, request.Uploaded)
-	binary.Write(buf, binary.BigEndian, eventCode)
-	binary.Write(buf, binary.BigEndian, ipUint32)
-	binary.Write(buf, binary.BigEndian, uint32(0)) // key (not used)
-	binary.Write(buf, binary.BigEndian, numWant)
-	binary.Write(buf, binary.BigEndian, uint16(request.Port))
+	buildAnnounceRequest := func(connID uint64, txID uint32) []byte {
+		// Build announce request (98 bytes for IPv4)
+		buf := new(bytes.Buffer)
+		binary.Write(buf, binary.BigEndian, connID)
+		binary.Write(buf, binary.BigEndian, uint32(udpActionAnnounce))
+		binary.Write(buf, binary.BigEndian, txID)
+		buf.Write([]byte(request.InfoHash[:])) // 20 bytes
+		buf.Write([]byte(request.PeerID[:]))   // 20 bytes
+		binary.Write(buf, binary.BigEndian, request.Downloaded)
+		binary.Write(buf, binary.BigEndian, request.Left)
+		binary.Write(buf, binary.BigEndian, request.Uploaded)
+		binary.Write(buf, binary.BigEndian, eventCode)
+		binary.Write(buf, binary.BigEndian, ipUint32)
+		binary.Write(buf, binary.BigEndian, uint32(0)) // key (not used)
+		binary.Write(buf, binary.BigEndian, numWant)
+		binary.Write(buf, binary.BigEndian, uint16(request.Port))
+		return buf.Bytes()
+	}
 
 	// Send announce request with retries
 	var response *Response.Response
 	var responseSize int
+	retriedAfterReconnect := false
 	for retry := 0; retry < uf.maxRetries; retry++ {
 		if retry > 0 {
 			time.Sleep(uf.retryBase * time.Duration(1<<retry))
 		}
+		transactionID := generateTransactionID()
+		requestBytes := buildAnnounceRequest(connectionID, transactionID)
 
 		// Reset deadline for each retry attempt
 		conn.SetDeadline(time.Now().Add(uf.timeout))
 
-		_, err = conn.Write(buf.Bytes())
+		_, err = conn.Write(requestBytes)
 		if err != nil {
 			if retry == uf.maxRetries-1 {
 				return nil, 0, fmt.Errorf("failed to send announce request: %w", err)
@@ -371,7 +380,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 			continue
 		}
 
-		if n < 20 {
+		if n < 8 {
 			if retry == uf.maxRetries-1 {
 				return nil, 0, fmt.Errorf("announce response too short: %d bytes", n)
 			}
@@ -399,7 +408,25 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 			uf.connMu.Lock()
 			delete(uf.connections, forwarderName)
 			uf.connMu.Unlock()
+			// One immediate reconnect+retry is attempted for tracker cookie/connection ID errors.
+			if !retriedAfterReconnect && shouldReconnectAfterTrackerError(errorMsg) {
+				retriedAfterReconnect = true
+				conn.Close()
+				conn = nil
+				connectionID, conn, err = uf.connect(forwarder)
+				if err != nil {
+					return nil, 0, fmt.Errorf("tracker error: %s (reconnect failed: %w)", errorMsg, err)
+				}
+				continue
+			}
 			return nil, 0, fmt.Errorf("tracker error: %s", errorMsg)
+		}
+
+		if n < 20 {
+			if retry == uf.maxRetries-1 {
+				return nil, 0, fmt.Errorf("announce response too short: %d bytes", n)
+			}
+			continue
 		}
 
 		if respAction != udpActionAnnounce {
@@ -468,4 +495,21 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 	}
 
 	return response, responseSize, nil
+}
+
+func shouldReconnectAfterTrackerError(errorMsg string) bool {
+	msg := strings.ToLower(errorMsg)
+	patterns := []string{
+		"connection cookie",
+		"cookie value",
+		"cookie error",
+		"connection id",
+		"invalid connection",
+	}
+	for _, p := range patterns {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }

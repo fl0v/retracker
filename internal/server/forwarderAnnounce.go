@@ -241,6 +241,18 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		return
 	}
 
+	if !result.NonRetryable {
+		currentFailures := fm.getFailureCount(forwardName)
+		threshold := fm.Config.ForwarderFailThreshold
+		if threshold > 0 {
+			WarnLogFwd.Printf("Forwarder %s retryable failure count before error: %d/%d\n",
+				forwardName, currentFailures, threshold)
+		} else {
+			WarnLogFwd.Printf("Forwarder %s retryable failure count before error: %d\n",
+				forwardName, currentFailures)
+		}
+	}
+
 	protocol := job.Forwarder.GetProtocol()
 	fm.logAnnounceResult(protocol, trackerURL, hash, result)
 	if fm.Config.Debug {

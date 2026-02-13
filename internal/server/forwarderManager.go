@@ -406,6 +406,13 @@ func (fm *ForwarderManager) resetFailure(forwarderName string) {
 	fm.pendingMu.Unlock()
 }
 
+func (fm *ForwarderManager) getFailureCount(forwarderName string) int {
+	fm.pendingMu.Lock()
+	count := fm.failCounts[forwarderName]
+	fm.pendingMu.Unlock()
+	return count
+}
+
 func (fm *ForwarderManager) disableForwarder(forwarderName string, reason string) {
 	fm.pendingMu.Lock()
 	failureCount := fm.failCounts[forwarderName]

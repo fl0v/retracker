@@ -102,8 +102,28 @@ func TestClassifyForwarderErrorPermanent(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "Permission denied in error message",
+			err:      errors.New("connect: permission denied"),
+			expected: true,
+		},
+		{
 			name:     "Wrapped DNS error",
 			err:      fmt.Errorf("failed to get connection ID: %w", &net.DNSError{Err: "no such host", Name: "ratelimit.example"}),
+			expected: true,
+		},
+		{
+			name:     "Permission denied syscall",
+			err:      &net.OpError{Err: syscall.EACCES},
+			expected: true,
+		},
+		{
+			name:     "TLS unrecognized name",
+			err:      errors.New(`Get "https://tr.example:443/announce": remote error: tls: unrecognized name`),
+			expected: true,
+		},
+		{
+			name:     "x509 certificate mismatch",
+			err:      errors.New("x509: certificate is valid for tracker.example.com, not tr.example.com"),
 			expected: true,
 		},
 		{
