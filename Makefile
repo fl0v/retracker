@@ -2,7 +2,7 @@
 	docker-build docker-rebuild docker-clean \
 	docker-up docker-down docker-restart docker-logs docker-shell \
 	update-forwarders local-build local-clean local-run local-run-debug \
-	lint lint-fix fmt fmt-check check test
+	lint lint-fix fmt fmt-check check test test-compact hooks-install
 
 .DEFAULT_GOAL := help
 
@@ -122,8 +122,9 @@ lint: ## Run golangci-lint
 		exit 1; \
 	else \
 		echo "Downloading dependencies..."; \
-		go mod download && \
-		$(GOLANGCI_LINT) run; \
+		mkdir -p /tmp/retracker-gocache /tmp/retracker-gomodcache && \
+		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache go mod download && \
+		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache $(GOLANGCI_LINT) run ./...; \
 	fi
 
 lint-fix: ## Run golangci-lint with auto-fix
@@ -133,7 +134,8 @@ lint-fix: ## Run golangci-lint with auto-fix
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
-		$(GOLANGCI_LINT) run --fix; \
+		mkdir -p /tmp/retracker-gocache /tmp/retracker-gomodcache && \
+		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache $(GOLANGCI_LINT) run --fix ./...; \
 	fi
 
 # Find gofumpt or gofmt
@@ -170,6 +172,13 @@ check: fmt-check lint ## Run all checks (formatting and linting)
 test: ## Run all tests
 	go test ./... -v
 
+test-compact: ## Run all tests with compact output
+	go test ./...
+
 test-cover: ## Run all tests with coverage report
 	go test ./... -v -cover
 
+hooks-install: ## Install repository git hooks (.githooks)
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Installed git hooks from .githooks"
