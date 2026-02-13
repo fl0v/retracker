@@ -157,9 +157,18 @@ The tracker responds with a bencoded dictionary (HTTP) or binary packet (UDP) co
 - `incomplete`: Number of leechers (optional, may be in scrape response)
 - `downloaded`: Number of times the torrent has completed (optional, may be in scrape response)
 
+### UDP Error Responses (BEP 15)
+
+For UDP trackers, failures are returned as an **error packet** (`action = 3`) that includes a **free-form error string**.
+Unlike HTTP, BEP 15 does not define standardized numeric status codes (such as 429-style semantics) for UDP errors.
+
+Practical implication for forwarders:
+- UDP "too many requests"/overload handling must be inferred from error text patterns from the tracker implementation.
+
 **References:**
 - [BEP 3 - BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html)
 - [BEP 23 - Tracker Returns Compact Peer Lists](https://www.bittorrent.org/beps/bep_0023.html) (for compact format)
+- [BEP 15 - UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html) (error action format)
 
 ## Event Types
 
@@ -328,4 +337,4 @@ If a client sends `started` and then immediately sends `stopped` (within seconds
 - [qBittorrent GitHub Repository](https://github.com/qbittorrent/qBittorrent/)
 - [qBittorrent Wiki](https://github.com/qbittorrent/qBittorrent/wiki/)
 - [BitTorrent.org BEP Index](https://www.bittorrent.org/beps/)
-
+- https://docs.rs/torrust-tracker/latest/torrust_tracker/servers/udp/index.html

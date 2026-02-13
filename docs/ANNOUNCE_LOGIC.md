@@ -258,6 +258,8 @@ Limits forwarders per announce when queue is filling up.
 
 **UDP**:
 - Same retry config as HTTP
+- BEP 15 error packets (`action=3`) carry free-form text only (no standard numeric rate-limit code)
+- Suspension is triggered when UDP error text matches rate-limit patterns (e.g. "too many requests", "rate limit", "slow down", "throttl", "retry later")
 
 **Retryable errors** (will retry up to configured attempts):
 - Request timeout
@@ -272,7 +274,9 @@ Limits forwarders per announce when queue is filling up.
 
 ### Forwarder Suspension
 
-**Trigger**: HTTP 429 or overload signals via `shouldSuspendForwarder()`
+**Trigger**:
+- HTTP 429 responses
+- UDP tracker error text matching rate-limit patterns via `shouldSuspendForwarder()`
 
 **Behavior**:
 - Suspended for `forwarder_suspend_seconds` (default 300)
@@ -308,6 +312,14 @@ Limits forwarders per announce when queue is filling up.
 **Queue metrics**: `queue_depth`, `queue_capacity`, `queue_fill_pct`, `queue_dropped_full`, `queue_rate_limited`, `queue_throttled_forwarders`
 
 **Worker metrics**: `forwarder_workers` (current count)
+
+**Forwarder state metrics**:
+- `forwarders_disabled`, `forwarders_suspended`
+- `forwarder_disabled{name,reason}`
+- `forwarder_disabled_failure_count{name}`
+- `forwarder_disabled_seconds_since{name}`
+- `forwarder_suspended{name,reason}`
+- `forwarder_suspended_seconds_remaining{name}`
 
 ## Tests
 
