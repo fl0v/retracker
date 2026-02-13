@@ -136,7 +136,7 @@ func TestForwarderIntegrationCycle(t *testing.T) {
 				Interval: 1800,
 				Peers: []btcommon.Peer{
 					{
-						IP:     btcommon.Address("203.0.113.99"),
+						IP:     btcommon.Address("8.8.8.8"),
 						Port:   6881,
 						PeerID: btcommon.PeerID("ZYXWVUTSRQPONMLKJIHG"),
 					},

@@ -150,8 +150,8 @@ func TestHandleAnnounceResultSuccess(t *testing.T) {
 	}
 
 	peers := []btcommon.Peer{
-		{IP: "192.168.1.1", Port: 6881},
-		{IP: "192.168.1.2", Port: 6882},
+		{IP: "8.8.8.8", Port: 6881},
+		{IP: "1.1.1.1", Port: 6882},
 	}
 
 	result := AnnounceResult{
@@ -236,6 +236,109 @@ func TestHandleAnnounceResultFailure(t *testing.T) {
 
 	if !fm.isDisabled(fwd.GetName()) {
 		t.Error("forwarder should be disabled after reaching threshold")
+	}
+}
+
+func TestHandleAnnounceResultAllUnroutablePeersCountsAsFailure(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderFailThreshold = 2
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	ih := btcommon.InfoHash("unroutable-peers-h01")
+	fwd := corecommon.Forward{Name: "unroutable-tracker", Uri: "http://tracker.example.com/announce"}
+	fm.Forwarders = []corecommon.Forward{fwd}
+
+	job := AnnounceJob{
+		InfoHash:      ih,
+		ForwarderName: fwd.GetName(),
+		Forwarder:     fwd,
+	}
+
+	result := AnnounceResult{
+		Success: true,
+		Peers: []btcommon.Peer{
+			{IP: "192.168.1.10", Port: 6881},
+			{IP: "127.0.0.1", Port: 6882},
+		},
+		Interval: 1800,
+		Duration: 20 * time.Millisecond,
+	}
+
+	fm.handleAnnounceResult(job, result)
+
+	fm.pendingMu.Lock()
+	failCount := fm.failCounts[fwd.GetName()]
+	fm.pendingMu.Unlock()
+	if failCount != 1 {
+		t.Fatalf("expected failure count 1 after unroutable peer-only response, got %d", failCount)
+	}
+	if fm.isDisabled(fwd.GetName()) {
+		t.Fatalf("forwarder should not be disabled after first failure")
+	}
+
+	fm.handleAnnounceResult(job, result)
+	if !fm.isDisabled(fwd.GetName()) {
+		t.Fatalf("forwarder should be disabled after reaching failure threshold")
+	}
+}
+
+func TestHandleAnnounceResultMixedPeersFiltersAndResetsFailure(t *testing.T) {
+	cfg := makeCfg()
+	cfg.ForwarderFailThreshold = 3
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	ih := btcommon.InfoHash("mixed-peers-hash001")
+	fwd := corecommon.Forward{Name: "mixed-peer-tracker", Uri: "http://tracker.example.com/announce"}
+	fm.Forwarders = []corecommon.Forward{fwd}
+
+	fm.registerFailure(fwd.GetName())
+
+	job := AnnounceJob{
+		InfoHash:      ih,
+		ForwarderName: fwd.GetName(),
+		Forwarder:     fwd,
+	}
+
+	result := AnnounceResult{
+		Success: true,
+		Peers: []btcommon.Peer{
+			{IP: "10.0.0.5", Port: 6881},
+			{IP: "8.8.8.8", Port: 6882},
+		},
+		Interval: 1800,
+		Duration: 25 * time.Millisecond,
+	}
+
+	fm.handleAnnounceResult(job, result)
+
+	fm.pendingMu.Lock()
+	failCount := fm.failCounts[fwd.GetName()]
+	fm.pendingMu.Unlock()
+	if failCount != 0 {
+		t.Fatalf("expected failure count reset to 0 after routable peer response, got %d", failCount)
+	}
+
+	fs.mu.RLock()
+	entry, ok := fs.Entries[ih][fwd.GetName()]
+	fs.mu.RUnlock()
+	if !ok {
+		t.Fatalf("expected forwarder entry to be stored")
+	}
+	if len(entry.Peers) != 1 {
+		t.Fatalf("expected exactly one routable peer to be stored, got %d", len(entry.Peers))
+	}
+	if entry.Peers[0].IP != btcommon.Address("8.8.8.8") {
+		t.Fatalf("expected stored peer to be 8.8.8.8, got %s", entry.Peers[0].IP)
 	}
 }
 
@@ -541,6 +644,32 @@ func TestClassifyForwarderErrorShouldSuspend(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("classifyForwarderError(%d, %v).ShouldSuspend() = %v, want %v",
 					tt.statusCode, tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsRoutablePeerAddress(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       btcommon.Address
+		expected bool
+	}{
+		{name: "public IPv4", ip: "8.8.8.8", expected: true},
+		{name: "private IPv4", ip: "192.168.1.10", expected: false},
+		{name: "loopback", ip: "127.0.0.1", expected: false},
+		{name: "cgnat", ip: "100.64.1.1", expected: false},
+		{name: "doc IPv4", ip: "203.0.113.10", expected: false},
+		{name: "public IPv6", ip: "2606:4700:4700::1111", expected: true},
+		{name: "unique local IPv6", ip: "fd00::1", expected: false},
+		{name: "doc IPv6", ip: "2001:db8::1", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRoutablePeerAddress(tt.ip)
+			if got != tt.expected {
+				t.Fatalf("isRoutablePeerAddress(%q) = %v, want %v", tt.ip, got, tt.expected)
 			}
 		})
 	}

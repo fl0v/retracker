@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"time"
 
@@ -24,6 +25,15 @@ const (
 	protocolUDP   = "udp"
 	protocolHTTP  = "http"
 	protocolHTTPS = "https"
+)
+
+var (
+	cgnatPrefix    = netip.MustParsePrefix("100.64.0.0/10")
+	docV4Prefix1   = netip.MustParsePrefix("192.0.2.0/24")
+	docV4Prefix2   = netip.MustParsePrefix("198.51.100.0/24")
+	docV4Prefix3   = netip.MustParsePrefix("203.0.113.0/24")
+	benchmarkV4Net = netip.MustParsePrefix("198.18.0.0/15")
+	docV6Prefix    = netip.MustParsePrefix("2001:db8::/32")
 )
 
 // AnnounceResult represents the outcome of an announce attempt
@@ -55,6 +65,54 @@ func buildFailureResult(duration time.Duration, err error) AnnounceResult {
 		NonRetryable: classified.IsPermanent(),
 		Suspend:      classified.ShouldSuspend(),
 	}
+}
+
+func filterRoutableForwarderPeers(peers []common.Peer) ([]common.Peer, int) {
+	if len(peers) == 0 {
+		return peers, 0
+	}
+
+	filtered := make([]common.Peer, 0, len(peers))
+	dropped := 0
+	for _, peer := range peers {
+		if isRoutablePeerAddress(peer.IP) {
+			filtered = append(filtered, peer)
+			continue
+		}
+		dropped++
+	}
+	return filtered, dropped
+}
+
+func isRoutablePeerAddress(address common.Address) bool {
+	addr, err := netip.ParseAddr(address.String())
+	if err != nil || !addr.IsValid() {
+		return false
+	}
+
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() ||
+		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsPrivate() {
+		return false
+	}
+
+	if addr.Is4() {
+		if cgnatPrefix.Contains(addr) || docV4Prefix1.Contains(addr) ||
+			docV4Prefix2.Contains(addr) || docV4Prefix3.Contains(addr) ||
+			benchmarkV4Net.Contains(addr) {
+			return false
+		}
+
+		octets := addr.As4()
+		if octets[0] == 0 || octets[0] >= 240 {
+			return false
+		}
+	}
+
+	if addr.Is6() && docV6Prefix.Contains(addr) {
+		return false
+	}
+
+	return true
 }
 
 // executeAnnounce routes to the appropriate protocol handler
@@ -139,9 +197,23 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	hash := fmt.Sprintf("%x", job.InfoHash)
 
 	if result.Success {
+		routablePeers, dropped := filterRoutableForwarderPeers(result.Peers)
+		if dropped > 0 {
+			InfoLogFwd.Printf("Filtered %d unroutable peer(s) from forwarder %s response\n", dropped, forwardName)
+		}
+		if len(result.Peers) > 0 && len(routablePeers) == 0 {
+			result = buildFailureResult(result.Duration, fmt.Errorf("forwarder returned only unroutable peers (%d total)", len(result.Peers)))
+		} else {
+			result.Peers = routablePeers
+		}
+	}
+
+	if result.Success {
 		// Update storage with peers
 		fm.Storage.UpdatePeers(job.InfoHash, forwardName, result.Peers, result.Interval)
-		fm.resetFailure(forwardName)
+		if len(result.Peers) > 0 {
+			fm.resetFailure(forwardName)
+		}
 		fm.recordStats(forwardName, result.Duration, result.Interval)
 
 		if fm.Prometheus != nil {
