@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fl0v/retracker/internal/config"
 )
@@ -182,6 +183,56 @@ func (sc *StatsCollector) FormatSimpleText(stats *SimpleStats) string {
 	return sb.String()
 }
 
+func wrapTextCell(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return []string{""}
+	}
+
+	words := strings.Fields(normalized)
+	lines := make([]string, 0, 1)
+	current := ""
+
+	for _, word := range words {
+		wordRunes := []rune(word)
+		for len(wordRunes) > width {
+			if current != "" {
+				lines = append(lines, current)
+				current = ""
+			}
+			lines = append(lines, string(wordRunes[:width]))
+			wordRunes = wordRunes[width:]
+		}
+		word = string(wordRunes)
+
+		if current == "" {
+			current = word
+			continue
+		}
+
+		if utf8.RuneCountInString(current)+1+utf8.RuneCountInString(word) <= width {
+			current += " " + word
+			continue
+		}
+
+		lines = append(lines, current)
+		current = word
+	}
+
+	if current != "" {
+		lines = append(lines, current)
+	}
+
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
 // FormatText formats stats as text (detailed format for /stats endpoint)
 func (sc *StatsCollector) FormatText(stats *Stats) string {
 	var sb strings.Builder
@@ -279,21 +330,38 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 
 	if len(stats.DisabledDetails) > 0 {
 		sb.WriteString("\nDisabled Forwarders:\n")
-		sb.WriteString(fmt.Sprintf("%-28s %-10s %-10s %s\n", "Name", "Failures", "Disabled(s)", "Reason"))
-		sb.WriteString(strings.Repeat("-", 95) + "\n")
+		sb.WriteString(fmt.Sprintf("%-28s %-10s %-20s %s\n", "Name", "Failures", "DisabledAt", "Reason"))
+		sb.WriteString(strings.Repeat("-", 111) + "\n")
 		for _, d := range stats.DisabledDetails {
-			sb.WriteString(fmt.Sprintf("%-28s %-10d %-10d %s\n",
-				d.Name, d.FailureCount, d.SecondsSinceDisabled, d.Reason))
+			disabledAt := time.Unix(d.DisabledAtUnix, 0).Format(time.RFC3339)
+			reasonLines := wrapTextCell(d.Reason, 50)
+			for i, line := range reasonLines {
+				if i == 0 {
+					sb.WriteString(fmt.Sprintf("%-28s %-10d %-20s %s\n",
+						d.Name, d.FailureCount, disabledAt, line))
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("%-28s %-10s %-20s %s\n", "", "", "", line))
+			}
 		}
 	}
 
-	if len(stats.SuspendedDetails) > 0 {
-		sb.WriteString("\nSuspended Forwarders:\n")
+	sb.WriteString("\nSuspended Forwarders:\n")
+	if len(stats.SuspendedDetails) == 0 {
+		sb.WriteString("(none)\n")
+	} else {
 		sb.WriteString(fmt.Sprintf("%-28s %-12s %s\n", "Name", "Remaining(s)", "Reason"))
-		sb.WriteString(strings.Repeat("-", 95) + "\n")
+		sb.WriteString(strings.Repeat("-", 92) + "\n")
 		for _, s := range stats.SuspendedDetails {
-			sb.WriteString(fmt.Sprintf("%-28s %-12d %s\n",
-				s.Name, s.SecondsRemaining, s.Reason))
+			reasonLines := wrapTextCell(s.Reason, 50)
+			for i, line := range reasonLines {
+				if i == 0 {
+					sb.WriteString(fmt.Sprintf("%-28s %-12d %s\n",
+						s.Name, s.SecondsRemaining, line))
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("%-28s %-12s %s\n", "", "", line))
+			}
 		}
 	}
 
