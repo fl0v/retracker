@@ -29,6 +29,35 @@ Useful quick checks:
 - `make check`
 - `rg -n "QueueEligibleAnnounces|handleStoppedEvent|shouldRateLimitInitial|schedulerRoutine" internal/server/*.go`
 
+## QA Flow (recommended)
+
+Run QA in this order:
+
+1. `make fmt-check`
+2. `make lint`
+3. `make test`
+
+Full command:
+- `make fmt-check && make lint && make test`
+
+Notes:
+- `make check` runs only `fmt-check` + `lint` (it does not run tests).
+- If cache directories are not writable in restricted environments, run with local cache overrides:
+  - `GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make fmt-check && GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make lint && GOCACHE=/tmp/retracker-gocache make test`
+
+### QA Tooling Requirements
+
+- Go toolchain `1.22.x` (see `go.mod` `toolchain`).
+- `golangci-lint` installed and in `PATH` for `make lint`.
+  - Install: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+- `gofumpt` is optional; `make fmt`/`make fmt-check` will fall back to `gofmt` if unavailable.
+
+### `go mod tidy` Guidance
+
+- Run `go mod tidy` when dependencies/imports change (new module, removed module, changed imports that affect `go.mod`/`go.sum`).
+- Do not run `go mod tidy` as a default QA step for every change.
+- If lint says `running 'go mod tidy' may solve the problem`, first verify it is not a cache/permission issue; in restricted environments, setting `GOCACHE`/`GOLANGCI_LINT_CACHE` is often sufficient.
+
 ## Runtime Defaults Snapshot (v0.10.0)
 
 Defaults are initialized in `cmd/retracker/main.go`:
