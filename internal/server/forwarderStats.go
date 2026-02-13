@@ -115,6 +115,77 @@ func (p *forwarderStatsProvider) GetDisabledForwarders() int {
 	return len(p.fm.disabledForwarders)
 }
 
+func (p *forwarderStatsProvider) GetDisabledForwarderDetails() []observability.DisabledForwarderInfo {
+	p.fm.pendingMu.Lock()
+	defer p.fm.pendingMu.Unlock()
+
+	details := make([]observability.DisabledForwarderInfo, 0, len(p.fm.disabledForwarders))
+	for name, disabled := range p.fm.disabledForwarders {
+		if disabled == nil {
+			continue
+		}
+
+		disabledAt := time.Unix(disabled.DisabledAt, 0)
+		secondsSinceDisabled := int(p.now.Sub(disabledAt).Seconds())
+		if secondsSinceDisabled < 0 {
+			secondsSinceDisabled = 0
+		}
+
+		details = append(details, observability.DisabledForwarderInfo{
+			Name:                 name,
+			Reason:               disabled.Reason,
+			FailureCount:         disabled.FailureCount,
+			DisabledAtUnix:       disabled.DisabledAt,
+			SecondsSinceDisabled: secondsSinceDisabled,
+		})
+	}
+
+	sort.Slice(details, func(i, j int) bool {
+		return details[i].Name < details[j].Name
+	})
+
+	return details
+}
+
+func (p *forwarderStatsProvider) GetSuspendedForwarderDetails() []observability.SuspendedForwarderInfo {
+	p.fm.suspendedMu.Lock()
+	defer p.fm.suspendedMu.Unlock()
+
+	now := p.now
+	details := make([]observability.SuspendedForwarderInfo, 0, len(p.fm.suspendedForwarders))
+
+	for name, suspended := range p.fm.suspendedForwarders {
+		if suspended == nil {
+			continue
+		}
+
+		until := suspended.SuspendedUntil
+		if now.After(until) {
+			delete(p.fm.suspendedForwarders, name)
+			continue
+		}
+
+		secondsRemaining := int(until.Sub(now).Seconds())
+		if secondsRemaining < 0 {
+			secondsRemaining = 0
+		}
+
+		details = append(details, observability.SuspendedForwarderInfo{
+			Name:               name,
+			Reason:             suspended.Reason,
+			SuspendedAtUnix:    suspended.SuspendedAt.Unix(),
+			SuspendedUntilUnix: suspended.SuspendedUntil.Unix(),
+			SecondsRemaining:   secondsRemaining,
+		})
+	}
+
+	sort.Slice(details, func(i, j int) bool {
+		return details[i].Name < details[j].Name
+	})
+
+	return details
+}
+
 func (p *forwarderStatsProvider) GetActiveForwarders() int {
 	p.fm.forwardersMu.RLock()
 	defer p.fm.forwardersMu.RUnlock()

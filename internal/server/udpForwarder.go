@@ -199,26 +199,52 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 				conn.Close()
 				return 0, nil, fmt.Errorf("failed to send connect request: %w", err)
 			}
-			if !isTimeoutErr(err) {
-				conn.Close()
-				return 0, nil, fmt.Errorf("failed to send connect request: %w", err)
-			}
 			continue
 		}
 
-		// Read response
-		respBuf := make([]byte, 16)
+		// Read response. Connect success payload is 16 bytes; error payload can include a longer message.
+		respBuf := make([]byte, 2048)
 		n, err := conn.Read(respBuf)
 		if err != nil {
 			if retry == uf.maxRetries-1 {
 				conn.Close()
 				return 0, nil, fmt.Errorf("failed to read connect response: %w", err)
 			}
-			if !isTimeoutErr(err) {
+			continue
+		}
+
+		if n < 8 {
+			if retry == uf.maxRetries-1 {
 				conn.Close()
-				return 0, nil, fmt.Errorf("failed to read connect response: %w", err)
+				return 0, nil, fmt.Errorf("connect response too short: %d bytes", n)
 			}
 			continue
+		}
+
+		// Parse response header
+		reader := bytes.NewReader(respBuf[:n])
+		var respAction uint32
+		var respTransactionID uint32
+		binary.Read(reader, binary.BigEndian, &respAction)
+		binary.Read(reader, binary.BigEndian, &respTransactionID)
+
+		// Verify transaction ID first (applies to both success and error actions).
+		if respTransactionID != transactionID {
+			if retry == uf.maxRetries-1 {
+				conn.Close()
+				return 0, nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
+			}
+			continue
+		}
+
+		// Parse and return tracker error message (BEP 15 action=3).
+		if respAction == udpActionError {
+			conn.Close()
+			errorMsg := "unknown tracker error"
+			if n > 8 {
+				errorMsg = string(respBuf[8:n])
+			}
+			return 0, nil, fmt.Errorf("tracker error on connect: %s", errorMsg)
 		}
 
 		if n < 16 {
@@ -229,20 +255,6 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 			continue
 		}
 
-		// Parse response
-		reader := bytes.NewReader(respBuf)
-		var respAction uint32
-		var respTransactionID uint32
-		binary.Read(reader, binary.BigEndian, &respAction)
-		binary.Read(reader, binary.BigEndian, &respTransactionID)
-		binary.Read(reader, binary.BigEndian, &connectionID)
-
-		// Verify response
-		if respAction == udpActionError {
-			conn.Close()
-			return 0, nil, fmt.Errorf("tracker returned error on connect")
-		}
-
 		if respAction != udpActionConnect {
 			if retry == uf.maxRetries-1 {
 				conn.Close()
@@ -251,13 +263,7 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 			continue
 		}
 
-		if respTransactionID != transactionID {
-			if retry == uf.maxRetries-1 {
-				conn.Close()
-				return 0, nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
-			}
-			continue
-		}
+		binary.Read(reader, binary.BigEndian, &connectionID)
 
 		// Success
 		break
@@ -360,9 +366,6 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 		responseSize = n
 		if err != nil {
 			if retry == uf.maxRetries-1 {
-				return nil, 0, fmt.Errorf("failed to read announce response: %w", err)
-			}
-			if !isTimeoutErr(err) {
 				return nil, 0, fmt.Errorf("failed to read announce response: %w", err)
 			}
 			continue

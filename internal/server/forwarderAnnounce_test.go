@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -511,7 +512,7 @@ func TestMarkUnmarkJobPending(t *testing.T) {
 	}
 }
 
-func TestShouldSuspendForwarder(t *testing.T) {
+func TestClassifyForwarderErrorShouldSuspend(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
@@ -519,17 +520,26 @@ func TestShouldSuspendForwarder(t *testing.T) {
 		expected   bool
 	}{
 		{"429 Too Many Requests", 429, nil, true},
-		{"503 Service Unavailable", 503, nil, false}, // Only 429 triggers suspend
+		{"503 Service Unavailable", 503, nil, false},
 		{"200 OK", 200, nil, false},
 		{"404 Not Found", 404, nil, false},
 		{"500 Internal Server Error", 500, nil, false},
+		{"UDP error too many requests", 0, errors.New("tracker error: Too Many Requests, retry later"), true},
+		{"UDP error rate limited", 0, errors.New("tracker error: rate limit exceeded"), true},
+		{"UDP generic tracker error", 0, errors.New("tracker error: invalid passkey"), false},
+		{"DNS lookup with ratelimit hostname", 0, errors.New("failed to resolve UDP address: lookup ratelimit.example: no such host"), false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := shouldSuspendForwarder(tt.statusCode, tt.err)
+			errToClassify := tt.err
+			if tt.statusCode > 0 {
+				errToClassify = errors.New("HTTP status " + strconv.Itoa(tt.statusCode))
+			}
+			classified := classifyForwarderError(errToClassify)
+			result := classified != nil && classified.ShouldSuspend()
 			if result != tt.expected {
-				t.Errorf("shouldSuspendForwarder(%d, %v) = %v, want %v",
+				t.Errorf("classifyForwarderError(%d, %v).ShouldSuspend() = %v, want %v",
 					tt.statusCode, tt.err, result, tt.expected)
 			}
 		})

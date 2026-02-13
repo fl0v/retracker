@@ -15,22 +15,25 @@ type StatsCollector struct{}
 
 // Stats holds all collected statistics
 type Stats struct {
-	Config              *config.Config          `json:"config,omitempty"`
-	PendingJobs         int                     `json:"pending_jobs"`
-	TrackedHashes       int                     `json:"tracked_hashes"`
-	DisabledForwarders  int                     `json:"disabled_forwarders"`
-	ActiveForwarders    int                     `json:"active_forwarders"`
-	Forwarders          []ForwarderStat         `json:"forwarders,omitempty"`
-	HashPeerStats       map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
-	ClientStats         *ClientStats            `json:"client_stats,omitempty"`
-	QueueDepth          int                     `json:"queue_depth"`
-	QueueCapacity       int                     `json:"queue_capacity"`
-	QueueFillPct        int                     `json:"queue_fill_pct"`
-	ActiveWorkers       int                     `json:"active_workers"`
-	MaxWorkers          int                     `json:"max_workers"`
-	DroppedFull         uint64                  `json:"dropped_full"`
-	RateLimited         uint64                  `json:"rate_limited"`
-	ThrottledForwarders uint64                  `json:"throttled_forwarders"`
+	Config              *config.Config           `json:"config,omitempty"`
+	PendingJobs         int                      `json:"pending_jobs"`
+	TrackedHashes       int                      `json:"tracked_hashes"`
+	DisabledForwarders  int                      `json:"disabled_forwarders"`
+	SuspendedForwarders int                      `json:"suspended_forwarders"`
+	ActiveForwarders    int                      `json:"active_forwarders"`
+	DisabledDetails     []DisabledForwarderInfo  `json:"disabled_details,omitempty"`
+	SuspendedDetails    []SuspendedForwarderInfo `json:"suspended_details,omitempty"`
+	Forwarders          []ForwarderStat          `json:"forwarders,omitempty"`
+	HashPeerStats       map[string]HashPeerStat  `json:"hash_peer_stats,omitempty"`
+	ClientStats         *ClientStats             `json:"client_stats,omitempty"`
+	QueueDepth          int                      `json:"queue_depth"`
+	QueueCapacity       int                      `json:"queue_capacity"`
+	QueueFillPct        int                      `json:"queue_fill_pct"`
+	ActiveWorkers       int                      `json:"active_workers"`
+	MaxWorkers          int                      `json:"max_workers"`
+	DroppedFull         uint64                   `json:"dropped_full"`
+	RateLimited         uint64                   `json:"rate_limited"`
+	ThrottledForwarders uint64                   `json:"throttled_forwarders"`
 }
 
 // ForwarderStat represents statistics for a forwarder
@@ -46,12 +49,31 @@ type ForwarderStat struct {
 
 // SimpleStats holds only essential statistics for console output
 type SimpleStats struct {
-	PendingJobs        int `json:"pending_jobs"`
-	TrackedHashes      int `json:"tracked_hashes"`
-	DisabledForwarders int `json:"disabled_forwarders"`
-	ActiveForwarders   int `json:"active_forwarders"`
-	ActiveWorkers      int `json:"active_workers"`
-	ActiveClients      int `json:"active_clients"`
+	PendingJobs         int `json:"pending_jobs"`
+	TrackedHashes       int `json:"tracked_hashes"`
+	DisabledForwarders  int `json:"disabled_forwarders"`
+	SuspendedForwarders int `json:"suspended_forwarders"`
+	ActiveForwarders    int `json:"active_forwarders"`
+	ActiveWorkers       int `json:"active_workers"`
+	ActiveClients       int `json:"active_clients"`
+}
+
+// DisabledForwarderInfo represents disabled forwarder details for stats output.
+type DisabledForwarderInfo struct {
+	Name                 string `json:"name"`
+	Reason               string `json:"reason"`
+	FailureCount         int    `json:"failure_count"`
+	DisabledAtUnix       int64  `json:"disabled_at_unix"`
+	SecondsSinceDisabled int    `json:"seconds_since_disabled"`
+}
+
+// SuspendedForwarderInfo represents suspended forwarder details for stats output.
+type SuspendedForwarderInfo struct {
+	Name               string `json:"name"`
+	Reason             string `json:"reason"`
+	SuspendedAtUnix    int64  `json:"suspended_at_unix"`
+	SuspendedUntilUnix int64  `json:"suspended_until_unix"`
+	SecondsRemaining   int    `json:"seconds_remaining"`
 }
 
 // HashPeerStat represents peer statistics for a hash
@@ -80,6 +102,8 @@ type StatsDataProvider interface {
 	GetPendingCount() int
 	GetTrackedHashes() int
 	GetDisabledForwarders() int
+	GetDisabledForwarderDetails() []DisabledForwarderInfo
+	GetSuspendedForwarderDetails() []SuspendedForwarderInfo
 	GetActiveForwarders() int
 	GetForwarders() []ForwarderStat
 	GetHashPeerStats() map[string]HashPeerStat
@@ -97,14 +121,20 @@ func NewStatsCollector() *StatsCollector {
 
 // CollectStats collects statistics from a data provider
 func (sc *StatsCollector) CollectStats(provider StatsDataProvider) *Stats {
+	disabledDetails := provider.GetDisabledForwarderDetails()
+	suspendedDetails := provider.GetSuspendedForwarderDetails()
+
 	stats := &Stats{
-		Config:             provider.GetConfig(),
-		PendingJobs:        provider.GetPendingCount(),
-		TrackedHashes:      provider.GetTrackedHashes(),
-		DisabledForwarders: provider.GetDisabledForwarders(),
-		ActiveForwarders:   provider.GetActiveForwarders(),
-		HashPeerStats:      provider.GetHashPeerStats(),
-		ClientStats:        provider.GetClientStats(),
+		Config:              provider.GetConfig(),
+		PendingJobs:         provider.GetPendingCount(),
+		TrackedHashes:       provider.GetTrackedHashes(),
+		DisabledForwarders:  provider.GetDisabledForwarders(),
+		SuspendedForwarders: len(suspendedDetails),
+		ActiveForwarders:    provider.GetActiveForwarders(),
+		DisabledDetails:     disabledDetails,
+		SuspendedDetails:    suspendedDetails,
+		HashPeerStats:       provider.GetHashPeerStats(),
+		ClientStats:         provider.GetClientStats(),
 	}
 
 	// Get forwarder stats directly from provider
@@ -127,12 +157,13 @@ func (sc *StatsCollector) CollectSimpleStats(provider StatsDataProvider) *Simple
 	activeWorkers, _ := provider.GetWorkerMetrics()
 
 	return &SimpleStats{
-		PendingJobs:        provider.GetPendingCount(),
-		TrackedHashes:      provider.GetTrackedHashes(),
-		DisabledForwarders: provider.GetDisabledForwarders(),
-		ActiveForwarders:   provider.GetActiveForwarders(),
-		ActiveWorkers:      activeWorkers,
-		ActiveClients:      activeClients,
+		PendingJobs:         provider.GetPendingCount(),
+		TrackedHashes:       provider.GetTrackedHashes(),
+		DisabledForwarders:  provider.GetDisabledForwarders(),
+		SuspendedForwarders: len(provider.GetSuspendedForwarderDetails()),
+		ActiveForwarders:    provider.GetActiveForwarders(),
+		ActiveWorkers:       activeWorkers,
+		ActiveClients:       activeClients,
 	}
 }
 
@@ -143,6 +174,7 @@ func (sc *StatsCollector) FormatSimpleText(stats *SimpleStats) string {
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Pending Jobs:", stats.PendingJobs))
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Tracked Hashes:", stats.TrackedHashes))
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Disabled Forwarders:", stats.DisabledForwarders))
+	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Suspended Forwarders:", stats.SuspendedForwarders))
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Forwarders:", stats.ActiveForwarders))
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Workers:", stats.ActiveWorkers))
 	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Clients:", stats.ActiveClients))
@@ -199,6 +231,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	sb.WriteString(fmt.Sprintf("Pending jobs: %d\n", stats.PendingJobs))
 	sb.WriteString(fmt.Sprintf("Tracked hashes: %d\n", stats.TrackedHashes))
 	sb.WriteString(fmt.Sprintf("Disabled forwarders: %d\n", stats.DisabledForwarders))
+	sb.WriteString(fmt.Sprintf("Suspended forwarders: %d\n", stats.SuspendedForwarders))
 	sb.WriteString(fmt.Sprintf("Active forwarders: %d\n", stats.ActiveForwarders))
 	sb.WriteString(fmt.Sprintf("Queue: depth %d / %d (%d%%)\n", stats.QueueDepth, stats.QueueCapacity, stats.QueueFillPct))
 	sb.WriteString(fmt.Sprintf("Workers: %d active / %d max\n", stats.ActiveWorkers, stats.MaxWorkers))
@@ -241,6 +274,26 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 				sb.WriteString(fmt.Sprintf(rowFormat,
 					protocol, forwarder.Name, "-", "-", "-", "-"))
 			}
+		}
+	}
+
+	if len(stats.DisabledDetails) > 0 {
+		sb.WriteString("\nDisabled Forwarders:\n")
+		sb.WriteString(fmt.Sprintf("%-28s %-10s %-10s %s\n", "Name", "Failures", "Disabled(s)", "Reason"))
+		sb.WriteString(strings.Repeat("-", 95) + "\n")
+		for _, d := range stats.DisabledDetails {
+			sb.WriteString(fmt.Sprintf("%-28s %-10d %-10d %s\n",
+				d.Name, d.FailureCount, d.SecondsSinceDisabled, d.Reason))
+		}
+	}
+
+	if len(stats.SuspendedDetails) > 0 {
+		sb.WriteString("\nSuspended Forwarders:\n")
+		sb.WriteString(fmt.Sprintf("%-28s %-12s %s\n", "Name", "Remaining(s)", "Reason"))
+		sb.WriteString(strings.Repeat("-", 95) + "\n")
+		for _, s := range stats.SuspendedDetails {
+			sb.WriteString(fmt.Sprintf("%-28s %-12d %s\n",
+				s.Name, s.SecondsRemaining, s.Reason))
 		}
 	}
 
@@ -287,28 +340,34 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 func (sc *StatsCollector) FormatJSON(stats *Stats) ([]byte, error) {
 	// Create a JSON-friendly version of stats
 	jsonStats := struct {
-		Config              *config.Config          `json:"config,omitempty"`
-		PendingJobs         int                     `json:"pending_jobs"`
-		TrackedHashes       int                     `json:"tracked_hashes"`
-		DisabledForwarders  int                     `json:"disabled_forwarders"`
-		ActiveForwarders    int                     `json:"active_forwarders"`
-		Forwarders          []ForwarderStatJSON     `json:"forwarders,omitempty"`
-		HashPeerStats       map[string]HashPeerStat `json:"hash_peer_stats,omitempty"`
-		ClientStats         *ClientStats            `json:"client_stats,omitempty"`
-		QueueDepth          int                     `json:"queue_depth"`
-		QueueCapacity       int                     `json:"queue_capacity"`
-		QueueFillPct        int                     `json:"queue_fill_pct"`
-		ActiveWorkers       int                     `json:"active_workers"`
-		MaxWorkers          int                     `json:"max_workers"`
-		DroppedFull         uint64                  `json:"dropped_full"`
-		RateLimited         uint64                  `json:"rate_limited"`
-		ThrottledForwarders uint64                  `json:"throttled_forwarders"`
+		Config              *config.Config           `json:"config,omitempty"`
+		PendingJobs         int                      `json:"pending_jobs"`
+		TrackedHashes       int                      `json:"tracked_hashes"`
+		DisabledForwarders  int                      `json:"disabled_forwarders"`
+		SuspendedForwarders int                      `json:"suspended_forwarders"`
+		ActiveForwarders    int                      `json:"active_forwarders"`
+		DisabledDetails     []DisabledForwarderInfo  `json:"disabled_details,omitempty"`
+		SuspendedDetails    []SuspendedForwarderInfo `json:"suspended_details,omitempty"`
+		Forwarders          []ForwarderStatJSON      `json:"forwarders,omitempty"`
+		HashPeerStats       map[string]HashPeerStat  `json:"hash_peer_stats,omitempty"`
+		ClientStats         *ClientStats             `json:"client_stats,omitempty"`
+		QueueDepth          int                      `json:"queue_depth"`
+		QueueCapacity       int                      `json:"queue_capacity"`
+		QueueFillPct        int                      `json:"queue_fill_pct"`
+		ActiveWorkers       int                      `json:"active_workers"`
+		MaxWorkers          int                      `json:"max_workers"`
+		DroppedFull         uint64                   `json:"dropped_full"`
+		RateLimited         uint64                   `json:"rate_limited"`
+		ThrottledForwarders uint64                   `json:"throttled_forwarders"`
 	}{
 		Config:              stats.Config,
 		PendingJobs:         stats.PendingJobs,
 		TrackedHashes:       stats.TrackedHashes,
 		DisabledForwarders:  stats.DisabledForwarders,
+		SuspendedForwarders: stats.SuspendedForwarders,
 		ActiveForwarders:    stats.ActiveForwarders,
+		DisabledDetails:     stats.DisabledDetails,
+		SuspendedDetails:    stats.SuspendedDetails,
 		HashPeerStats:       stats.HashPeerStats,
 		ClientStats:         stats.ClientStats,
 		QueueDepth:          stats.QueueDepth,

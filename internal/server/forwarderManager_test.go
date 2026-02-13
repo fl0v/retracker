@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -68,7 +70,7 @@ func TestResetFailureOnSuccess(t *testing.T) {
 	}
 }
 
-func TestIsNonRetryableError(t *testing.T) {
+func TestClassifyForwarderErrorPermanent(t *testing.T) {
 	tests := []struct {
 		name     string
 		err      error
@@ -100,6 +102,11 @@ func TestIsNonRetryableError(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "Wrapped DNS error",
+			err:      fmt.Errorf("failed to get connection ID: %w", &net.DNSError{Err: "no such host", Name: "ratelimit.example"}),
+			expected: true,
+		},
+		{
 			name:     "No route to host",
 			err:      errors.New("no route to host"),
 			expected: true,
@@ -128,9 +135,10 @@ func TestIsNonRetryableError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isNonRetryableError(tt.err)
+			classified := classifyForwarderError(tt.err)
+			result := classified != nil && classified.IsPermanent()
 			if result != tt.expected {
-				t.Errorf("isNonRetryableError(%v) = %v, want %v", tt.err, result, tt.expected)
+				t.Errorf("classifyForwarderError(%v).IsPermanent() = %v, want %v", tt.err, result, tt.expected)
 			}
 		})
 	}
@@ -157,6 +165,147 @@ func TestIsTrackerRejection(t *testing.T) {
 			result := isTrackerRejection(tt.statusCode)
 			if result != tt.expected {
 				t.Errorf("isTrackerRejection(%d) = %v, want %v", tt.statusCode, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClassifyForwarderErrorRateLimitPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "Nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "Too many requests",
+			err:      errors.New("tracker error: Too Many Requests"),
+			expected: true,
+		},
+		{
+			name:     "Rate limit exceeded",
+			err:      errors.New("tracker error: rate limit exceeded"),
+			expected: true,
+		},
+		{
+			name:     "Slow down",
+			err:      errors.New("tracker says please slow down"),
+			expected: true,
+		},
+		{
+			name:     "Flood control",
+			err:      errors.New("flood detected, retry later"),
+			expected: true,
+		},
+		{
+			name:     "Non-rate-limit error",
+			err:      errors.New("tracker error: invalid passkey"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := false
+			if tt.err != nil {
+				result = isRateLimitMessage(strings.ToLower(tt.err.Error()))
+			}
+			if result != tt.expected {
+				t.Errorf("isRateLimitMessage(%v) = %v, want %v", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClassifyForwarderErrorSuspend(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "Tracker error too many requests",
+			err:      errors.New("tracker error: Too Many Requests"),
+			expected: true,
+		},
+		{
+			name:     "Tracker connect error rate limit",
+			err:      errors.New("tracker error on connect: rate limit exceeded"),
+			expected: true,
+		},
+		{
+			name:     "Tracker error non-rate-limit",
+			err:      errors.New("tracker error: invalid passkey"),
+			expected: false,
+		},
+		{
+			name:     "DNS error with rate-like hostname",
+			err:      errors.New("failed to resolve UDP address: lookup ratelimit.example: no such host"),
+			expected: false,
+		},
+		{
+			name:     "Generic local flood text",
+			err:      errors.New("write udp: local flood control"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classified := classifyForwarderError(tt.err)
+			result := classified != nil && classified.ShouldSuspend()
+			if result != tt.expected {
+				t.Errorf("classifyForwarderError(%v).ShouldSuspend() = %v, want %v", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClassifyForwarderError(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		expectedType ForwarderErrorType
+	}{
+		{
+			name:         "HTTP 429 classified as rate limited",
+			err:          errors.New("HTTP status 429: 429 Too Many Requests"),
+			expectedType: ForwarderErrorRateLimited,
+		},
+		{
+			name:         "UDP tracker rate limit classified as rate limited",
+			err:          errors.New("tracker error: rate limit exceeded"),
+			expectedType: ForwarderErrorRateLimited,
+		},
+		{
+			name:         "Tracker rejection classified as permanent",
+			err:          errors.New("HTTP status 404 (tracker rejection)"),
+			expectedType: ForwarderErrorPermanent,
+		},
+		{
+			name:         "DNS classified as permanent",
+			err:          errors.New("failed to resolve UDP address: lookup tracker.example: no such host"),
+			expectedType: ForwarderErrorPermanent,
+		},
+		{
+			name:         "Transient HTTP status classified as retryable",
+			err:          errors.New("HTTP status 503: 503 Service Unavailable"),
+			expectedType: ForwarderErrorRetryable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classified := classifyForwarderError(tt.err)
+			if classified == nil {
+				t.Fatalf("expected non-nil classified error")
+			}
+			if classified.Type != tt.expectedType {
+				t.Fatalf("expected type %q, got %q", tt.expectedType, classified.Type)
 			}
 		})
 	}
@@ -604,6 +753,81 @@ func TestSuspendForwarderExpires(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if fm.isSuspended("s1") {
 		t.Fatalf("forwarder suspension should expire after duration")
+	}
+}
+
+func TestProcessScheduledReadyJobSkipsSuspendedForwarder(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.jobQueue = make(chan AnnounceJob, 1)
+
+	forwarderName := "suspended-forwarder"
+	fm.suspendForwarder(forwarderName, 2*time.Second)
+
+	now := time.Now()
+	job := AnnounceJob{
+		InfoHash:      btcommon.InfoHash("sched-suspend-hash01"),
+		ForwarderName: forwarderName,
+		PeerID:        btcommon.PeerID("peer-00000000000004"),
+	}
+
+	fm.processScheduledReadyJob(job, now)
+
+	if got := len(fm.jobQueue); got != 0 {
+		t.Fatalf("expected suspended job to not be queued, got queue len %d", got)
+	}
+
+	fm.scheduledJobsMu.RLock()
+	defer fm.scheduledJobsMu.RUnlock()
+
+	if len(fm.scheduledJobs) == 0 {
+		t.Fatalf("expected suspended job to be rescheduled")
+	}
+
+	found := false
+	for scheduledAt, jobs := range fm.scheduledJobs {
+		if scheduledAt.Before(now) {
+			t.Fatalf("expected rescheduled time to be in the future, got %v", scheduledAt)
+		}
+		for _, scheduledJob := range jobs {
+			if scheduledJob.ForwarderName == forwarderName && scheduledJob.InfoHash == job.InfoHash {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected suspended job to exist in scheduled jobs map")
+	}
+}
+
+func TestProcessScheduledReadyJobQueuesWhenActive(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+	fm.jobQueue = make(chan AnnounceJob, 1)
+
+	job := AnnounceJob{
+		InfoHash:      btcommon.InfoHash("sched-active-hash001"),
+		ForwarderName: "active-forwarder",
+		PeerID:        btcommon.PeerID("peer-00000000000005"),
+	}
+
+	fm.processScheduledReadyJob(job, time.Now())
+
+	if got := len(fm.jobQueue); got != 1 {
+		t.Fatalf("expected active job to be queued, got queue len %d", got)
 	}
 }
 

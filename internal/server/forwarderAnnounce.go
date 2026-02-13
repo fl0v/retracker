@@ -38,6 +38,25 @@ type AnnounceResult struct {
 	Suspend      bool // If true, forwarder should be suspended (e.g., 429)
 }
 
+func buildFailureResult(duration time.Duration, err error) AnnounceResult {
+	classified := classifyForwarderError(err)
+	if classified == nil {
+		classified = &ForwarderError{
+			Type:    ForwarderErrorRetryable,
+			Message: "unknown forwarder error",
+			Cause:   err,
+		}
+	}
+
+	return AnnounceResult{
+		Success:      false,
+		Duration:     duration,
+		Error:        classified,
+		NonRetryable: classified.IsPermanent(),
+		Suspend:      classified.ShouldSuspend(),
+	}
+}
+
 // executeAnnounce routes to the appropriate protocol handler
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	forward := job.Forwarder
@@ -79,7 +98,7 @@ func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash 
 			fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
 				hash, protocol, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
 		} else {
-			fmt.Printf("%s %s %s\n    --> (error: %s)\n",
+			WarnLogFwd.Printf("%s %s %s\n    --> (error: %s)\n",
 				hash, protocol, trackerURL, result.Error.Error())
 		}
 		return
@@ -108,7 +127,7 @@ func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash 
 		fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
 			hash, protocol, hostPort, result.ResponseSize, secs, result.Interval, len(result.Peers))
 	} else {
-		fmt.Printf("%s %s %s\n    --> (error: %s)\n",
+		WarnLogFwd.Printf("%s %s %s\n    --> (error: %s)\n",
 			hash, protocol, hostPort, result.Error.Error())
 	}
 }
@@ -129,21 +148,24 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `200`}).Inc()
 		}
 
-		protocol := job.Forwarder.GetProtocol()
-		fm.logAnnounceResult(protocol, trackerURL, hash, result)
+		if fm.Config.Debug {
+			protocol := job.Forwarder.GetProtocol()
+			fm.logAnnounceResult(protocol, trackerURL, hash, result)
+		}
 		return
 	}
 
 	// Handle failure
 	if result.Suspend {
+		protocol := job.Forwarder.GetProtocol()
+		fm.logAnnounceResult(protocol, trackerURL, hash, result)
+
 		suspendFor := time.Duration(fm.Config.ForwarderSuspendSeconds) * time.Second
 		if suspendFor <= 0 {
 			suspendFor = 300 * time.Second
 		}
-		fm.suspendForwarder(forwardName, suspendFor)
-		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Suspending forwarder %s for %v\n", forwardName, suspendFor)
-		}
+		fm.suspendForwarderWithReason(forwardName, suspendFor, result.Error.Error())
+		InfoLogFwd.Printf("Suspending forwarder %s for %v\n", forwardName, suspendFor)
 		return
 	}
 
@@ -180,12 +202,7 @@ func (fm *ForwarderManager) doUDPAnnounce(job AnnounceJob) AnnounceResult {
 	duration := time.Since(startTime)
 
 	if err != nil {
-		return AnnounceResult{
-			Success:      false,
-			Duration:     duration,
-			Error:        err,
-			NonRetryable: isNonRetryableError(err),
-		}
+		return buildFailureResult(duration, err)
 	}
 
 	return AnnounceResult{
@@ -244,12 +261,10 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 	}
 
 	// All retries failed
-	return AnnounceResult{
-		Success:      false,
-		Duration:     time.Since(startTime),
-		Error:        lastErr,
-		NonRetryable: lastErr != nil && isNonRetryableError(lastErr),
+	if lastErr == nil {
+		lastErr = fmt.Errorf("forwarder announce failed after %d attempt(s)", attempts)
 	}
+	return buildFailureResult(time.Since(startTime), lastErr)
 }
 
 // doSingleHTTPRequest performs a single HTTP request attempt
@@ -264,7 +279,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		return AnnounceResult{Error: err}
+		return buildFailureResult(time.Since(startTime), err)
 	}
 
 	if forward.Host != "" {
@@ -276,16 +291,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	duration := time.Since(startTime)
 
 	if err != nil {
-		nonRetryable := isNonRetryableError(err)
-		if fm.Config.Debug && !isTimeoutErr(err) {
-			ErrorLogFwd.Printf("HTTP request error (%s): %v\n",
-				map[bool]string{true: "non-retryable", false: "retryable"}[nonRetryable], err)
-		}
-		return AnnounceResult{
-			Duration:     duration,
-			Error:        err,
-			NonRetryable: nonRetryable,
-		}
+		return buildFailureResult(duration, err)
 	}
 
 	if fm.Prometheus != nil {
@@ -299,45 +305,28 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 		_, _ = io.ReadAll(response.Body)
 		response.Body.Close()
 
-		if shouldSuspendForwarder(response.StatusCode, nil) {
-			return AnnounceResult{
-				Duration: duration,
-				Error:    fmt.Errorf("HTTP status %d", response.StatusCode),
-				Suspend:  true,
-			}
-		}
-
+		statusErr := fmt.Errorf("HTTP status %d: %s", response.StatusCode, response.Status)
 		if isTrackerRejection(response.StatusCode) {
-			return AnnounceResult{
-				Duration:     duration,
-				Error:        fmt.Errorf("HTTP status %d (tracker rejection)", response.StatusCode),
-				NonRetryable: true,
-			}
+			statusErr = fmt.Errorf("HTTP status %d (tracker rejection)", response.StatusCode)
 		}
 
-		if fm.Config.Debug {
+		result := buildFailureResult(duration, statusErr)
+		if fm.Config.Debug && !result.NonRetryable && !result.Suspend {
 			ErrorLogFwd.Printf("HTTP %d %s (retryable)\n", response.StatusCode, response.Status)
 		}
-		return AnnounceResult{
-			Duration: duration,
-			Error:    fmt.Errorf("HTTP status %d: %s", response.StatusCode, response.Status),
-		}
+		return result
 	}
 
 	payload, err := io.ReadAll(response.Body)
 	response.Body.Close()
 
 	if err != nil {
-		nonRetryable := isNonRetryableError(err)
-		if fm.Config.Debug && !isTimeoutErr(err) {
+		result := buildFailureResult(duration, fmt.Errorf("failed to read response: %w", err))
+		if fm.Config.Debug && !isTimeoutErr(err) && !result.NonRetryable {
 			ErrorLogFwd.Printf("Failed to read response (%s): %v\n",
-				map[bool]string{true: "non-retryable", false: "retryable"}[nonRetryable], err)
+				map[bool]string{true: "non-retryable", false: "retryable"}[result.NonRetryable], err)
 		}
-		return AnnounceResult{
-			Duration:     duration,
-			Error:        fmt.Errorf("failed to read response: %w", err),
-			NonRetryable: nonRetryable,
-		}
+		return result
 	}
 
 	if fm.Config.Debug {
@@ -349,10 +338,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 		if fm.Config.Debug {
 			fm.logParseError(payload, hash, uri, err)
 		}
-		return AnnounceResult{
-			Duration: duration,
-			Error:    fmt.Errorf("failed to parse response: %w", err),
-		}
+		return buildFailureResult(duration, fmt.Errorf("failed to parse response: %w", err))
 	}
 
 	// Check for failure with "retry in" (BEP 31)
@@ -364,10 +350,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 		if fm.Config.Debug {
 			ErrorLogFwd.Printf("Tracker failure response: %s\n", bitResponse.FailureReason)
 		}
-		return AnnounceResult{
-			Duration: duration,
-			Error:    fmt.Errorf("tracker failure: %s", bitResponse.FailureReason),
-		}
+		return buildFailureResult(duration, fmt.Errorf("tracker failure: %s", bitResponse.FailureReason))
 	}
 
 	return AnnounceResult{

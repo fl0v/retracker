@@ -106,6 +106,14 @@ func (p *simpleStatsProvider) GetDisabledForwarders() int {
 	return 0
 }
 
+func (p *simpleStatsProvider) GetDisabledForwarderDetails() []observability.DisabledForwarderInfo {
+	return nil
+}
+
+func (p *simpleStatsProvider) GetSuspendedForwarderDetails() []observability.SuspendedForwarderInfo {
+	return nil
+}
+
 func (p *simpleStatsProvider) GetActiveForwarders() int {
 	return 0
 }

@@ -8,47 +8,137 @@ import (
 	"syscall"
 )
 
-func isTimeoutErr(err error) bool {
-	var nerr net.Error
-	if errors.As(err, &nerr) && nerr.Timeout() {
-		return true
-	}
-	return errors.Is(err, os.ErrDeadlineExceeded)
+type ForwarderErrorType string
+
+const (
+	ForwarderErrorRetryable   ForwarderErrorType = "retryable"
+	ForwarderErrorPermanent   ForwarderErrorType = "permanent"
+	ForwarderErrorRateLimited ForwarderErrorType = "rate_limited"
+)
+
+// ForwarderError is a unified typed error used by both HTTP and UDP forwarders.
+// Classification is message-driven with transport-level overrides for permanent network failures.
+type ForwarderError struct {
+	Type    ForwarderErrorType
+	Message string
+	Cause   error
 }
 
-// isNonRetryableError checks if an error indicates a condition that won't improve with retries:
-// - Invalid hostname (DNS errors)
-// - Port not open (connection refused)
-// - Tracker rejection (HTTP 400/403/404)
-func isNonRetryableError(err error) bool {
+func (e *ForwarderError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return "forwarder error"
+}
+
+func (e *ForwarderError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *ForwarderError) IsPermanent() bool {
+	return e != nil && e.Type == ForwarderErrorPermanent
+}
+
+func (e *ForwarderError) ShouldSuspend() bool {
+	return e != nil && e.Type == ForwarderErrorRateLimited
+}
+
+func classifyForwarderError(err error) *ForwarderError {
 	if err == nil {
-		return false
+		return nil
 	}
 
-	errStr := strings.ToLower(err.Error())
-
-	// Check for DNS/hostname errors
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true // DNS errors are non-retryable
+	var existing *ForwarderError
+	if errors.As(err, &existing) {
+		msg := existing.Error()
+		if existing.Type == "" {
+			existing.Type = classifyForwarderErrorMessage(msg)
+		}
+		return existing
 	}
 
-	// Check for connection refused (port not open)
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		if opErr.Err != nil {
-			if errors.Is(opErr.Err, syscall.ECONNREFUSED) {
-				return true // Connection refused - port not open
-			}
-			// Check for "no such host" errors
-			if strings.Contains(opErr.Err.Error(), "no such host") {
-				return true
-			}
+	msg := strings.TrimSpace(err.Error())
+	errorType := classifyForwarderErrorMessage(msg)
+	if isPermanentTransportError(err) {
+		errorType = ForwarderErrorPermanent
+	}
+
+	return &ForwarderError{
+		Type:    errorType,
+		Message: msg,
+		Cause:   err,
+	}
+}
+
+func classifyForwarderErrorMessage(message string) ForwarderErrorType {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return ForwarderErrorRetryable
+	}
+
+	if hasTrackerContext(msg) && isRateLimitMessage(msg) {
+		return ForwarderErrorRateLimited
+	}
+
+	if isPermanentMessage(msg) {
+		return ForwarderErrorPermanent
+	}
+
+	return ForwarderErrorRetryable
+}
+
+func hasTrackerContext(message string) bool {
+	trackerMarkers := []string{
+		"tracker error",
+		"tracker failure",
+		"http status",
+	}
+
+	for _, marker := range trackerMarkers {
+		if strings.Contains(message, marker) {
+			return true
 		}
 	}
+	return false
+}
 
-	// Check error message for common non-retryable patterns
-	nonRetryablePatterns := []string{
+func isRateLimitMessage(message string) bool {
+	rateLimitPatterns := []string{
+		"http status 429",
+		"too many requests",
+		"rate limit",
+		"ratelimit",
+		"rate-limited",
+		"slow down",
+		"slowdown",
+		"throttl",
+		"retry later",
+		"flood",
+	}
+
+	for _, pattern := range rateLimitPatterns {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPermanentMessage(message string) bool {
+	permanentPatterns := []string{
+		"http status 400",
+		"http status 403",
+		"http status 404",
+		"tracker rejection",
 		"no such host",
 		"unknown host",
 		"connection refused",
@@ -56,13 +146,45 @@ func isNonRetryableError(err error) bool {
 		"network is unreachable",
 	}
 
-	for _, pattern := range nonRetryablePatterns {
-		if strings.Contains(errStr, pattern) {
+	for _, pattern := range permanentPatterns {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPermanentTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// DNS/hostname resolution failures are permanent.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+
+	// Connection refused means closed port or unreachable service endpoint.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		if errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+			return true
+		}
+		if strings.Contains(strings.ToLower(opErr.Err.Error()), "no such host") {
 			return true
 		}
 	}
 
 	return false
+}
+
+func isTimeoutErr(err error) bool {
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	return errors.Is(err, os.ErrDeadlineExceeded)
 }
 
 // isTrackerRejection checks if an HTTP status code indicates tracker rejection

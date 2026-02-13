@@ -12,15 +12,22 @@ import (
 var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
 type Prometheus struct {
-	Requests        prometheus.Counter
-	ForwarderStatus *prometheus.CounterVec
-	QueueDepth      prometheus.Gauge
-	QueueCapacity   prometheus.Gauge
-	QueueFillPct    prometheus.Gauge
-	DroppedFull     prometheus.Counter
-	RateLimited     prometheus.Counter
-	Throttled       prometheus.Counter
-	WorkerCount     prometheus.Gauge
+	Requests                        prometheus.Counter
+	ForwarderStatus                 *prometheus.CounterVec
+	QueueDepth                      prometheus.Gauge
+	QueueCapacity                   prometheus.Gauge
+	QueueFillPct                    prometheus.Gauge
+	DroppedFull                     prometheus.Counter
+	RateLimited                     prometheus.Counter
+	Throttled                       prometheus.Counter
+	WorkerCount                     prometheus.Gauge
+	DisabledForwarders              prometheus.Gauge
+	SuspendedForwarders             prometheus.Gauge
+	DisabledForwarderInfo           *prometheus.GaugeVec
+	DisabledForwarderFailureCount   *prometheus.GaugeVec
+	DisabledForwarderSecondsSince   *prometheus.GaugeVec
+	SuspendedForwarderInfo          *prometheus.GaugeVec
+	SuspendedForwarderSecondsRemain *prometheus.GaugeVec
 }
 
 func NewPrometheus() (*Prometheus, error) {
@@ -61,6 +68,34 @@ func NewPrometheus() (*Prometheus, error) {
 			Name: `forwarder_workers`,
 			Help: `Active forwarder workers`,
 		}),
+		DisabledForwarders: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: `forwarders_disabled`,
+			Help: `Current number of disabled (removed) forwarders`,
+		}),
+		SuspendedForwarders: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: `forwarders_suspended`,
+			Help: `Current number of suspended forwarders`,
+		}),
+		DisabledForwarderInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: `forwarder_disabled`,
+			Help: `Disabled forwarder marker with reason label (value is always 1 while disabled)`,
+		}, []string{`name`, `reason`}),
+		DisabledForwarderFailureCount: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: `forwarder_disabled_failure_count`,
+			Help: `Failure count recorded when the forwarder was disabled`,
+		}, []string{`name`}),
+		DisabledForwarderSecondsSince: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: `forwarder_disabled_seconds_since`,
+			Help: `Seconds elapsed since the forwarder was disabled`,
+		}, []string{`name`}),
+		SuspendedForwarderInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: `forwarder_suspended`,
+			Help: `Suspended forwarder marker with reason label (value is always 1 while suspended)`,
+		}, []string{`name`, `reason`}),
+		SuspendedForwarderSecondsRemain: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: `forwarder_suspended_seconds_remaining`,
+			Help: `Seconds remaining until suspension expires`,
+		}, []string{`name`}),
 	}
 	if err := prometheus.Register(p.Requests); err != nil {
 		ErrorLog.Println(err.Error())
@@ -95,6 +130,34 @@ func NewPrometheus() (*Prometheus, error) {
 		return nil, err
 	}
 	if err := prometheus.Register(p.WorkerCount); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.DisabledForwarders); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.SuspendedForwarders); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.DisabledForwarderInfo); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.DisabledForwarderFailureCount); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.DisabledForwarderSecondsSince); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.SuspendedForwarderInfo); err != nil {
+		ErrorLog.Println(err.Error())
+		return nil, err
+	}
+	if err := prometheus.Register(p.SuspendedForwarderSecondsRemain); err != nil {
 		ErrorLog.Println(err.Error())
 		return nil, err
 	}

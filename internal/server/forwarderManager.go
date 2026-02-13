@@ -8,7 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -32,7 +31,9 @@ const (
 )
 
 var (
+	InfoLogFwd  = log.New(os.Stdout, `info#`, log.Lshortfile)
 	DebugLogFwd = log.New(os.Stdout, `debug#`, log.Lshortfile)
+	WarnLogFwd  = log.New(os.Stderr, `warn#`, log.Lshortfile)
 	ErrorLogFwd = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
@@ -50,6 +51,13 @@ type DisabledForwarder struct {
 	Reason       string
 	DisabledAt   int64
 	FailureCount int
+}
+
+// SuspendedForwarder stores info about a temporarily suspended forwarder
+type SuspendedForwarder struct {
+	Reason         string
+	SuspendedAt    time.Time
+	SuspendedUntil time.Time
 }
 
 const maxReasonLength = 200
@@ -89,7 +97,7 @@ type ForwarderManager struct {
 	rateLimitedCount         uint64
 
 	suspendedMu         sync.Mutex
-	suspendedForwarders map[string]time.Time
+	suspendedForwarders map[string]*SuspendedForwarder
 
 	// Scheduled jobs
 	scheduledJobs   map[time.Time][]AnnounceJob
@@ -193,7 +201,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 			burst:  rateBurst,
 			tokens: rateBurst,
 		},
-		suspendedForwarders: make(map[string]time.Time),
+		suspendedForwarders: make(map[string]*SuspendedForwarder),
 		scaleDownChan:       make(chan struct{}, 100),
 		scheduledJobs:       make(map[time.Time][]AnnounceJob),
 	}
@@ -274,9 +282,7 @@ func (fm *ForwarderManager) worker() {
 			if fm.workerCount > baseWorkers {
 				fm.workerCount--
 				fm.workerCountMu.Unlock()
-				if fm.Config.Debug {
-					DebugLogFwd.Printf("Worker scaling down, remaining: %d\n", fm.workerCount)
-				}
+				InfoLogFwd.Printf("Worker scaling down, remaining: %d\n", fm.workerCount)
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
 				}
@@ -318,18 +324,14 @@ func (fm *ForwarderManager) scaleWorkers() {
 				newCount := fm.workerCount
 				fm.workerCountMu.Unlock()
 				go fm.worker()
-				if fm.Config.Debug {
-					DebugLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct)
-				}
+				InfoLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct)
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(newCount))
 				}
 			case fillPct < 40 && currentCount > baseWorkers:
 				select {
 				case fm.scaleDownChan <- struct{}{}:
-					if fm.Config.Debug {
-						DebugLogFwd.Printf("Signaling worker to scale down (queue %d%%, workers: %d)\n", fillPct, currentCount)
-					}
+					InfoLogFwd.Printf("Signaling worker to scale down (queue %d%%, workers: %d)\n", fillPct, currentCount)
 				default:
 				}
 				fm.workerCountMu.Unlock()
@@ -357,6 +359,25 @@ func (fm *ForwarderManager) updatePrometheusQueue(stats *observability.Stats) {
 	fm.Prometheus.QueueCapacity.Set(float64(stats.QueueCapacity))
 	fm.Prometheus.QueueFillPct.Set(float64(stats.QueueFillPct))
 	fm.Prometheus.WorkerCount.Set(float64(stats.ActiveWorkers))
+	fm.Prometheus.DisabledForwarders.Set(float64(stats.DisabledForwarders))
+	fm.Prometheus.SuspendedForwarders.Set(float64(stats.SuspendedForwarders))
+
+	// Keep metric labels aligned with current state by resetting detail vectors before repopulating.
+	fm.Prometheus.DisabledForwarderInfo.Reset()
+	fm.Prometheus.DisabledForwarderFailureCount.Reset()
+	fm.Prometheus.DisabledForwarderSecondsSince.Reset()
+	for _, disabled := range stats.DisabledDetails {
+		fm.Prometheus.DisabledForwarderInfo.WithLabelValues(disabled.Name, disabled.Reason).Set(1)
+		fm.Prometheus.DisabledForwarderFailureCount.WithLabelValues(disabled.Name).Set(float64(disabled.FailureCount))
+		fm.Prometheus.DisabledForwarderSecondsSince.WithLabelValues(disabled.Name).Set(float64(disabled.SecondsSinceDisabled))
+	}
+
+	fm.Prometheus.SuspendedForwarderInfo.Reset()
+	fm.Prometheus.SuspendedForwarderSecondsRemain.Reset()
+	for _, suspended := range stats.SuspendedDetails {
+		fm.Prometheus.SuspendedForwarderInfo.WithLabelValues(suspended.Name, suspended.Reason).Set(1)
+		fm.Prometheus.SuspendedForwarderSecondsRemain.WithLabelValues(suspended.Name).Set(float64(suspended.SecondsRemaining))
+	}
 }
 
 // Failure management
@@ -428,9 +449,7 @@ func (fm *ForwarderManager) disableForwarder(forwarderName string, reason string
 	}
 	fm.Storage.mu.Unlock()
 
-	if fm.Config.Debug {
-		DebugLogFwd.Printf("Disabled forwarder %s: %s (failure count: %d)", forwarderName, reason, failureCount)
-	}
+	InfoLogFwd.Printf("Disabled forwarder %s: %s (failure count: %d)", forwarderName, reason, failureCount)
 }
 
 func (fm *ForwarderManager) isDisabled(forwarderName string) bool {
@@ -441,34 +460,44 @@ func (fm *ForwarderManager) isDisabled(forwarderName string) bool {
 }
 
 func (fm *ForwarderManager) isSuspended(forwarderName string) bool {
+	_, suspended := fm.getSuspendedUntil(forwarderName, time.Now())
+	return suspended
+}
+
+func (fm *ForwarderManager) getSuspendedUntil(forwarderName string, now time.Time) (time.Time, bool) {
 	fm.suspendedMu.Lock()
 	defer fm.suspendedMu.Unlock()
-	until, ok := fm.suspendedForwarders[forwarderName]
+	entry, ok := fm.suspendedForwarders[forwarderName]
 	if !ok {
-		return false
+		return time.Time{}, false
 	}
-	if time.Now().After(until) {
+	until := entry.SuspendedUntil
+	if now.After(until) {
 		delete(fm.suspendedForwarders, forwarderName)
-		return false
+		return time.Time{}, false
 	}
-	return true
+	return until, true
 }
 
 func (fm *ForwarderManager) suspendForwarder(forwarderName string, duration time.Duration) {
-	fm.suspendedMu.Lock()
-	fm.suspendedForwarders[forwarderName] = time.Now().Add(duration)
-	fm.suspendedMu.Unlock()
-	if fm.Config.Debug {
-		DebugLogFwd.Printf("Suspended forwarder %s for %v\n", forwarderName, duration)
-	}
+	fm.suspendForwarderWithReason(forwarderName, duration, "temporary suspension")
 }
 
-func shouldSuspendForwarder(statusCode int, err error) bool {
-	if statusCode == http.StatusTooManyRequests {
-		return true
+func (fm *ForwarderManager) suspendForwarderWithReason(forwarderName string, duration time.Duration, reason string) {
+	now := time.Now()
+	truncatedReason := reason
+	if len(truncatedReason) > maxReasonLength {
+		truncatedReason = truncatedReason[:maxReasonLength] + "..."
 	}
-	_ = err
-	return false
+
+	fm.suspendedMu.Lock()
+	fm.suspendedForwarders[forwarderName] = &SuspendedForwarder{
+		Reason:         truncatedReason,
+		SuspendedAt:    now,
+		SuspendedUntil: now.Add(duration),
+	}
+	fm.suspendedMu.Unlock()
+	InfoLogFwd.Printf("Suspended forwarder %s for %v (reason: %s)\n", forwarderName, duration, truncatedReason)
 }
 
 // DNS blocking checks
@@ -571,12 +600,12 @@ func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
 			}
 			reason := fmt.Sprintf("blocked by DNS: resolves to localhost/private IPs (%v)", ipStrs)
 			fm.disableForwarder(forwarder.GetName(), reason)
-			ErrorLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), hostname, reason)
+			InfoLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), hostname, reason)
 		}
 	}
 
 	if blockedCount > 0 {
-		ErrorLogFwd.Printf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount)
+		InfoLogFwd.Printf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount)
 	}
 }
 
@@ -725,7 +754,7 @@ func (fm *ForwarderManager) removeDuplicateForwardersByDomain() {
 	}
 	fm.statsMu.Unlock()
 
-	ErrorLogFwd.Printf("Removed %d duplicate forwarder(s) by main domain\n", removedCount)
+	InfoLogFwd.Printf("Removed %d duplicate forwarder(s) by main domain\n", removedCount)
 }
 
 // validateAndRemoveInvalidForwarders checks all forwarders and removes those with invalid configuration
@@ -763,13 +792,13 @@ func (fm *ForwarderManager) validateAndRemoveInvalidForwarders() {
 				invalidCount++
 				reason := fmt.Sprintf("invalid UDP URL: missing port (hostname: %s)", hostname)
 				fm.disableForwarder(forwarder.GetName(), reason)
-				ErrorLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), forwarder.Uri, reason)
+				InfoLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), forwarder.Uri, reason)
 			}
 		}
 	}
 
 	if invalidCount > 0 {
-		ErrorLogFwd.Printf("Removed %d forwarder(s) with invalid configuration\n", invalidCount)
+		InfoLogFwd.Printf("Removed %d forwarder(s) with invalid configuration\n", invalidCount)
 	}
 }
 
@@ -797,10 +826,8 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 	fill := fm.queueFillPct()
 	if fill >= fm.queueThrottleThresh && fm.queueThrottleTopN > 0 {
 		limit = fm.queueThrottleTopN
-		if fm.Config.Debug {
-			DebugLogFwd.Printf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
-				fill, fm.queueThrottleThresh, limit)
-		}
+		InfoLogFwd.Printf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
+			fill, fm.queueThrottleThresh, limit)
 	}
 
 	now := time.Now()
@@ -895,7 +922,7 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 			if fm.Prometheus != nil {
 				fm.Prometheus.DroppedFull.Inc()
 			}
-			ErrorLogFwd.Printf("Job queue full, stopping announce queueing for %x", infoHash)
+			InfoLogFwd.Printf("Job queue full, stopping announce queueing for %x", infoHash)
 			return false
 		}
 	}
@@ -959,22 +986,41 @@ func (fm *ForwarderManager) schedulerRoutine() {
 			fm.scheduledJobsMu.Unlock()
 
 			for _, job := range readyJobs {
-				select {
-				case fm.jobQueue <- job:
-					if fm.Config.Debug {
-						DebugLogFwd.Printf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName)
-					}
-				default:
-					fm.scheduledJobsMu.Lock()
-					newTime := now.Add(10 * time.Second)
-					fm.scheduledJobs[newTime] = append(fm.scheduledJobs[newTime], job)
-					fm.scheduledJobsMu.Unlock()
-					if fm.Config.Debug {
-						DebugLogFwd.Printf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName)
-					}
-				}
+				fm.processScheduledReadyJob(job, now)
 			}
 		}
+	}
+}
+
+func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.Time) {
+	if suspendedUntil, suspended := fm.getSuspendedUntil(job.ForwarderName, now); suspended {
+		rescheduleAt := suspendedUntil
+		if !rescheduleAt.After(now) {
+			rescheduleAt = now.Add(1 * time.Second)
+		}
+		job.ScheduledTime = rescheduleAt
+
+		fm.scheduledJobsMu.Lock()
+		fm.scheduledJobs[rescheduleAt] = append(fm.scheduledJobs[rescheduleAt], job)
+		fm.scheduledJobsMu.Unlock()
+
+		InfoLogFwd.Printf("Forwarder %s suspended, rescheduled job for %x at %s\n",
+			job.ForwarderName, job.InfoHash, rescheduleAt.Format(time.RFC3339))
+		return
+	}
+
+	select {
+	case fm.jobQueue <- job:
+		if fm.Config.Debug {
+			DebugLogFwd.Printf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName)
+		}
+	default:
+		fm.scheduledJobsMu.Lock()
+		newTime := now.Add(10 * time.Second)
+		job.ScheduledTime = newTime
+		fm.scheduledJobs[newTime] = append(fm.scheduledJobs[newTime], job)
+		fm.scheduledJobsMu.Unlock()
+		InfoLogFwd.Printf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName)
 	}
 }
 

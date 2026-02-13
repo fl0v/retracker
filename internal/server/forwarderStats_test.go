@@ -375,3 +375,92 @@ func TestGetHashPeerStats_MultipleForwarders(t *testing.T) {
 		t.Errorf("expected 3 forwarder peers total, got %d", stat.ForwarderUnique)
 	}
 }
+
+func TestGetDisabledForwarderDetails(t *testing.T) {
+	cfg := makeTestConfig()
+	mainStorage := &Storage{
+		Config:   cfg,
+		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
+	}
+	forwarderStorage := NewForwarderStorage()
+
+	fm := &ForwarderManager{
+		Config:             cfg,
+		Storage:            forwarderStorage,
+		MainStorage:        mainStorage,
+		disabledForwarders: make(map[string]*DisabledForwarder),
+	}
+
+	now := time.Now()
+	fm.disabledForwarders["b-forwarder"] = &DisabledForwarder{
+		Reason:       "repeated failures",
+		DisabledAt:   now.Add(-20 * time.Second).Unix(),
+		FailureCount: 3,
+	}
+	fm.disabledForwarders["a-forwarder"] = &DisabledForwarder{
+		Reason:       "tracker rejection",
+		DisabledAt:   now.Add(-10 * time.Second).Unix(),
+		FailureCount: 1,
+	}
+
+	provider := &forwarderStatsProvider{fm: fm, cfg: cfg, now: now}
+	details := provider.GetDisabledForwarderDetails()
+
+	if len(details) != 2 {
+		t.Fatalf("expected 2 disabled forwarder details, got %d", len(details))
+	}
+	if details[0].Name != "a-forwarder" || details[1].Name != "b-forwarder" {
+		t.Fatalf("expected details sorted by name, got %q then %q", details[0].Name, details[1].Name)
+	}
+	if details[0].Reason == "" || details[1].Reason == "" {
+		t.Fatalf("expected non-empty disabled reasons")
+	}
+}
+
+func TestGetSuspendedForwarderDetails(t *testing.T) {
+	cfg := makeTestConfig()
+	mainStorage := &Storage{
+		Config:   cfg,
+		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
+	}
+	forwarderStorage := NewForwarderStorage()
+
+	fm := &ForwarderManager{
+		Config:              cfg,
+		Storage:             forwarderStorage,
+		MainStorage:         mainStorage,
+		suspendedForwarders: make(map[string]*SuspendedForwarder),
+	}
+
+	now := time.Now()
+	fm.suspendedForwarders["active"] = &SuspendedForwarder{
+		Reason:         "HTTP status 429",
+		SuspendedAt:    now.Add(-5 * time.Second),
+		SuspendedUntil: now.Add(30 * time.Second),
+	}
+	fm.suspendedForwarders["expired"] = &SuspendedForwarder{
+		Reason:         "temporary suspension",
+		SuspendedAt:    now.Add(-20 * time.Second),
+		SuspendedUntil: now.Add(-1 * time.Second),
+	}
+
+	provider := &forwarderStatsProvider{fm: fm, cfg: cfg, now: now}
+	details := provider.GetSuspendedForwarderDetails()
+
+	if len(details) != 1 {
+		t.Fatalf("expected 1 active suspended forwarder detail, got %d", len(details))
+	}
+	if details[0].Name != "active" {
+		t.Fatalf("expected active suspended forwarder, got %q", details[0].Name)
+	}
+	if details[0].Reason != "HTTP status 429" {
+		t.Fatalf("expected suspend reason to be preserved, got %q", details[0].Reason)
+	}
+
+	fm.suspendedMu.Lock()
+	_, stillExists := fm.suspendedForwarders["expired"]
+	fm.suspendedMu.Unlock()
+	if stillExists {
+		t.Fatalf("expected expired suspended forwarder to be cleaned up")
+	}
+}
