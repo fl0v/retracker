@@ -636,6 +636,31 @@ func TestQueueEligibleAnnouncesThrottleLimitsCount(t *testing.T) {
 	}
 }
 
+func TestQueueThrottleLogStateChangesOnlyOnFillChange(t *testing.T) {
+	cfg := makeCfg()
+	fs := NewForwarderStorage()
+	st := &Storage{
+		Config:   cfg,
+		Requests: make(map[btcommon.InfoHash]map[btcommon.PeerID]tracker.Request),
+	}
+	fm := NewForwarderManager(cfg, fs, st, nil, nil)
+
+	if !fm.shouldLogQueueThrottle(78) {
+		t.Fatalf("expected first fill pct to be loggable")
+	}
+	if fm.shouldLogQueueThrottle(78) {
+		t.Fatalf("expected repeated same fill pct to be suppressed")
+	}
+	if !fm.shouldLogQueueThrottle(79) {
+		t.Fatalf("expected changed fill pct to be loggable")
+	}
+
+	fm.resetQueueThrottleLogState()
+	if !fm.shouldLogQueueThrottle(79) {
+		t.Fatalf("expected fill pct to be loggable after reset")
+	}
+}
+
 func TestQueueEligibleAnnouncesSkipsRecentlyAnnounced(t *testing.T) {
 	cfg := makeCfg()
 	cfg.ForwarderQueueSize = 100

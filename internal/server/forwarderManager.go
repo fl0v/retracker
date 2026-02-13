@@ -89,6 +89,8 @@ type ForwarderManager struct {
 	queueThrottleThresh      int
 	queueThrottleTopN        int
 	maxForwardersPerAnnounce int
+	queueThrottleLogMu       sync.Mutex
+	lastThrottleLogFillPct   int
 	workerCount              int
 	workerCountMu            sync.Mutex
 	scaleDownChan            chan struct{}
@@ -195,6 +197,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		queueThrottleThresh:      queueThrottleThresh,
 		queueThrottleTopN:        queueThrottleTopN,
 		maxForwardersPerAnnounce: maxForwardersPerAnnounce,
+		lastThrottleLogFillPct:   -1,
 		workerCount:              cfg.ForwarderWorkers,
 		rateLimiter: &tokenBucket{
 			rate:   ratePerSec,
@@ -826,8 +829,12 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 	fill := fm.queueFillPct()
 	if fill >= fm.queueThrottleThresh && fm.queueThrottleTopN > 0 {
 		limit = fm.queueThrottleTopN
-		InfoLogFwd.Printf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
-			fill, fm.queueThrottleThresh, limit)
+		if fm.shouldLogQueueThrottle(fill) {
+			InfoLogFwd.Printf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
+				fill, fm.queueThrottleThresh, limit)
+		}
+	} else {
+		fm.resetQueueThrottleLogState()
 	}
 
 	now := time.Now()
@@ -948,6 +955,23 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 	if fm.Config.Debug && queued > 0 {
 		DebugLogFwd.Printf("Queued %d announces for %x\n", queued, infoHash)
 	}
+}
+
+func (fm *ForwarderManager) shouldLogQueueThrottle(fillPct int) bool {
+	fm.queueThrottleLogMu.Lock()
+	defer fm.queueThrottleLogMu.Unlock()
+
+	if fm.lastThrottleLogFillPct == fillPct {
+		return false
+	}
+	fm.lastThrottleLogFillPct = fillPct
+	return true
+}
+
+func (fm *ForwarderManager) resetQueueThrottleLogState() {
+	fm.queueThrottleLogMu.Lock()
+	fm.lastThrottleLogFillPct = -1
+	fm.queueThrottleLogMu.Unlock()
 }
 
 func (fm *ForwarderManager) shouldRateLimitInitial() bool {
