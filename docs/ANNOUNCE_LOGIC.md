@@ -2,6 +2,13 @@
 
 This document describes how retracker handles BitTorrent announcements, including event handling, forwarder queuing, rate limiting, and response generation.
 
+## Current Implementation Note (v0.10.0)
+
+- `ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `forwarderAnnounce.go`, but are not currently invoked from `receiverAnnounce.ProcessAnnounce()`.
+- Current stopped/completed behavior in the announce path is local-state handling:
+  - `stopped`: delete peer, and clean `ForwarderStorage` for the hash if no local peers remain.
+  - `completed`: update local storage and continue normal response flow.
+
 ## Flow Diagram
 
 ```mermaid
@@ -11,9 +18,7 @@ flowchart TD
     
     %% Stopped Event Path
     EventCheck -->|stopped| StoppedPath[handleStoppedEvent]
-    StoppedPath --> CancelJobs[Cancel Pending Jobs for this peer]
-    CancelJobs --> ForwardStopped[Forward Stopped Event to All Forwarders - Parallel]
-    ForwardStopped --> DeletePeer[Delete Peer from Local Storage]
+    StoppedPath --> DeletePeer[Delete Peer from Local Storage]
     DeletePeer --> CheckLocal{Local Peers Remaining?}
     CheckLocal -->|No| CleanupForwarder[Cleanup ForwarderStorage for info_hash]
     CheckLocal -->|Yes| StoppedResponse[Return Response with interval]
@@ -24,8 +29,7 @@ flowchart TD
     EventCheck -->|completed| CompletedPath[handleCompletedEvent]
     CompletedPath --> UpdateStorage1[Update Local Storage]
     UpdateStorage1 --> GetPeers1[Get Peers from Local + Forwarder Storage]
-    GetPeers1 --> ForwardCompleted[Forward Completed Event to All Forwarders - Parallel]
-    ForwardCompleted --> CompletedResponse[Return Response with peers + interval]
+    GetPeers1 --> CompletedResponse[Return Response with peers + interval]
     CompletedResponse --> End2([Response to Client])
     
     %% Regular/Started Event Path
@@ -119,7 +123,7 @@ flowchart TD
     
     class StoppedPath,CompletedPath,RegularPath eventPath
     class UpdateStorage1,UpdateStorage2,DeletePeer,StoragePurge storagePath
-    class ForwardStopped,ForwardCompleted,TriggerInitial,ExecuteAnnounce,WorkerPool forwarderPath
+    class ExecuteAnnounce,WorkerPool forwarderPath
     class EventCheck,FirstCheck,ReannounceCheck,CheckAge decision
 ```
 
@@ -142,8 +146,8 @@ flowchart TD
 
 ## Event Handling
 
-- **stopped**: Cancels pending jobs, forwards to all forwarders in parallel, deletes peer from local storage
-- **completed**: Updates storage, forwards event, continues normal flow
+- **stopped**: Deletes peer from local storage, and cleans forwarder cache for hash if no local peers remain
+- **completed**: Updates local storage, continues normal flow
 - **started/empty**: Normal announce flow with first/subsequent distinction
 
 ## Announce Flow
@@ -292,7 +296,7 @@ Limits forwarders per announce when queue is filling up.
 ## Flow Characteristics
 
 1. **Non-blocking**: Forwarder operations don't block client responses
-2. **Parallel Execution**: Stopped/completed events sent to all forwarders in parallel
+2. **Parallel Execution**: Forwarder announce jobs execute concurrently via the worker pool
 3. **Deduplication**: Prevents duplicate jobs via `pendingJobs` map
 4. **Interval Management**: Each forwarder maintains its own `NextAnnounce` per info_hash
 5. **Error Handling**: Failed forwarder requests don't affect client response

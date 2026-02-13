@@ -12,6 +12,48 @@ This file provides guidance for AI agents working on the retracker codebase. It 
 - Exposes Prometheus metrics
 - Single binary executable
 
+## Fast Context Loading (2-minute scan)
+
+If you need fast orientation, read files in this order:
+
+1. `cmd/retracker/main.go` (startup flow, flags, defaults, HTTP/UDP wiring)
+2. `internal/config/config.go` (all config fields + YAML keys)
+3. `internal/server/core.go` (how storage/forwarders/receivers are composed)
+4. `internal/server/receiverAnnounce.go` (announce flow and response assembly)
+5. `internal/server/forwarderManager.go` (queueing, scheduler, throttling, scaling)
+6. `internal/server/forwarderAnnounce.go` + `internal/server/udpForwarder.go` (protocol execution)
+7. `internal/server/receiverUDP.go` + `internal/server/scrape.go` (UDP BEP 15 + scrape BEP 48)
+
+Useful quick checks:
+- `go test ./...`
+- `make check`
+- `rg -n "QueueEligibleAnnounces|handleStoppedEvent|shouldRateLimitInitial|schedulerRoutine" internal/server/*.go`
+
+## Runtime Defaults Snapshot (v0.10.0)
+
+Defaults are initialized in `cmd/retracker/main.go`:
+- HTTP listen: `:6969`
+- UDP listen: disabled (empty)
+- Debug: `false`
+- Peer age: `180` minutes
+- Announce interval: `1800` seconds
+- Retry period for busy/rate-limited initial announces: `300` seconds
+- Forward timeout: `30` seconds
+- Forwarder workers: `10` (max `20`)
+- Forwarder queue size: `10000`
+- Queue scale threshold: `60%`
+- Queue throttle threshold: `60%` (top `20`)
+- Queue rate-limit threshold: `80%` (`0` disables)
+- Initial announce token bucket: `10/sec`, burst `200`
+- Prometheus metrics: disabled by default
+
+## Endpoint Map
+
+- `GET /announce` -> HTTP announce handler
+- `GET /scrape` -> HTTP scrape handler
+- `GET /stats` -> text stats (`?format=json` for JSON)
+- `GET /metrics` -> Prometheus metrics (only if enabled)
+
 ## Project Structure
 
 The project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout):
@@ -108,15 +150,15 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 
 ### Event Handling
 - **started**: Triggers forwarder announces if eligible (first announce or NextAnnounce due)
-- **completed**: Forwarded to forwarders, does NOT cancel pending jobs
-- **stopped**: Forwarded to forwarders, CANCELS pending jobs, removes peer from storage
+- **completed**: Updates local storage and continues normal response flow
+- **stopped**: Removes peer from local storage and may clean forwarder cache for the hash when local peers reach zero
 - **Regular (empty)**: Normal periodic updates, uses `Config.AnnounceInterval`
 
 ### Peer Lifecycle
 - Peers are stored when announce is received
 - Background purge routine removes peers older than `Config.Age` (default 180 minutes)
 - Stopped events should immediately remove peers from storage
-- Forwarder jobs for stopped peers should be canceled
+- Event-forwarding helpers exist in `ForwarderManager`, but are not currently invoked from `ProcessAnnounce`
 
 ### Forwarder Behavior
 - Forwarders are optional (only if `-f` flag provided)
@@ -149,7 +191,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 ## Testing Considerations
 
 - Storage operations should test thread safety
-- Forwarder cancellation on stopped events should be tested
+- Forwarder queue eligibility, scheduling, and throttling should be tested
 - Age-based purging should be tested with time manipulation
 - UDP handler should test connection state management
 
@@ -165,7 +207,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 ### Updating Documentation
 After any logic changes, update relevant documentation:
 - **File headers**: Update the header comment if file responsibility changes
-- **AI.md**: Update this file if architectural patterns, conventions, or key behaviors change
+- **AGENTS.md**: Update this file if architectural patterns, conventions, or key behaviors change
 - **docs/ANNOUNCE_LOGIC.md**: Update if announce flow, throttling, rate limiting, or suspension logic changes
 - **docs/QUEUE_AND_SCHEDULER.md**: Update if queue/scheduler/worker implementation changes
 
@@ -183,7 +225,7 @@ Keep documentation concise and accurate. Remove outdated information rather than
 - Announce execution logic is in `forwarderAnnounce.go` (both HTTP and UDP)
 - Queue/worker management is in `forwarderManager.go`
 - UDP-specific protocol handling is in `udpForwarder.go`
-- Consider worker pool impact and ensure proper job cancellation for stopped events
+- Consider worker pool impact and event-forwarding wiring (`ForwardStoppedEvent` / `ForwardCompletedEvent`)
 - Test with multiple forwarders (both HTTP and UDP)
 
 ## Important Files Reference
@@ -208,13 +250,35 @@ Keep documentation concise and accurate. Remove outdated information rather than
 
 1. **Always check thread safety**: Any access to `Storage.Requests` must be locked
 2. **Respect event semantics**: Event announces (started/completed/stopped) are immediate
-3. **Forwarder jobs**: Understand the difference between canceling jobs (stopped) vs continuing (completed)
+3. **Forwarder jobs**: Check current wiring before assuming stopped/completed are forwarded via event helpers
 4. **Memory management**: This is an in-memory tracker - no persistence, no database
 5. **Protocol compliance**: Refer to `BITTORRENT.md` for protocol details and BEP references
 6. **Worker pools**: ForwarderManager uses worker pools - be careful with goroutine management
 7. **UDP state**: UDP requires connection state tracking (see `tempStorage.go` for server-side, `udpForwarder.go` for client-side)
 8. **Protocol detection**: Use `Forward.GetProtocol()` - don't hardcode protocol assumptions
-9. **Keep docs updated**: After logic changes, update AI.md and relevant docs. This file must stay accurate.
+9. **Keep docs updated**: After logic changes, update AGENTS.md and relevant docs. This file must stay accurate.
+
+## Task to File Map (fast edit targeting)
+
+- HTTP announce behavior: `internal/server/receiverAnnounce.go`
+- UDP announce/scrape server behavior: `internal/server/receiverUDP.go`
+- HTTP/UDP scrape aggregation: `internal/server/scrape.go`
+- Local peer storage and aging: `internal/server/storage.go`
+- Forwarder eligibility/queueing/scheduler: `internal/server/forwarderManager.go`
+- Forwarder protocol execution + retries: `internal/server/forwarderAnnounce.go`
+- UDP forwarder transport details: `internal/server/udpForwarder.go`
+- Forwarder state (`NextAnnounce`, peer cache): `internal/server/forwarderStorage.go`
+- Stats collection/formatting: `internal/server/forwarderStats.go`, `internal/observability/stats.go`
+- Prometheus metric definitions: `internal/observability/prometheus.go`
+- Forward config schema/protocol detection: `common/forwards.go`
+
+## Current Behavior Clarification (important)
+
+`ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `internal/server/forwarderAnnounce.go`, but the current announce path in `internal/server/receiverAnnounce.go` does not call them directly. Current stopped/completed handling is:
+- `stopped`: delete peer from local storage and optionally clean forwarder cache for hash if no local peers remain
+- `completed`: update local storage and continue normal response flow
+
+If event forwarding behavior is changed, update this file and `docs/ANNOUNCE_LOGIC.md` together.
 
 ## Quick Reference: Key Types
 
@@ -254,7 +318,7 @@ type Response struct {
 
 1. **Using the wrong response package**: Always use `bittorrent/response` (the old `bittorrent/tracker/response.go` was removed).
 2. **Forgetting to lock**: Always lock before accessing `Storage.Requests`.
-3. **Not canceling stopped jobs**: Stopped events must cancel pending forwarder jobs.
+3. **Assuming stopped cancels pending jobs automatically**: verify actual call path in `receiverAnnounce.go`.
 4. **Ignoring event semantics**: Event announces are immediate, not scheduled.
 5. **Race conditions**: Be careful with goroutines and shared state.
 6. **Memory leaks**: Ensure purge routine is working and peers are removed on stopped events.
