@@ -258,6 +258,10 @@ Limits forwarders per announce when queue is filling up.
 - Base delay: `ForwarderRetryBaseMs`, Timeout: `ForwardTimeout`
 - Non-retryable errors disable forwarder
 - HTTP 429 triggers suspension instead
+- One HTTP client is shared per manager across ordinary and event announces. A client can be supplied at construction through `WithHTTPClient`; its caller owns its configuration and idle-connection cleanup
+- The default client owns a clone of the standard default transport. Manager shutdown closes its idle connections after forwarding goroutines finish
+- Successful announce bodies are limited to 1 MiB, including automatically decompressed gzip content. Declared or streamed oversized payloads return a retryable failure before decoding or diagnostic-file writes
+- Ignored HTTP error and event-response bodies are drained up to 32 KiB without buffering, then closed. Large error bodies still use the HTTP status for retry, suspension, or rejection classification
 
 **UDP**:
 - Same retry config as HTTP

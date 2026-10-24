@@ -3,6 +3,7 @@
 // Handles job scheduling, deduplication, and forwarder enable/disable/suspend logic.
 // Pending markers belong to individual jobs; peer sessions invalidate stale work.
 // Stop cancels network work and joins workers before releasing queued jobs.
+// Owns a shared HTTP client unless one is injected through a constructor option.
 package server
 
 import (
@@ -12,6 +13,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -88,6 +90,8 @@ type ForwarderManager struct {
 	stats              map[string]*ForwarderStats
 	statsMu            sync.RWMutex
 	udpForwarder       *UDPForwarder
+	httpClient         *http.Client
+	closeIdleHTTP      func()
 	failCounts         map[string]int
 	disabledForwarders map[string]*DisabledForwarder
 	forwardersMu       sync.RWMutex
@@ -148,7 +152,7 @@ func (tb *tokenBucket) allow() bool {
 }
 
 // NewForwarderManager creates a new ForwarderManager
-func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage) *ForwarderManager {
+func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStorage *Storage, prom *observability.Prometheus, tempStorage *TempStorage, options ...ForwarderOption) *ForwarderManager {
 	queueSize := cfg.ForwarderQueueSize
 	if queueSize <= 0 {
 		queueSize = 1000
@@ -219,6 +223,16 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		scheduledJobs:       make(map[time.Time][]AnnounceJob),
 	}
 	fm.stopChan = fm.tasks.ctx.Done()
+	var settings forwarderOptions
+	for _, option := range options {
+		if option != nil {
+			option(&settings)
+		}
+	}
+	fm.httpClient = settings.httpClient
+	if fm.httpClient == nil {
+		fm.httpClient, fm.closeIdleHTTP = newForwarderHTTPClient(maxWorkers)
+	}
 
 	for _, forwarder := range cfg.Forwards {
 		fm.stats[forwarder.GetName()] = &ForwarderStats{SampleCount: 0}
@@ -267,6 +281,9 @@ func (fm *ForwarderManager) Stop() {
 			fm.udpForwarder.Stop()
 		}
 		fm.tasks.wg.Wait()
+		if fm.closeIdleHTTP != nil {
+			fm.closeIdleHTTP()
+		}
 		fm.pendingMu.Lock()
 		clear(fm.pendingJobs)
 		fm.pendingMu.Unlock()

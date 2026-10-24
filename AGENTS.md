@@ -138,6 +138,11 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
   - `doHTTPAnnounce()` and `doUDPAnnounce()` implement protocol-specific logic
   - `handleAnnounceResult()` processes results uniformly for both protocols
   - Event forwarding (`ForwardStoppedEvent`, `ForwardCompletedEvent`)
+- **ForwarderHTTP** (`forwarderHTTP.go`): Shared HTTP client ownership and bounded response reads
+  - `NewForwarderManager(..., WithHTTPClient(client))` accepts a preconfigured caller-owned client; ordinary and event announces share it
+  - By default, the manager clones the standard default transport and closes its idle connections after workers stop; injected clients remain caller-owned
+  - Successful announce bodies are capped at 1 MiB as exposed by the client (after automatic gzip decompression with the default client); over-limit responses are retryable failures
+  - Ignored error/event bodies are drained up to 32 KiB without buffering, then closed; HTTP status classification is preserved
 - **ForwarderStats** (`forwarderStats.go`): Statistics collection and reporting
   - Implements `StatsDataProvider` interface for observability
   - Records response times with EMA (exponential moving average)
@@ -310,6 +315,7 @@ Keep documentation concise and accurate. Remove outdated information rather than
 - Local peer storage and aging: `internal/server/storage.go`
 - Forwarder eligibility/queueing/scheduler: `internal/server/forwarderManager.go`
 - Forwarder protocol execution + retries: `internal/server/forwarderAnnounce.go`
+- Shared HTTP client and response limits: `internal/server/forwarderHTTP.go`
 - UDP forwarder transport details: `internal/server/udpForwarder.go`
 - Forwarder state (`NextAnnounce`, peer cache): `internal/server/forwarderStorage.go`
 - Stats collection/formatting: `internal/server/forwarderStats.go`, `internal/observability/stats.go`

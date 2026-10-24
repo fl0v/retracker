@@ -2,12 +2,12 @@
 // Routes to HTTP or UDP protocol handlers, processes results, handles retries.
 // Key functions: executeAnnounce(), doHTTPAnnounce(), doUDPAnnounce(), handleAnnounceResult()
 // Also handles event forwarding (ForwardStoppedEvent, ForwardCompletedEvent).
+// HTTP announces and events share the manager's client and bounded body reads.
 package server
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -427,13 +427,13 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 		rqst.Host = forward.Host
 	}
 
-	client := http.Client{}
-	response, err := client.Do(rqst)
+	response, err := fm.httpClient.Do(rqst)
 	duration := time.Since(startTime)
 
 	if err != nil {
 		return buildFailureResult(duration, err)
 	}
+	defer response.Body.Close()
 
 	if fm.Prometheus != nil {
 		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{
@@ -443,8 +443,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	}
 
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.ReadAll(response.Body)
-		response.Body.Close()
+		discardHTTPResponseBody(response.Body)
 
 		statusErr := fmt.Errorf("HTTP status %d: %s", response.StatusCode, response.Status)
 		if isTrackerRejection(response.StatusCode) {
@@ -458,9 +457,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 		return result
 	}
 
-	payload, err := io.ReadAll(response.Body)
-	response.Body.Close()
-
+	payload, err := readHTTPAnnounceResponse(response)
 	if err != nil {
 		result := buildFailureResult(duration, fmt.Errorf("failed to read response: %w", err))
 		if fm.Config.Debug && !isTimeoutErr(err) && !result.NonRetryable {
@@ -635,18 +632,17 @@ func (fm *ForwarderManager) doHTTPEventRequest(forwarder CoreCommon.Forward, req
 		rqst.Host = forwarder.Host
 	}
 
-	client := http.Client{}
-	response, err := client.Do(rqst)
+	response, err := fm.httpClient.Do(rqst)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
+	discardHTTPResponseBody(response.Body)
 
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d %s", response.StatusCode, response.Status)
 	}
 
-	_, _ = io.ReadAll(response.Body)
 	return nil
 }
 

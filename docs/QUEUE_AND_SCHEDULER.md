@@ -97,6 +97,8 @@ Handles edge cases: premature queuing, clock adjustments, reschedules.
 
 The job channel stays open. Queue producers synchronize with shutdown and reject work once cancellation begins, avoiding sends to a closed channel. Scaled workers register with the same goroutine group before launch.
 
+After forwarding goroutines finish, the manager closes idle connections in its owned HTTP transport. A client injected through `WithHTTPClient` remains caller-owned and is not closed by the manager.
+
 ### Base Workers
 
 **Count**: `Config.ForwarderWorkers`  
