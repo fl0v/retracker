@@ -10,12 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,13 +32,6 @@ import (
 const (
 	EventStopped   = "stopped"
 	EventCompleted = "completed"
-)
-
-var (
-	InfoLogFwd  = log.New(os.Stdout, `info#`, log.Lshortfile)
-	DebugLogFwd = log.New(os.Stdout, `debug#`, log.Lshortfile)
-	WarnLogFwd  = log.New(os.Stderr, `warn#`, log.Lshortfile)
-	ErrorLogFwd = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 // ForwarderStats tracks statistics per forwarder (aggregated across all hashes).
@@ -72,6 +63,7 @@ var ErrForwarderAlreadyExists = errors.New("forwarder already exists")
 
 // ForwarderManager manages forwarding announces to external trackers
 type ForwarderManager struct {
+	observability.Logging
 	Config             *config.Config
 	Storage            *ForwarderStorage
 	MainStorage        *Storage
@@ -190,7 +182,16 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		rateBurst = 200
 	}
 
+	var settings forwarderOptions
+	for _, option := range options {
+		if option != nil {
+			option(&settings)
+		}
+	}
+
+	logging := observability.NewLogging(cfg.Debug, settings.logger)
 	fm := &ForwarderManager{
+		Logging:                  logging,
 		Config:                   cfg,
 		Storage:                  storage,
 		MainStorage:              mainStorage,
@@ -202,7 +203,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		TempStorage:              tempStorage,
 		pendingJobs:              make(map[string]*announceJobState),
 		stats:                    make(map[string]*ForwarderStats),
-		udpForwarder:             NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs),
+		udpForwarder:             NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs, logging.Log()),
 		failCounts:               make(map[string]int),
 		disabledForwarders:       make(map[string]*DisabledForwarder),
 		maxWorkers:               maxWorkers,
@@ -223,12 +224,6 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		scheduledJobs:       make(map[time.Time][]AnnounceJob),
 	}
 	fm.stopChan = fm.tasks.ctx.Done()
-	var settings forwarderOptions
-	for _, option := range options {
-		if option != nil {
-			option(&settings)
-		}
-	}
 	fm.httpClient = settings.httpClient
 	if fm.httpClient == nil {
 		fm.httpClient, fm.closeIdleHTTP = newForwarderHTTPClient(maxWorkers)
@@ -389,7 +384,7 @@ func (fm *ForwarderManager) AddRuntimeForwarder(forwarderURL string) (CoreCommon
 	}
 	fm.statsMu.Unlock()
 
-	InfoLogFwd.Printf("Added runtime forwarder %s (%s)", name, uri)
+	fm.Log().Info(fmt.Sprintf("Added runtime forwarder %s (%s)", name, uri))
 	return forwarder, nil
 }
 
@@ -441,7 +436,7 @@ func (fm *ForwarderManager) worker() {
 				fm.workerCount--
 				remaining := fm.workerCount
 				fm.workerCountMu.Unlock()
-				InfoLogFwd.Printf("Worker scaling down, remaining: %d\n", remaining)
+				fm.Log().Info(fmt.Sprintf("Worker scaling down, remaining: %d\n", remaining))
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(remaining))
 				}
@@ -487,14 +482,14 @@ func (fm *ForwarderManager) scaleWorkers() {
 				newCount := fm.workerCount
 				fm.workerCountMu.Unlock()
 				fm.tasks.run(fm.worker)
-				InfoLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct)
+				fm.Log().Info(fmt.Sprintf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct))
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(newCount))
 				}
 			case fillPct < 40 && currentCount > baseWorkers:
 				select {
 				case fm.scaleDownChan <- struct{}{}:
-					InfoLogFwd.Printf("Signaling worker to scale down (queue %d%%, workers: %d)\n", fillPct, currentCount)
+					fm.Log().Info(fmt.Sprintf("Signaling worker to scale down (queue %d%%, workers: %d)\n", fillPct, currentCount))
 				default:
 				}
 				fm.workerCountMu.Unlock()
@@ -619,7 +614,7 @@ func (fm *ForwarderManager) disableForwarder(forwarderName string, reason string
 	}
 	fm.Storage.mu.Unlock()
 
-	InfoLogFwd.Printf("Disabled forwarder %s: %s (failure count: %d)", forwarderName, reason, failureCount)
+	fm.Log().Info(fmt.Sprintf("Disabled forwarder %s: %s (failure count: %d)", forwarderName, reason, failureCount))
 }
 
 func (fm *ForwarderManager) isDisabled(forwarderName string) bool {
@@ -667,7 +662,7 @@ func (fm *ForwarderManager) suspendForwarderWithReason(forwarderName string, dur
 		SuspendedUntil: now.Add(duration),
 	}
 	fm.suspendedMu.Unlock()
-	InfoLogFwd.Printf("Suspended forwarder %s for %v (reason: %s)\n", forwarderName, duration, truncatedReason)
+	fm.Log().Info(fmt.Sprintf("Suspended forwarder %s for %v (reason: %s)\n", forwarderName, duration, truncatedReason))
 }
 
 // DNS blocking checks
@@ -740,7 +735,7 @@ func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
 		if err != nil {
 			// If we can't parse the URI, skip DNS check (let other error handling deal with it)
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping DNS check for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err)
+				fm.Log().Debug(fmt.Sprintf("Skipping DNS check for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err))
 			}
 			continue
 		}
@@ -756,7 +751,7 @@ func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
 		if err != nil {
 			// DNS lookup failed - keep the forwarder (let it fail during announce)
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("DNS lookup failed for forwarder %s (%s): %v\n", forwarder.GetName(), hostname, err)
+				fm.Log().Debug(fmt.Sprintf("DNS lookup failed for forwarder %s (%s): %v\n", forwarder.GetName(), hostname, err))
 			}
 			continue
 		}
@@ -770,12 +765,12 @@ func (fm *ForwarderManager) checkAndRemoveBlockedForwarders() {
 			}
 			reason := fmt.Sprintf("blocked by DNS: resolves to localhost/private IPs (%v)", ipStrs)
 			fm.disableForwarder(forwarder.GetName(), reason)
-			InfoLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), hostname, reason)
+			fm.Log().Info(fmt.Sprintf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), hostname, reason))
 		}
 	}
 
 	if blockedCount > 0 {
-		InfoLogFwd.Printf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount)
+		fm.Log().Info(fmt.Sprintf("Removed %d forwarder(s) blocked by DNS (localhost/private IPs)\n", blockedCount))
 	}
 }
 
@@ -897,8 +892,8 @@ func (fm *ForwarderManager) removeDuplicateForwardersByDomain() {
 		}
 		removedCount += len(forwarders) - 1
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Domain %s: keeping forwarder %s (score: %d), removing %d duplicate(s)\n",
-				mainDomain, bestForwarder.GetName(), bestScore, len(forwarders)-1)
+			fm.Log().Debug(fmt.Sprintf("Domain %s: keeping forwarder %s (score: %d), removing %d duplicate(s)\n",
+				mainDomain, bestForwarder.GetName(), bestScore, len(forwarders)-1))
 		}
 	}
 
@@ -924,7 +919,7 @@ func (fm *ForwarderManager) removeDuplicateForwardersByDomain() {
 	}
 	fm.statsMu.Unlock()
 
-	InfoLogFwd.Printf("Removed %d duplicate forwarder(s) by main domain\n", removedCount)
+	fm.Log().Info(fmt.Sprintf("Removed %d duplicate forwarder(s) by main domain\n", removedCount))
 }
 
 // validateAndRemoveInvalidForwarders checks all forwarders and removes those with invalid configuration
@@ -948,7 +943,7 @@ func (fm *ForwarderManager) validateAndRemoveInvalidForwarders() {
 		if err != nil {
 			// If we can't parse the URI, skip validation (let other error handling deal with it)
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping validation for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err)
+				fm.Log().Debug(fmt.Sprintf("Skipping validation for forwarder %s: invalid URI: %v\n", forwarder.GetName(), err))
 			}
 			continue
 		}
@@ -962,13 +957,13 @@ func (fm *ForwarderManager) validateAndRemoveInvalidForwarders() {
 				invalidCount++
 				reason := fmt.Sprintf("invalid UDP URL: missing port (hostname: %s)", hostname)
 				fm.disableForwarder(forwarder.GetName(), reason)
-				InfoLogFwd.Printf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), forwarder.Uri, reason)
+				fm.Log().Info(fmt.Sprintf("Removed forwarder %s (%s): %s\n", forwarder.GetName(), forwarder.Uri, reason))
 			}
 		}
 	}
 
 	if invalidCount > 0 {
-		InfoLogFwd.Printf("Removed %d forwarder(s) with invalid configuration\n", invalidCount)
+		fm.Log().Info(fmt.Sprintf("Removed %d forwarder(s) with invalid configuration\n", invalidCount))
 	}
 }
 
@@ -1013,8 +1008,8 @@ func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, req
 	if fill >= fm.queueThrottleThresh && fm.queueThrottleTopN > 0 {
 		limit = fm.queueThrottleTopN
 		if fm.shouldLogQueueThrottle(fill) {
-			InfoLogFwd.Printf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
-				fill, fm.queueThrottleThresh, limit)
+			fm.Log().Info(fmt.Sprintf("Queue at %d%% (>= %d%%), throttling to %d forwarders\n",
+				fill, fm.queueThrottleThresh, limit))
 		}
 	} else {
 		fm.resetQueueThrottleLogState()
@@ -1039,14 +1034,14 @@ func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, req
 
 		if fm.isSuspended(forwarderName) {
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash)
+				fm.Log().Debug(fmt.Sprintf("Skipping suspended forwarder %s for %x\n", forwarderName, infoHash))
 			}
 			continue
 		}
 
 		if fm.isJobPending(infoHash, forwarderName, request.PeerID) {
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID)
+				fm.Log().Debug(fmt.Sprintf("Skipping duplicate job for %x to %s (peer %x)\n", infoHash, forwarderName, request.PeerID))
 			}
 			continue
 		}
@@ -1111,7 +1106,7 @@ func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, req
 		case fm.jobQueue <- job:
 			queued++
 			if fm.Config.Debug {
-				DebugLogFwd.Printf("Queued announce for %x to %s (peer %x)\n", infoHash, candidate.forwarderName, request.PeerID)
+				fm.Log().Debug(fmt.Sprintf("Queued announce for %x to %s (peer %x)\n", infoHash, candidate.forwarderName, request.PeerID))
 			}
 			return true
 		default:
@@ -1120,7 +1115,7 @@ func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, req
 			if fm.Prometheus != nil {
 				fm.Prometheus.DroppedFull.Inc()
 			}
-			InfoLogFwd.Printf("Job queue full, stopping announce queueing for %x", infoHash)
+			fm.Log().Info(fmt.Sprintf("Job queue full, stopping announce queueing for %x", infoHash))
 			return false
 		}
 	}
@@ -1144,7 +1139,7 @@ func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, req
 	}
 
 	if fm.Config.Debug && queued > 0 {
-		DebugLogFwd.Printf("Queued %d announces for %x\n", queued, infoHash)
+		fm.Log().Debug(fmt.Sprintf("Queued %d announces for %x\n", queued, infoHash))
 	}
 }
 
@@ -1230,15 +1225,15 @@ func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.T
 			return
 		}
 
-		InfoLogFwd.Printf("Forwarder %s suspended, rescheduled job for %x at %s\n",
-			job.ForwarderName, job.InfoHash, rescheduleAt.Format(time.RFC3339))
+		fm.Log().Info(fmt.Sprintf("Forwarder %s suspended, rescheduled job for %x at %s\n",
+			job.ForwarderName, job.InfoHash, rescheduleAt.Format(time.RFC3339)))
 		return
 	}
 
 	select {
 	case fm.jobQueue <- job:
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName)
+			fm.Log().Debug(fmt.Sprintf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName))
 		}
 	default:
 		newTime := now.Add(10 * time.Second)
@@ -1247,7 +1242,7 @@ func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.T
 			fm.finishJob(job)
 			return
 		}
-		InfoLogFwd.Printf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName)
+		fm.Log().Info(fmt.Sprintf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName))
 	}
 }
 
@@ -1258,7 +1253,7 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 
 	if retryInStr, ok := retryIn.(string); ok && retryInStr == "never" {
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Tracker %s returned permanent failure (retry in: never): %s\n", trackerURL, failureReason)
+			fm.Log().Error(fmt.Sprintf("Tracker %s returned permanent failure (retry in: never): %s\n", trackerURL, failureReason))
 		}
 		fm.disableForwarder(job.ForwarderName, fmt.Sprintf("Permanent failure: %s", failureReason))
 		return true
@@ -1275,13 +1270,13 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 			retryMinutes = parsed
 		} else {
 			if fm.Config.Debug {
-				ErrorLogFwd.Printf("Invalid retry in value: %v\n", v)
+				fm.Log().Error(fmt.Sprintf("Invalid retry in value: %v\n", v))
 			}
 			return false
 		}
 	default:
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Unexpected retry in type: %T\n", v)
+			fm.Log().Error(fmt.Sprintf("Unexpected retry in type: %T\n", v))
 		}
 		return false
 	}
@@ -1292,7 +1287,7 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 
 	if retryMinutes >= 10 {
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Tracker %s requested retry in %d minutes (>= 10), treating as completed\n", trackerURL, retryMinutes)
+			fm.Log().Error(fmt.Sprintf("Tracker %s requested retry in %d minutes (>= 10), treating as completed\n", trackerURL, retryMinutes))
 		}
 		return true
 	}
@@ -1330,11 +1325,11 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 	fm.pendingMu.Unlock()
 	if scheduled {
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Scheduled retry for %x to %s in %d minutes\n", job.InfoHash, job.ForwarderName, retryMinutes)
+			fm.Log().Error(fmt.Sprintf("Scheduled retry for %x to %s in %d minutes\n", job.InfoHash, job.ForwarderName, retryMinutes))
 		}
 	} else {
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Duplicate retry job already scheduled for %x to %s\n", job.InfoHash, job.ForwarderName)
+			fm.Log().Error(fmt.Sprintf("Duplicate retry job already scheduled for %x to %s\n", job.InfoHash, job.ForwarderName))
 		}
 	}
 

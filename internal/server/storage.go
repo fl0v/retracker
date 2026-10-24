@@ -8,8 +8,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,13 +16,13 @@ import (
 	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/fl0v/retracker/bittorrent/tracker"
 	"github.com/fl0v/retracker/internal/config"
+	"github.com/fl0v/retracker/internal/observability"
 )
-
-var DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 
 const unknownClient = "unknown"
 
 type Storage struct {
+	observability.Logging
 	Config              *config.Config
 	Requests            map[common.InfoHash]map[common.PeerID]tracker.Request
 	requestsMu          sync.Mutex
@@ -114,31 +113,31 @@ func (s *Storage) purgeRoutine() {
 		}
 		s.requestsMu.Lock()
 		if s.Config.Debug {
-			DebugLog.Printf("In memory %d hashes\n", len(s.Requests))
-			DebugLog.Println(`Locking...`)
+			s.Log().Debug(fmt.Sprintf("In memory %d hashes\n", len(s.Requests)))
+			s.Log().Debug("Locking...")
 		}
 		for hash, requests := range s.Requests {
 			if s.Config.Debug {
-				DebugLog.Printf("%d peer in hash %x\n", len(requests), hash)
+				s.Log().Debug(fmt.Sprintf("%d peer in hash %x\n", len(requests), hash))
 			}
 			for peerID, request := range requests {
 				timestampDelta := request.TimeStampDelta()
 				if s.Config.Debug {
-					DebugLog.Printf(" %x %s:%d %v\n", peerID, request.Peer().IP, request.Peer().Port, timestampDelta)
+					s.Log().Debug(fmt.Sprintf(" %x %s:%d %v\n", peerID, request.Peer().IP, request.Peer().Port, timestampDelta))
 				}
 				if timestampDelta > s.Config.Age {
-					DebugLog.Printf("delete peer %x in hash %x\n", peerID, hash)
+					s.Log().Debug(fmt.Sprintf("delete peer %x in hash %x\n", peerID, hash))
 					s.deleteLocked(hash, peerID)
 				}
 			}
 			if len(requests) == 0 {
-				DebugLog.Printf("delete hash %x\n", hash)
+				s.Log().Debug(fmt.Sprintf("delete hash %x\n", hash))
 				delete(s.Requests, hash)
 			}
 		}
 		s.requestsMu.Unlock()
 		if s.Config.Debug {
-			DebugLog.Println(`Unlocked`)
+			s.Log().Debug("Unlocked")
 		}
 	}
 }
@@ -230,19 +229,19 @@ func (s *Storage) printClientStatsInline(now time.Time) {
 
 	// Print client statistics inline (without separate header/footer)
 	if len(clients) == 0 {
-		fmt.Printf("Active clients: 0\n")
+		s.Log().Info("Active clients", "count", 0)
 	} else {
-		fmt.Printf("Active clients: %d\n", len(clients))
+		s.Log().Info("Active clients", "count", len(clients))
 		for clientKey, info := range clients {
 			secondsSinceLastRequest := int(now.Sub(info.lastRequest).Seconds())
-			fmt.Printf("  %s: %d announced hash(es), %d seconds since last request\n",
-				clientKey, info.hashCount, secondsSinceLastRequest)
+			s.Log().Info("Client statistics", "client", clientKey, "hashes", info.hashCount, "seconds_since_last_request", secondsSinceLastRequest)
 		}
 	}
 }
 
-func NewStorage(cfg *config.Config) *Storage {
+func NewStorage(cfg *config.Config, loggers ...*slog.Logger) *Storage {
 	storage := Storage{
+		Logging:  observability.NewLogging(cfg.Debug, loggers...),
 		Config:   cfg,
 		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
 		tasks:    newBackgroundTasks(),

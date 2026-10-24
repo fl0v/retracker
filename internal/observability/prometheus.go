@@ -1,13 +1,10 @@
 package observability
 
 import (
-	"log"
-	"os"
+	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
 const forwarderNameLabel = "name"
 
@@ -30,7 +27,7 @@ type Prometheus struct {
 	SuspendedForwarderSecondsRemain *prometheus.GaugeVec
 }
 
-func NewPrometheus() (*Prometheus, error) {
+func NewPrometheus(registerer prometheus.Registerer) (*Prometheus, error) {
 	p := Prometheus{
 		Requests: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: `requests`,
@@ -97,69 +94,33 @@ func NewPrometheus() (*Prometheus, error) {
 			Help: `Seconds remaining until suspension expires`,
 		}, []string{forwarderNameLabel}),
 	}
-	if err := prometheus.Register(p.Requests); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.ForwarderStatus); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.QueueDepth); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.QueueCapacity); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.QueueFillPct); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.DroppedFull); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.RateLimited); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.Throttled); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.WorkerCount); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.DisabledForwarders); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.SuspendedForwarders); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.DisabledForwarderInfo); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.DisabledForwarderFailureCount); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.DisabledForwarderSecondsSince); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.SuspendedForwarderInfo); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
-	}
-	if err := prometheus.Register(p.SuspendedForwarderSecondsRemain); err != nil {
-		ErrorLog.Println(err.Error())
-		return nil, err
+	if err := registerer.Register(&p); err != nil {
+		return nil, fmt.Errorf("register tracker metrics: %w", err)
 	}
 	return &p, nil
+}
+
+func (p *Prometheus) collectors() []prometheus.Collector {
+	return []prometheus.Collector{
+		p.Requests, p.ForwarderStatus, p.QueueDepth, p.QueueCapacity,
+		p.QueueFillPct, p.DroppedFull, p.RateLimited, p.Throttled,
+		p.WorkerCount, p.DisabledForwarders, p.SuspendedForwarders,
+		p.DisabledForwarderInfo, p.DisabledForwarderFailureCount,
+		p.DisabledForwarderSecondsSince, p.SuspendedForwarderInfo,
+		p.SuspendedForwarderSecondsRemain,
+	}
+}
+
+// Describe registers the tracker metrics as one collector so a conflict cannot
+// leave only part of a tracker registered.
+func (p *Prometheus) Describe(ch chan<- *prometheus.Desc) {
+	for _, collector := range p.collectors() {
+		collector.Describe(ch)
+	}
+}
+
+func (p *Prometheus) Collect(ch chan<- prometheus.Metric) {
+	for _, collector := range p.collectors() {
+		collector.Collect(ch)
+	}
 }

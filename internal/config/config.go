@@ -3,17 +3,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 
 	gopkginyaml "gopkg.in/yaml.v2"
 
 	"github.com/fl0v/retracker/common"
-)
-
-var (
-	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
-	DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
 )
 
 type Config struct {
@@ -55,51 +49,31 @@ func (config *Config) LoadFromFile(path string) error {
 
 	f, err := os.Open(path)
 	if err != nil {
-		ErrorLog.Printf("Failed to open config file '%s': %s\n", path, err.Error())
-		return err
+		return fmt.Errorf("open config %q: %w", path, err)
 	}
 	defer f.Close()
 
 	decoder := gopkginyaml.NewDecoder(f)
 	if err := decoder.Decode(config); err != nil {
-		ErrorLog.Printf("Failed to parse config file '%s': %s\n", path, err.Error())
-		return err
+		return fmt.Errorf("parse config %q: %w", path, err)
 	}
 
-	DebugLog.Printf("Loaded configuration from '%s'\n", path)
 	return nil
 }
 
 func (config *Config) ReloadForwards(fileName string) error {
 	f, err := os.Open(fileName)
 	if err != nil {
-		ErrorLog.Printf("Failed to open forwarders file '%s': %s\n", fileName, err.Error())
-		return err
+		return fmt.Errorf("open forwarders %q: %w", fileName, err)
 	}
 	defer f.Close()
 	forwards := make([]common.Forward, 0)
 	decoder := gopkginyaml.NewDecoder(f)
 	if err := decoder.Decode(&forwards); err != nil {
-		ErrorLog.Printf("Failed to parse forwarders file '%s': %s\n", fileName, err.Error())
-		return err
+		return fmt.Errorf("parse forwarders %q: %w", fileName, err)
 	}
 	config.Forwards = forwards
 	config.ForwardsFile = fileName
-	DebugLog.Printf("Loaded %d forwarder(s) from '%s'\n", len(forwards), fileName)
-	for i, forward := range forwards {
-		forwardName := forward.GetName()
-		forwardInfo := fmt.Sprintf("  [%d] %s", i+1, forwardName)
-		if forward.Uri != "" {
-			forwardInfo += fmt.Sprintf(" -> %s", forward.Uri)
-		}
-		if forward.Ip != "" {
-			forwardInfo += fmt.Sprintf(" (IP: %s)", forward.Ip)
-		}
-		if forward.Host != "" {
-			forwardInfo += fmt.Sprintf(" (Host: %s)", forward.Host)
-		}
-		DebugLog.Println(forwardInfo)
-	}
 	return nil
 }
 

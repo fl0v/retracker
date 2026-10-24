@@ -1,9 +1,10 @@
-// forwarderHTTP.go - HTTP client ownership and bounded tracker response reads.
+// forwarderHTTP.go - Constructor options, HTTP client ownership, and bounded response reads.
 package server
 
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
@@ -15,6 +16,7 @@ const (
 var ErrForwarderResponseTooLarge = errors.New("forwarder response exceeds 1 MiB limit")
 
 type forwarderOptions struct {
+	logger     *slog.Logger
 	httpClient *http.Client
 }
 
@@ -24,6 +26,11 @@ type ForwarderOption func(*forwarderOptions)
 // The caller configures it before construction and owns closing idle connections.
 func WithHTTPClient(client *http.Client) ForwarderOption {
 	return func(options *forwarderOptions) { options.httpClient = client }
+}
+
+// WithForwarderLogger injects a logger shared by HTTP and UDP forwarding.
+func WithForwarderLogger(logger *slog.Logger) ForwarderOption {
+	return func(options *forwarderOptions) { options.logger = logger }
 }
 
 func newForwarderHTTPClient(maxWorkers int) (*http.Client, func()) {

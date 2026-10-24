@@ -73,7 +73,7 @@ func (fm *ForwarderManager) printStats() {
 
 	simpleStats := collector.CollectSimpleStats(provider)
 	text := collector.FormatSimpleText(simpleStats)
-	fmt.Print(text)
+	fm.Log().Info("Tracker statistics", "summary", text)
 }
 
 // forwarderStatsProvider implements observability.StatsDataProvider

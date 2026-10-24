@@ -6,19 +6,13 @@ package server
 import (
 	"encoding/hex"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/zeebo/bencode"
 
 	"github.com/fl0v/retracker/bittorrent/common"
-)
-
-var (
-	DebugLogScrape = log.New(os.Stdout, `debug#`, log.Lshortfile)
-	ErrorLogScrape = log.New(os.Stderr, `error#`, log.Lshortfile)
 )
 
 var (
@@ -109,7 +103,7 @@ func getScrapeStats(storage *Storage, forwarderStorage *ForwarderStorage, infoHa
 
 func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error) {
 	if len(infoHashes) == 0 {
-		ErrorLogScrape.Println(ErrNoInfohashes.Error())
+		core.Log().Error("Scrape failed", "error", ErrNoInfohashes)
 		return ScrapeResponse{}, ErrNoInfohashes
 	}
 
@@ -118,7 +112,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 	for _, infoHashString := range infoHashes {
 		infoHash := common.InfoHash(infoHashString)
 		if !infoHash.Valid() {
-			ErrorLogScrape.Println(infoHashString, ErrBadInfohash.Error())
+			core.Log().Error("Scrape failed", "info_hash", fmt.Sprintf("%x", infoHashString), "error", ErrBadInfohash)
 			return ScrapeResponse{}, ErrBadInfohash
 		}
 		infoHashList = append(infoHashList, infoHash)
@@ -139,10 +133,10 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		infoHash := common.InfoHash(infoHashString)
 		infoHashHex := strings.ToUpper(hex.EncodeToString([]byte(infoHashString)))
 		if stat, ok := stats[infoHash]; ok {
-			DebugLogScrape.Printf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, stat.Complete, stat.Incomplete)
+			core.Log().Debug(fmt.Sprintf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, stat.Complete, stat.Incomplete))
 			scrapeResponse.Files[infoHashString] = ScrapeResponseHash(stat)
 		} else {
-			DebugLogScrape.Printf("%s not found in storage", infoHashHex)
+			core.Log().Debug(fmt.Sprintf("%s not found in storage", infoHashHex))
 			// Include empty entry for invalid/missing hash
 			scrapeResponse.Files[infoHashString] = ScrapeResponseHash{}
 		}
@@ -153,7 +147,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 
 func (core *Core) HTTPScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	xrealip := r.Header.Get(`X-Real-IP`)
-	DebugLogScrape.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
+	core.Log().Debug(fmt.Sprintf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent()))
 	query := r.URL.Query()
 	scrapeResponse, err := core.getScrapeResponse(query["info_hash"])
 	if err != nil {
@@ -162,6 +156,6 @@ func (core *Core) HTTPScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	encoder := bencode.NewEncoder(w)
 	if err := encoder.Encode(scrapeResponse); err != nil {
-		ErrorLogScrape.Println(err.Error())
+		core.Log().Error("Encode scrape response", "error", err)
 	}
 }

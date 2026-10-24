@@ -7,10 +7,9 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 
@@ -22,12 +21,8 @@ import (
 	"github.com/fl0v/retracker/internal/observability"
 )
 
-var (
-	DebugLogAnnounce = log.New(os.Stdout, `debug#`, log.Lshortfile)
-	ErrorLogAnnounce = log.New(os.Stderr, `error#`, log.Lshortfile)
-)
-
 type ReceiverAnnounce struct {
+	observability.Logging
 	Config           *config.Config
 	Storage          *Storage
 	ForwarderStorage *ForwarderStorage
@@ -42,12 +37,12 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 		ra.Prometheus.Requests.Inc()
 	}
 	xrealip := r.Header.Get(`X-Real-IP`)
-	DebugLogAnnounce.Printf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent())
+	ra.Log().Debug("HTTP announce", "method", r.Method, "remote_addr", r.RemoteAddr, "x_real_ip", xrealip, "uri", r.RequestURI, "user_agent", r.UserAgent())
 	remoteAddr := ra.getRemoteAddr(r, xrealip)
 	remotePort := r.URL.Query().Get(`port`)
 	infoHash := r.URL.Query().Get(`info_hash`)
 	if ra.Config.Debug {
-		DebugLogAnnounce.Printf("hash: '%x', remote addr: %s:%s", infoHash, remoteAddr, remotePort)
+		ra.Log().Debug(fmt.Sprintf("hash: '%x', remote addr: %s:%s", infoHash, remoteAddr, remotePort))
 	}
 	compactFlag := r.URL.Query().Get(`compact`)
 	noPeerIDFlag := r.URL.Query().Get(`no_peer_id`)
@@ -67,19 +62,7 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 		noPeerIDFlag,
 	)
 	if failure != `` {
-		ErrorLogAnnounce.Printf(
-			"announce failure hash=%x peer=%x ip=%s port=%s event=%s numwant=%s compact=%s no_peer_id=%s ua=%q err=%s",
-			infoHash,
-			r.URL.Query().Get(`peer_id`),
-			remoteAddr,
-			remotePort,
-			r.URL.Query().Get(`event`),
-			r.URL.Query().Get(`numwant`),
-			compactFlag,
-			noPeerIDFlag,
-			r.UserAgent(),
-			failure,
-		)
+		ra.Log().Error("Announce failed", "info_hash", fmt.Sprintf("%x", infoHash), "peer_id", fmt.Sprintf("%x", r.URL.Query().Get("peer_id")), "ip", remoteAddr, "port", remotePort, "event", r.URL.Query().Get("event"), "numwant", r.URL.Query().Get("numwant"), "compact", compactFlag, "no_peer_id", noPeerIDFlag, "user_agent", r.UserAgent(), "error", failure)
 		w.Header().Set(`Content-Type`, `text/plain; charset=utf-8`)
 		w.WriteHeader(http.StatusBadRequest)
 		errResp := Response.NewFailure(failure)
@@ -98,15 +81,10 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set(`Content-Type`, `text/plain; charset=utf-8`)
 	d, err := response.Bencode(compacted)
 	if err != nil {
-		ErrorLogAnnounce.Println(err.Error())
+		ra.Log().Error("Encode announce response", "error", err)
 		return
 	}
 	fmt.Fprint(w, d)
-	/*
-		if ra.Config.Debug {
-			DebugLog.Printf("Bencode: %s\n", d)
-		}
-	*/
 }
 
 func (ra *ReceiverAnnounce) getRemoteAddr(r *http.Request, xrealip string) string {
@@ -130,7 +108,7 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 		defer ra.forwarderMu.RUnlock()
 	}
 	request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
-		event, userAgent, compactFlag, noPeerIDFlag, DebugLog)
+		event, userAgent, compactFlag, noPeerIDFlag, slog.NewLogLogger(ra.Log().Handler(), slog.LevelWarn))
 	if err != nil {
 		return nil, err.Error()
 	}
@@ -250,7 +228,7 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 		}
 		ra.ForwarderManager.queueEligibleAnnounces(request.InfoHash, *request, peerContext)
 	} else if len(ra.Config.Forwards) > 0 {
-		ErrorLogAnnounce.Printf("Forwarders configured (%d) but forwarder manager is nil; cannot forward initial announce for %x", len(ra.Config.Forwards), request.InfoHash)
+		ra.Log().Error(fmt.Sprintf("Forwarders configured (%d) but forwarder manager is nil; cannot forward initial announce for %x", len(ra.Config.Forwards), request.InfoHash))
 	}
 }
 
@@ -387,8 +365,9 @@ func (ra *ReceiverAnnounce) filterPeers(peers []common.Peer, requester common.Pe
 	return filtered
 }
 
-func NewReceiverAnnounce(cfg *config.Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager) *ReceiverAnnounce {
+func NewReceiverAnnounce(cfg *config.Config, storage *Storage, forwarderStorage *ForwarderStorage, forwarderManager *ForwarderManager, loggers ...*slog.Logger) *ReceiverAnnounce {
 	announce := ReceiverAnnounce{
+		Logging:          observability.NewLogging(cfg.Debug, loggers...),
 		Config:           cfg,
 		Storage:          storage,
 		ForwarderStorage: forwarderStorage,

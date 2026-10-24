@@ -170,9 +170,11 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Follow the pattern: `Lock() -> defer Unlock() -> access data`
 
 ### Error Handling
-- Use `ErrorLog` for error messages: `ErrorLog.Printf(...)` or `ErrorLog.Println(...)`
-- Use `DebugLog` for debug messages (only when `Config.Debug == true`)
-- Both loggers are defined in `main.go` with `log.Lshortfile` flag
+- Runtime services own an injected `*slog.Logger` through `observability.Logging`; use `service.Log().Error/Debug/Info/Warn` and structured attributes for new events
+- `NewCore(cfg, tempStorage, logger)` propagates the logger to storage, receivers, configured managers, and runtime-created managers; standalone constructors accept an optional logger, and managers use `WithForwarderLogger`
+- Default handlers suppress debug records unless debug is enabled. Injected handlers control their levels; existing expensive debug branches also check `Config.Debug`
+- Configuration loaders return wrapped errors for the caller to log once; do not add package-global loggers
+- Each running tracker owns a Prometheus registry, including Go/process collectors. `NewPrometheus(registerer)` registers tracker metrics atomically as one collector; serve that registry with `promhttp.HandlerFor`, preserving metric names and labels
 
 ### Configuration
 - Runtime forwarder initialization uses the shared `Core.forwarderMu` read/write lock; HTTP/UDP announces, scrape, and stats synchronize reads with publication
@@ -220,7 +222,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 
 ### Naming
 - Receiver names: Use descriptive abbreviations (e.g., `ra` for ReceiverAnnounce, `fm` for ForwarderManager, `fs` for ForwarderStorage). Do not use `self`/`this` in new changes; rename when touched and before committing.
-- Package-level variables use PascalCase (e.g., `ErrorLog`, `DebugLog`)
+- Avoid mutable package globals for runtime dependencies
 - Struct fields use PascalCase
 - Local variables use camelCase
 - Legacy exported `common.Forward.Uri` and `Ip` names are preserved for compatibility; lint exempts only those two field-name findings
@@ -248,7 +250,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 ### Adding a New Feature
 1. Determine if it belongs in Core, Storage, Receiver, or ForwarderManager
 2. Follow existing patterns for thread safety
-3. Add appropriate logging (ErrorLog/DebugLog)
+3. Add structured logging through the service logger
 4. Update Config if new configuration needed
 5. Update documentation (see below)
 
@@ -263,7 +265,7 @@ Keep documentation concise and accurate. Remove outdated information rather than
 
 ### Debugging
 - Enable debug mode with `-d` flag
-- DebugLog will print detailed information about:
+- Debug-level records provide detailed information about:
   - Storage operations
   - Peer counts per hash
   - Timestamp deltas

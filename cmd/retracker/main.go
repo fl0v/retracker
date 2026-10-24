@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,13 +13,8 @@ import (
 
 const VERSION = `0.10.0`
 
-var (
-	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
-	DebugLog = log.New(os.Stdout, `debug#`, log.Lshortfile)
-
-	//go:embed favicon.ico
-	faviconIco []byte
-)
+//go:embed favicon.ico
+var faviconIco []byte
 
 func helpText() {
 	fmt.Println("# https://github.com/fl0v/retracker")
@@ -46,14 +41,20 @@ func main() {
 
 	cfg, err := loadConfig(flag.CommandLine, os.LookupEnv)
 	if err != nil {
-		ErrorLog.Fatalln("Failed to load configuration:", err)
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err = run(ctx, cfg)
+	level := slog.LevelInfo
+	if cfg.Debug {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	err = run(ctx, cfg, logger)
 	stop()
 	if err != nil {
-		ErrorLog.Println(err)
+		logger.Error("Tracker stopped", "error", err)
 		os.Exit(1)
 	}
 }

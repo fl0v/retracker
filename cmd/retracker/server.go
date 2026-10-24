@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/fl0v/retracker/internal/config"
@@ -17,34 +20,30 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
-func run(ctx context.Context, cfg config.Config) error {
+func run(ctx context.Context, cfg config.Config, loggers ...*slog.Logger) error {
 	if ctx.Err() != nil {
 		return nil
 	}
+	logger := observability.NewLogging(cfg.Debug, loggers...).Log()
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	defer listener.Close()
-	tempStorage, err := server.NewTempStorage("")
+	tempStorage, err := server.NewTempStorage("", logger)
 	if err != nil {
 		return fmt.Errorf("create temp storage: %w", err)
 	}
 	defer tempStorage.Close()
-	core := server.NewCore(&cfg, tempStorage)
+	core := server.NewCore(&cfg, tempStorage, logger)
 	defer core.Close()
 	mux := newMux(core)
 	if cfg.PrometheusEnabled {
-		metrics, metricsErr := observability.NewPrometheus()
+		handler, metricsErr := metricsHandler(core)
 		if metricsErr != nil {
-			return fmt.Errorf("initialize metrics: %w", metricsErr)
+			return metricsErr
 		}
-		core.Receiver.Announce.Prometheus = metrics
-		core.Receiver.UDP.Prometheus = metrics
-		if core.ForwarderManager != nil {
-			core.ForwarderManager.Prometheus = metrics
-		}
-		mux.Handle("/metrics", promhttp.Handler())
+		mux.Handle("/metrics", handler)
 	}
 	if cfg.UDPListen != "" {
 		if udpErr := core.Receiver.UDP.Start(cfg.UDPListen); udpErr != nil {
@@ -52,10 +51,25 @@ func run(ctx context.Context, cfg config.Config) error {
 		}
 	}
 	core.Start()
-	cfg.PrintConfig()
-	fmt.Printf("HTTP tracker listening on %s\nServer ready to accept connections\n", listener.Addr())
-	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	logger.Info("Server ready to accept connections", "http_listen", listener.Addr().String(), "udp_listen", cfg.UDPListen, "config", &cfg)
+	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError)}
 	return serve(ctx, httpServer, listener, shutdownTimeout)
+}
+
+// metricsHandler owns a registry for this tracker, including runtime metrics.
+func metricsHandler(core *server.Core) (http.Handler, error) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	metrics, err := observability.NewPrometheus(registry)
+	if err != nil {
+		return nil, fmt.Errorf("initialize metrics: %w", err)
+	}
+	core.Receiver.Announce.Prometheus = metrics
+	core.Receiver.UDP.Prometheus = metrics
+	if core.ForwarderManager != nil {
+		core.ForwarderManager.Prometheus = metrics
+	}
+	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{}), nil
 }
 
 func newMux(core *server.Core) *http.ServeMux {

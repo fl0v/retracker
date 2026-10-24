@@ -127,13 +127,13 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 
 	if fm.isDisabled(forwardName) {
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Forwarder %s is disabled; dropping job for %x", forwardName, job.InfoHash)
+			fm.Log().Debug(fmt.Sprintf("Forwarder %s is disabled; dropping job for %x", forwardName, job.InfoHash))
 		}
 		return
 	}
 	if fm.isSuspended(forwardName) {
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Forwarder %s is suspended; dropping job for %x", forwardName, job.InfoHash)
+			fm.Log().Debug(fmt.Sprintf("Forwarder %s is suspended; dropping job for %x", forwardName, job.InfoHash))
 		}
 		return
 	}
@@ -150,84 +150,25 @@ func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
 	fm.handleAnnounceResult(job, result)
 }
 
-// logAnnounceResult logs the outcome of an announce attempt in a unified format
-func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL string, hash string, result AnnounceResult) {
-	// Extract host:port from URL
-	u, err := url.Parse(trackerURL)
-	if err != nil {
-		// Fallback to full URL if parsing fails
-		if result.Success {
-			secs := result.Duration.Seconds()
-			fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
-				hash, protocol, trackerURL, result.ResponseSize, secs, result.Interval, len(result.Peers))
-		} else {
-			WarnLogFwd.Printf("%s %s %s\n    --> (error: %s)\n",
-				hash, protocol, trackerURL, result.Error.Error())
-		}
-		return
+// logAnnounceResult records protocol-independent outcome fields.
+func (fm *ForwarderManager) logAnnounceResult(protocol, trackerURL, hash string, result AnnounceResult) {
+	fields := []any{
+		"protocol", protocol, "tracker", trackerURL, "info_hash", hash,
+		"response_bytes", result.ResponseSize, "duration", result.Duration,
+		"interval", result.Interval, "peers", len(result.Peers),
 	}
-
-	// Format host:port
-	hostPort := u.Host
-	// Check if port is already included using u.Port() to correctly handle IPv6 addresses
-	if u.Port() == "" {
-		// Add default port if not specified
-		switch u.Scheme {
-		case protocolHTTPS:
-			hostPort += ":443"
-		case protocolHTTP:
-			hostPort += ":80"
-		case protocolUDP:
-			// UDP URLs must have an explicit port - if missing, use hostname only
-			// (this should not happen if validation is working, but handle gracefully)
-			hostPort = u.Hostname()
-		}
-	}
-
-	// Log based on result
 	if result.Success {
-		secs := result.Duration.Seconds()
-		fmt.Printf("%s %s %s\n    --> (%d bytes, %.3fs, interval=%d, peers=%d)\n",
-			hash, protocol, hostPort, result.ResponseSize, secs, result.Interval, len(result.Peers))
+		fm.Log().Info("Forwarder announce succeeded", fields...)
 	} else {
-		WarnLogFwd.Printf("%s %s %s\n    --> (error: %s)\n",
-			hash, protocol, hostPort, result.Error.Error())
+		fm.Log().Warn("Forwarder announce failed", append(fields, "error", result.Error)...)
 	}
 }
 
-// logRetryableAnnounceResult logs retryable announce failures with failure-count context in one warning.
+// logRetryableAnnounceResult includes the failure count and disable threshold.
 func (fm *ForwarderManager) logRetryableAnnounceResult(protocol, trackerURL, hash string, result AnnounceResult, failureCount, threshold int) {
-	u, err := url.Parse(trackerURL)
-	if err != nil {
-		if threshold > 0 {
-			WarnLogFwd.Printf("%s %s %s [%d/%d]\n    --> (error: %s)\n",
-				hash, protocol, trackerURL, failureCount, threshold, result.Error.Error())
-		} else {
-			WarnLogFwd.Printf("%s %s %s [%d]\n    --> (error: %s)\n",
-				hash, protocol, trackerURL, failureCount, result.Error.Error())
-		}
-		return
-	}
-
-	hostPort := u.Host
-	if u.Port() == "" {
-		switch u.Scheme {
-		case protocolHTTPS:
-			hostPort += ":443"
-		case protocolHTTP:
-			hostPort += ":80"
-		case protocolUDP:
-			hostPort = u.Hostname()
-		}
-	}
-
-	if threshold > 0 {
-		WarnLogFwd.Printf("%s %s %s [%d/%d]\n    --> (error: %s)\n",
-			hash, protocol, hostPort, failureCount, threshold, result.Error.Error())
-	} else {
-		WarnLogFwd.Printf("%s %s %s [%d]\n    --> (error: %s)\n",
-			hash, protocol, hostPort, failureCount, result.Error.Error())
-	}
+	fm.Log().Warn("Forwarder announce will retry", "protocol", protocol, "tracker", trackerURL,
+		"info_hash", hash, "duration", result.Duration, "error", result.Error,
+		"failure_count", failureCount, "failure_threshold", threshold)
 }
 
 // handleAnnounceResult processes the result of an announce attempt
@@ -246,7 +187,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	if result.Success {
 		routablePeers, dropped := filterRoutableForwarderPeers(result.Peers)
 		if dropped > 0 {
-			InfoLogFwd.Printf("Filtered %d unroutable peer(s) from forwarder %s response\n", dropped, forwardName)
+			fm.Log().Info(fmt.Sprintf("Filtered %d unroutable peer(s) from forwarder %s response\n", dropped, forwardName))
 		}
 		if len(result.Peers) > 0 && len(routablePeers) == 0 {
 			result = buildFailureResult(result.Duration, fmt.Errorf("forwarder returned only unroutable peers (%d total)", len(result.Peers)))
@@ -284,7 +225,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 			suspendFor = 300 * time.Second
 		}
 		fm.suspendForwarderWithReason(forwardName, suspendFor, result.Error.Error())
-		InfoLogFwd.Printf("Suspending forwarder %s for %v\n", forwardName, suspendFor)
+		fm.Log().Info(fmt.Sprintf("Suspending forwarder %s for %v\n", forwardName, suspendFor))
 		return
 	}
 
@@ -298,7 +239,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		fm.logRetryableAnnounceResult(protocol, trackerURL, hash, result, nextFailures, threshold)
 	}
 	if fm.Config.Debug {
-		ErrorLogFwd.Printf("  Duration: %v\n", result.Duration)
+		fm.Log().Error(fmt.Sprintf("  Duration: %v\n", result.Duration))
 	}
 
 	if fm.Prometheus != nil {
@@ -321,7 +262,7 @@ func (fm *ForwarderManager) doUDPAnnounce(job AnnounceJob) AnnounceResult {
 	forward := job.Forwarder
 
 	if fm.Config.Debug && forward.Ip != "" {
-		DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
+		fm.Log().Debug(fmt.Sprintf("  Using IP: %s\n", forward.Ip))
 	}
 
 	bitResponse, respBytes, err := fm.udpForwarder.AnnounceContext(job.context(), forward, job.Request)
@@ -349,12 +290,12 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 	uri := fm.buildAnnounceURI(forward, request, "")
 
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("  Request URI: %s\n", uri)
+		fm.Log().Debug(fmt.Sprintf("  Request URI: %s\n", uri))
 		if forward.Ip != "" {
-			DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
+			fm.Log().Debug(fmt.Sprintf("  Using IP: %s\n", forward.Ip))
 		}
 		if forward.Host != "" {
-			DebugLogFwd.Printf("  Host header: %s\n", forward.Host)
+			fm.Log().Debug(fmt.Sprintf("  Host header: %s\n", forward.Host))
 		}
 	}
 
@@ -452,7 +393,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 
 		result := buildFailureResult(duration, statusErr)
 		if fm.Config.Debug && !result.NonRetryable && !result.Suspend {
-			ErrorLogFwd.Printf("HTTP %d %s (retryable)\n", response.StatusCode, response.Status)
+			fm.Log().Error(fmt.Sprintf("HTTP %d %s (retryable)\n", response.StatusCode, response.Status))
 		}
 		return result
 	}
@@ -461,8 +402,8 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	if err != nil {
 		result := buildFailureResult(duration, fmt.Errorf("failed to read response: %w", err))
 		if fm.Config.Debug && !isTimeoutErr(err) && !result.NonRetryable {
-			ErrorLogFwd.Printf("Failed to read response (%s): %v\n",
-				map[bool]string{true: "non-retryable", false: "retryable"}[result.NonRetryable], err)
+			fm.Log().Error(fmt.Sprintf("Failed to read response (%s): %v\n",
+				map[bool]string{true: "non-retryable", false: "retryable"}[result.NonRetryable], err))
 		}
 		return result
 	}
@@ -486,7 +427,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 			return AnnounceResult{Success: true, Duration: duration}
 		}
 		if fm.Config.Debug {
-			ErrorLogFwd.Printf("Tracker failure response: %s\n", bitResponse.FailureReason)
+			fm.Log().Error(fmt.Sprintf("Tracker failure response: %s\n", bitResponse.FailureReason))
 		}
 		return buildFailureResult(duration, fmt.Errorf("tracker failure: %s", bitResponse.FailureReason))
 	}
@@ -517,7 +458,7 @@ func (fm *ForwarderManager) buildAnnounceURI(forward CoreCommon.Forward, request
 
 // logParseError logs details about a parse failure
 func (fm *ForwarderManager) logParseError(payload []byte, hash, uri string, err error) {
-	ErrorLogFwd.Printf("Failed to parse response: %v\n", err)
+	fm.Log().Error(fmt.Sprintf("Failed to parse response: %v\n", err))
 
 	isText := true
 	if len(payload) > 0 {
@@ -535,14 +476,14 @@ func (fm *ForwarderManager) logParseError(payload []byte, hash, uri string, err 
 		if len(payloadStr) > 500 {
 			payloadStr = payloadStr[:500] + "... (truncated)"
 		}
-		ErrorLogFwd.Printf("  Raw response data: %s\n", payloadStr)
+		fm.Log().Error(fmt.Sprintf("  Raw response data: %s\n", payloadStr))
 	} else {
-		ErrorLogFwd.Printf("  Response is binary (%d bytes)\n", len(payload))
+		fm.Log().Error(fmt.Sprintf("  Response is binary (%d bytes)\n", len(payload)))
 	}
 
 	tempFilename := fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
 	if tempFilename != "" {
-		ErrorLogFwd.Printf("  Response saved to: %s\n", tempFilename)
+		fm.Log().Error(fmt.Sprintf("  Response saved to: %s\n", tempFilename))
 	}
 }
 
@@ -581,7 +522,7 @@ func (fm *ForwarderManager) forwardEventToAll(infoHash common.InfoHash, peerID c
 	case <-done:
 	case <-time.After(time.Second * time.Duration(fm.Config.ForwardTimeout)):
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Timeout waiting for %s event forwards to complete for %x\n", request.Event, infoHash)
+			fm.Log().Debug(fmt.Sprintf("Timeout waiting for %s event forwards to complete for %x\n", request.Event, infoHash))
 		}
 	}
 }
@@ -593,8 +534,8 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 	protocol := forwarder.GetProtocol()
 
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("Forwarding %s %s event for %s (peer %x) to %s\n",
-			protocol, request.Event, hash, peerID, trackerURL)
+		fm.Log().Debug(fmt.Sprintf("Forwarding %s %s event for %s (peer %x) to %s\n",
+			protocol, request.Event, hash, peerID, trackerURL))
 	}
 
 	var err error
@@ -605,14 +546,14 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 	}
 
 	if err != nil {
-		ErrorLogFwd.Printf("Error forwarding %s event for %s to %s: %s\n",
-			request.Event, hash, trackerURL, err.Error())
+		fm.Log().Error(fmt.Sprintf("Error forwarding %s event for %s to %s: %s\n",
+			request.Event, hash, trackerURL, err.Error()))
 		return
 	}
 
 	if fm.Config.Debug {
-		DebugLogFwd.Printf("Successfully forwarded %s event for %s to %s\n",
-			request.Event, hash, trackerURL)
+		fm.Log().Debug(fmt.Sprintf("Successfully forwarded %s event for %s to %s\n",
+			request.Event, hash, trackerURL))
 	}
 }
 
@@ -667,12 +608,12 @@ func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID c
 	for _, key := range keysToRemove {
 		delete(fm.pendingJobs, key)
 		if fm.Config.Debug {
-			DebugLogFwd.Printf("Canceled pending job: %s\n", key)
+			fm.Log().Debug(fmt.Sprintf("Canceled pending job: %s\n", key))
 		}
 	}
 
 	if len(keysToRemove) > 0 && fm.Config.Debug {
-		DebugLogFwd.Printf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID)
+		fm.Log().Debug(fmt.Sprintf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID))
 	}
 
 	fm.scheduledJobsMu.Lock()

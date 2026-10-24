@@ -6,23 +6,43 @@
 
 ## Install the binary
 ```bash
-go install github.com/fl0v/retracker@latest
+go install github.com/fl0v/retracker/cmd/retracker@latest
 ```
 The binary is placed in `$GOBIN` (defaults to `$GOPATH/bin` or `$HOME/go/bin`).
 
 ## Run locally
 
-### HTTP only
-```bash
-retracker -l :6969 -d
-```
-Announce URL: `http://<your ip>:6969/announce`
-
-### HTTP + UDP
+### HTTP + UDP (recommended)
 ```bash
 retracker -l :6969 -u :6969 -d
 ```
 UDP is BEP 15 compliant with IPv4/IPv6, secure connection IDs, and shared announce logic with HTTP.
+Prefer `udp://<your ip>:6969/announce` in your torrent client. Use
+`http://<your ip>:6969/announce` as an alternative when UDP is unavailable.
+Add only one retracker URL per torrent: both listeners share the same peer
+storage, so adding both protocols does not provide another peer source.
+HTTP and UDP can use the same port number because they use separate transports.
+UDP is disabled unless `-u`,
+`RETRACKER_UDP_LISTEN`, or the YAML `udp_listen` setting enables it.
+
+For example, `config.yml` can enable both listeners:
+
+```yaml
+listen: ":6969"
+udp_listen: ":6969"
+```
+
+Run it with `retracker -c config.yml`. Allow inbound TCP **and** UDP port 6969
+through the host firewall, and forward both protocols on your router when
+clients connect from outside your network. The HTTP NGINX example below
+proxies HTTP traffic; UDP clients must reach the UDP listener directly or
+through a separately configured UDP proxy.
+
+### HTTP only (alternative)
+```bash
+retracker -l :6969 -d
+```
+Announce URL: `http://<your ip>:6969/announce`
 
 ### With forwarders (HTTP/HTTPS/UDP)
 ```bash
@@ -46,6 +66,8 @@ Auto-generate a list:
 ```bash
 scripts/update-forwarders.sh
 ```
+UDP forwarding works independently of the inbound UDP listener: HTTP clients
+can use UDP upstream trackers even when `-u` is omitted.
 
 ### Prometheus metrics
 Enable in the config file with `prometheus_enabled: true`, then scrape `http://<ip>:<port>/metrics`.
@@ -74,16 +96,25 @@ server {
 
 ### Build and run
 ```bash
-cd docker
-docker build -t retracker .
-docker run -d -p 6969:6969 retracker
+# Run from the repository root (the build needs the root Go module).
+docker build -f docker/Dockerfile -t retracker .
+docker run -d --name retracker \
+  -p 6969:6969/tcp -p 6969:6969/udp \
+  -e RETRACKER_UDP_LISTEN=:6969 \
+  retracker
 ```
+
+To use the published image, replace `retracker` on the final line with
+`ghcr.io/fl0v/retracker:latest`. Publishing the UDP port alone does not enable
+the listener; set the environment variable or pass `-u :6969`.
 
 ### Docker Compose (recommended)
 ```bash
-cd docker
-docker-compose up -d
+docker compose -f docker/docker-compose.yml up -d --build
 ```
+Run from the repository root. The supplied Compose file publishes TCP and UDP
+port 6969 and enables the UDP listener with `RETRACKER_UDP_LISTEN=:6969`.
+Its health check tests HTTP availability; it does not probe the UDP listener.
 
 #### Environment Variables
 

@@ -3,15 +3,16 @@ package server
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path"
 	"time"
+
+	"github.com/fl0v/retracker/internal/observability"
 )
 
-var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
-
 type TempStorage struct {
+	observability.Logging
 	path  string
 	tasks *backgroundTasks
 }
@@ -35,7 +36,7 @@ func (ts *TempStorage) cleanRoutine() {
 func (ts *TempStorage) cleanExpired() {
 	entries, err := os.ReadDir(ts.path)
 	if err != nil {
-		ErrorLog.Println(err.Error())
+		ts.Log().Error("Read diagnostic directory", "path", ts.path, "error", err)
 		return
 	}
 	now := time.Now()
@@ -46,12 +47,12 @@ func (ts *TempStorage) cleanExpired() {
 		}
 		info, err := entry.Info()
 		if err != nil {
-			ErrorLog.Println(err.Error())
+			ts.Log().Error("Read diagnostic file metadata", "path", ts.path, "error", err)
 			continue
 		}
 		if info.ModTime().Before(deadline) {
 			if err := os.Remove(path.Join(ts.path, entry.Name())); err != nil {
-				ErrorLog.Println(err.Error())
+				ts.Log().Error("Remove expired diagnostic file", "path", ts.path, "error", err)
 			}
 		}
 	}
@@ -60,31 +61,32 @@ func (ts *TempStorage) cleanExpired() {
 func (ts *TempStorage) SaveBencodeFromForwarder(p []byte, hash string, uri string) string {
 	f, err := os.CreateTemp(ts.path, fmt.Sprintf("%s_", hash))
 	if err != nil {
-		ErrorLog.Println(err.Error())
+		ts.Log().Error("Create diagnostic file", "path", ts.path, "error", err)
 		return ``
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s\n%s\n", hash, uri); err != nil {
-		ErrorLog.Println(err.Error())
+		ts.Log().Error("Write diagnostic metadata", "path", ts.path, "error", err)
 		return f.Name()
 	}
 	if _, err := f.Write(p); err != nil {
-		ErrorLog.Println(err.Error())
+		ts.Log().Error("Write diagnostic payload", "path", ts.path, "error", err)
 	}
 	return f.Name()
 }
 
-func NewTempStorage(_path string) (*TempStorage, error) {
+func NewTempStorage(_path string, loggers ...*slog.Logger) (*TempStorage, error) {
 	ts := TempStorage{
-		path:  _path,
-		tasks: newBackgroundTasks(),
+		Logging: observability.NewLogging(false, loggers...),
+		path:    _path,
+		tasks:   newBackgroundTasks(),
 	}
 	if ts.path == `` {
 		ts.path = path.Join(os.TempDir(), `retracker`)
 	}
 	if err := os.MkdirAll(ts.path, 0o755); err != nil {
 		ts.tasks.close()
-		ErrorLog.Println(err.Error())
+		ts.Log().Error("Create diagnostic directory", "path", ts.path, "error", err)
 		return nil, err
 	}
 	ts.tasks.run(ts.cleanRoutine)

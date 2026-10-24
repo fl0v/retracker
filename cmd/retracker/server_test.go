@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	corecommon "github.com/fl0v/retracker/common"
 	"github.com/fl0v/retracker/internal/server"
 )
 
@@ -154,6 +155,51 @@ func TestDedicatedMuxRoutes(t *testing.T) {
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		if w.Code != http.StatusNotFound {
 			t.Fatal("metrics enabled without configuration")
+		}
+	}
+}
+
+func TestMetricsHandlersIsolateTrackers(t *testing.T) {
+	for i := range 2 {
+		cfg := defaultConfig()
+		if i == 0 {
+			cfg.Forwards = []corecommon.Forward{{Uri: "udp://example.com:6969/announce"}}
+		}
+		core := server.NewCore(&cfg, nil)
+		defer core.Close()
+		handler, err := metricsHandler(core)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if core.Receiver.Announce.Prometheus != core.Receiver.UDP.Prometheus {
+			t.Fatal("HTTP and UDP received different metrics")
+		}
+		if core.ForwarderManager != nil && core.ForwarderManager.Prometheus != core.Receiver.Announce.Prometheus {
+			t.Fatal("forwarder metrics not attached")
+		}
+		core.Receiver.Announce.Prometheus.Requests.Add(float64(i + 1))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		want := "requests 1\n"
+		if i == 1 {
+			want = "requests 2\n"
+		}
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) || !strings.Contains(w.Body.String(), "go_goroutines ") || !strings.Contains(w.Body.String(), "process_start_time_seconds ") {
+			t.Fatalf("incomplete or shared metrics: status=%d, body=%s", w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestRunWithMetricsCanRestart(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.PrometheusEnabled = true
+	for range 2 {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		err := run(ctx, cfg)
+		cancel()
+		if err != nil {
+			t.Fatalf("metrics-enabled startup failed: %v", err)
 		}
 	}
 }

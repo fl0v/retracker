@@ -15,10 +15,12 @@ This is built with extensive help from different AI agents, as an experiment.
 
 ## Quick start
 ```bash
-go install github.com/fl0v/retracker@latest
-retracker -l :6969 -d
+go install github.com/fl0v/retracker/cmd/retracker@latest
+retracker -l :6969 -u :6969 -d
 ```
-Add `http://<your ip>:6969/announce` to your torrent.
+Add `udp://<your ip>:6969/announce` to your torrent (preferred). Use
+`http://<your ip>:6969/announce` if UDP is unavailable. Choose one URL per
+torrent; both protocols share the same peer storage.
 
 Full installation and deployment options are in [INSTALL.md](INSTALL.md).
 
@@ -59,9 +61,9 @@ curl "http://127.0.0.1:6969/add-forwarder?urls=udp://tracker.example.com:6969/an
 ```
 
 ## Docker
-- Build: `cd docker && docker build -t retracker .`
-- Run: `docker run -d -p 6969:6969 retracker`
-- Compose: `cd docker && docker-compose up -d`
+- Build: `docker build -f docker/Dockerfile -t retracker .` (from the repository root)
+- Run: `docker run -d -p 6969:6969/tcp -p 6969:6969/udp -e RETRACKER_UDP_LISTEN=:6969 retracker`
+- Compose: `docker compose -f docker/docker-compose.yml up -d --build`
 
 See [INSTALL.md](INSTALL.md) for configuration env vars and examples.
 
@@ -86,6 +88,11 @@ Other projects importing these packages should depend on the root module, `githu
 - View coverage: `go tool cover -html=coverage.out`
 
 GitHub Actions runs formatting, lint, race tests with coverage, and a Linux build for pull requests, pushes to `master`, and published releases. Image publishing waits for this QA job and runs only for master pushes and releases. Each successful run saves a coverage artifact for 14 days.
+
+Runtime service logs use Go `slog` text records on stdout in the CLI; debug
+records are enabled with `-d`. Announce failures and forwarder outcomes include
+structured context such as hash, protocol, timing, and errors. Each running
+tracker serves its own Prometheus registry, including Go and process metrics.
 
 ## License
 

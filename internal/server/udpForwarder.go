@@ -9,10 +9,9 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +20,7 @@ import (
 	Response "github.com/fl0v/retracker/bittorrent/response"
 	"github.com/fl0v/retracker/bittorrent/tracker"
 	CoreCommon "github.com/fl0v/retracker/common"
-)
-
-var (
-	DebugLogUDPFwd = log.New(os.Stdout, `debug#`, log.Lshortfile)
-	ErrorLogUDPFwd = log.New(os.Stderr, `error#`, log.Lshortfile)
+	"github.com/fl0v/retracker/internal/observability"
 )
 
 const (
@@ -51,6 +46,7 @@ type connectionEntry struct {
 
 // UDPForwarder manages UDP connections to external trackers
 type UDPForwarder struct {
+	observability.Logging
 	debug       bool
 	timeout     time.Duration
 	maxRetries  int
@@ -62,7 +58,7 @@ type UDPForwarder struct {
 }
 
 // NewUDPForwarder creates a new UDP forwarder client
-func NewUDPForwarder(debug bool, timeout int, retries int, retryBaseMs int) *UDPForwarder {
+func NewUDPForwarder(debug bool, timeout int, retries int, retryBaseMs int, loggers ...*slog.Logger) *UDPForwarder {
 	if timeout <= 0 {
 		timeout = int(defaultUDPTimeout.Seconds())
 	}
@@ -73,6 +69,7 @@ func NewUDPForwarder(debug bool, timeout int, retries int, retryBaseMs int) *UDP
 		retryBaseMs = 500
 	}
 	uf := &UDPForwarder{
+		Logging:     observability.NewLogging(debug, loggers...),
 		debug:       debug,
 		timeout:     time.Duration(timeout) * time.Second,
 		maxRetries:  retries,
@@ -110,7 +107,7 @@ func (uf *UDPForwarder) cleanupConnections() {
 				if now.Sub(entry.timestamp) > connectionIDLifetime {
 					delete(uf.connections, name)
 					if uf.debug {
-						DebugLogUDPFwd.Printf("Expired connection ID for %s\n", name)
+						uf.Log().Debug(fmt.Sprintf("Expired connection ID for %s\n", name))
 					}
 				}
 			}
@@ -283,7 +280,7 @@ func (uf *UDPForwarder) connect(ctx context.Context, forwarder CoreCommon.Forwar
 	uf.connMu.Unlock()
 
 	if uf.debug {
-		DebugLogUDPFwd.Printf("Got connection ID %d for %s\n", connectionID, forwarderName)
+		uf.Log().Debug(fmt.Sprintf("Got connection ID %d for %s\n", connectionID, forwarderName))
 	}
 
 	return connectionID, conn, nil
@@ -421,7 +418,7 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 			errorMsg := string(respBuf[8:n])
 			// Check if it's an invalid connection ID error
 			if uf.debug {
-				DebugLogUDPFwd.Printf("Tracker error: %s\n", errorMsg)
+				uf.Log().Debug(fmt.Sprintf("Tracker error: %s\n", errorMsg))
 			}
 			// Clear cached connection ID to force reconnect
 			uf.connMu.Lock()
@@ -502,8 +499,8 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 		}
 
 		if uf.debug {
-			DebugLogUDPFwd.Printf("UDP announce to %s: interval=%d, seeders=%d, leechers=%d, peers=%d\n",
-				trackerURL, interval, seeders, leechers, len(peers))
+			uf.Log().Debug(fmt.Sprintf("UDP announce to %s: interval=%d, seeders=%d, leechers=%d, peers=%d\n",
+				trackerURL, interval, seeders, leechers, len(peers)))
 		}
 
 		break

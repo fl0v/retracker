@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 )
 
 type Core struct {
+	observability.Logging
 	Config           *config.Config
 	Storage          *Storage
 	ForwarderStorage *ForwarderStorage
@@ -31,8 +33,9 @@ type Core struct {
 	closeErr         error
 }
 
-func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
-	storage := NewStorage(cfg)
+func NewCore(cfg *config.Config, tempStorage *TempStorage, loggers ...*slog.Logger) *Core {
+	logging := observability.NewLogging(cfg.Debug, loggers...)
+	storage := NewStorage(cfg, logging.Log())
 
 	var forwarderStorage *ForwarderStorage
 	var forwarderManager *ForwarderManager
@@ -47,15 +50,16 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 		// Disable Storage's separate stats routine since ForwarderManager will handle it
 		storage.disableStatsRoutine.Store(true)
 
-		forwarderManager = NewForwarderManager(cfg, forwarderStorage, storage, prometheus, tempStorage)
+		forwarderManager = NewForwarderManager(cfg, forwarderStorage, storage, prometheus, tempStorage, WithForwarderLogger(logging.Log()))
 	}
 
 	core := Core{
+		Logging:          logging,
 		Config:           cfg,
 		Storage:          storage,
 		ForwarderStorage: forwarderStorage,
 		ForwarderManager: forwarderManager,
-		Receiver:         NewReceiver(cfg, storage, forwarderStorage, forwarderManager),
+		Receiver:         NewReceiver(cfg, storage, forwarderStorage, forwarderManager, logging.Log()),
 	}
 	core.Receiver.Announce.TempStorage = tempStorage
 	core.Receiver.UDP.TempStorage = tempStorage
@@ -166,7 +170,7 @@ func (core *Core) ensureForwarderManager() *ForwarderManager {
 		tempStorage = core.Receiver.Announce.TempStorage
 	}
 
-	core.ForwarderManager = NewForwarderManager(core.Config, core.ForwarderStorage, core.Storage, prom, tempStorage)
+	core.ForwarderManager = NewForwarderManager(core.Config, core.ForwarderStorage, core.Storage, prom, tempStorage, WithForwarderLogger(core.Log()))
 	core.ForwarderManager.Start()
 
 	if core.Receiver != nil {
