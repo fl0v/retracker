@@ -173,13 +173,13 @@ func (sc *StatsCollector) CollectSimpleStats(provider StatsDataProvider) *Simple
 func (sc *StatsCollector) FormatSimpleText(stats *SimpleStats) string {
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Pending Jobs:", stats.PendingJobs))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Tracked Hashes:", stats.TrackedHashes))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Disabled Forwarders:", stats.DisabledForwarders))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Suspended Forwarders:", stats.SuspendedForwarders))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Forwarders:", stats.ActiveForwarders))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Workers:", stats.ActiveWorkers))
-	sb.WriteString(fmt.Sprintf("%-25s %10d\n", "Active Clients:", stats.ActiveClients))
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Pending Jobs:", stats.PendingJobs)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Tracked Hashes:", stats.TrackedHashes)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Disabled Forwarders:", stats.DisabledForwarders)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Suspended Forwarders:", stats.SuspendedForwarders)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Active Forwarders:", stats.ActiveForwarders)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Workers:", stats.ActiveWorkers)
+	fmt.Fprintf(&sb, "%-25s %10d\n", "Active Clients:", stats.ActiveClients)
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -243,53 +243,53 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	// Print configuration section
 	if stats.Config != nil {
 		sb.WriteString("\n=== Configuration ===\n")
-		sb.WriteString(fmt.Sprintf("HTTP Listen: %s\n", stats.Config.Listen))
+		fmt.Fprintf(&sb, "HTTP Listen: %s\n", stats.Config.Listen)
 		if stats.Config.UDPListen != "" {
-			sb.WriteString(fmt.Sprintf("UDP Listen: %s\n", stats.Config.UDPListen))
+			fmt.Fprintf(&sb, "UDP Listen: %s\n", stats.Config.UDPListen)
 		} else {
 			sb.WriteString("UDP Listen: disabled\n")
 		}
-		sb.WriteString(fmt.Sprintf("Debug Mode: %v\n", stats.Config.Debug))
-		sb.WriteString(fmt.Sprintf("X-Real-IP Header: %v\n", stats.Config.XRealIP))
-		sb.WriteString(fmt.Sprintf("Prometheus Metrics: %v\n", stats.Config.PrometheusEnabled))
-		sb.WriteString(fmt.Sprintf("Peer Age (minutes): %.1f\n", stats.Config.Age))
-		sb.WriteString(fmt.Sprintf("Announce Interval: %d seconds\n", stats.Config.AnnounceInterval))
+		fmt.Fprintf(&sb, "Debug Mode: %v\n", stats.Config.Debug)
+		fmt.Fprintf(&sb, "X-Real-IP Header: %v\n", stats.Config.XRealIP)
+		fmt.Fprintf(&sb, "Prometheus Metrics: %v\n", stats.Config.PrometheusEnabled)
+		fmt.Fprintf(&sb, "Peer Age (minutes): %.1f\n", stats.Config.Age)
+		fmt.Fprintf(&sb, "Announce Interval: %d seconds\n", stats.Config.AnnounceInterval)
 		if stats.Config.TrackerID != "" {
-			sb.WriteString(fmt.Sprintf("Tracker ID: %s\n", stats.Config.TrackerID))
+			fmt.Fprintf(&sb, "Tracker ID: %s\n", stats.Config.TrackerID)
 		}
-		sb.WriteString(fmt.Sprintf("Statistics Interval: %d seconds\n", stats.Config.StatsInterval))
+		fmt.Fprintf(&sb, "Statistics Interval: %d seconds\n", stats.Config.StatsInterval)
 		forwardersCount := stats.Config.ForwardersCount()
 		if forwardersCount > 0 {
-			sb.WriteString(fmt.Sprintf("Forwarders: %d configured\n", forwardersCount))
+			fmt.Fprintf(&sb, "Forwarders: %d configured\n", forwardersCount)
 			if stats.Config.ForwardsFile != "" {
-				sb.WriteString(fmt.Sprintf("  Forwards File: %s\n", stats.Config.ForwardsFile))
+				fmt.Fprintf(&sb, "  Forwards File: %s\n", stats.Config.ForwardsFile)
 			}
-			sb.WriteString(fmt.Sprintf("  Forward Timeout: %d seconds\n", stats.Config.ForwardTimeout))
-			sb.WriteString(fmt.Sprintf("  Forwarder Workers: %d (max %d)\n", stats.Config.ForwarderWorkers, stats.Config.MaxForwarderWorkers))
-			sb.WriteString(fmt.Sprintf("  Forwarder Queue Size: %d\n", stats.Config.ForwarderQueueSize))
-			sb.WriteString(fmt.Sprintf("  Queue Scale Threshold: %d%%\n", stats.Config.QueueScaleThresholdPct))
-			sb.WriteString(fmt.Sprintf("  Queue Rate Limit Threshold: %d%%\n", stats.Config.QueueRateLimitThreshold))
-			sb.WriteString(fmt.Sprintf("  Queue Throttle Threshold: %d%% (limit to %d forwarders)\n", stats.Config.QueueThrottleThreshold, stats.Config.QueueThrottleTopN))
-			sb.WriteString(fmt.Sprintf("  Rate Limit Initial: %d/sec (burst %d)\n", stats.Config.RateLimitInitialPerSec, stats.Config.RateLimitInitialBurst))
-			sb.WriteString(fmt.Sprintf("  Forwarder suspend: %d seconds\n", stats.Config.ForwarderSuspendSeconds))
-			sb.WriteString(fmt.Sprintf("  Forwarder Fail Threshold: %d\n", stats.Config.ForwarderFailThreshold))
-			sb.WriteString(fmt.Sprintf("  Forwarder Retry Attempts: %d\n", stats.Config.ForwarderRetryAttempts))
-			sb.WriteString(fmt.Sprintf("  Forwarder Retry Base (ms): %d\n", stats.Config.ForwarderRetryBaseMs))
+			fmt.Fprintf(&sb, "  Forward Timeout: %d seconds\n", stats.Config.ForwardTimeout)
+			fmt.Fprintf(&sb, "  Forwarder Workers: %d (max %d)\n", stats.Config.ForwarderWorkers, stats.Config.MaxForwarderWorkers)
+			fmt.Fprintf(&sb, "  Forwarder Queue Size: %d\n", stats.Config.ForwarderQueueSize)
+			fmt.Fprintf(&sb, "  Queue Scale Threshold: %d%%\n", stats.Config.QueueScaleThresholdPct)
+			fmt.Fprintf(&sb, "  Queue Rate Limit Threshold: %d%%\n", stats.Config.QueueRateLimitThreshold)
+			fmt.Fprintf(&sb, "  Queue Throttle Threshold: %d%% (limit to %d forwarders)\n", stats.Config.QueueThrottleThreshold, stats.Config.QueueThrottleTopN)
+			fmt.Fprintf(&sb, "  Rate Limit Initial: %d/sec (burst %d)\n", stats.Config.RateLimitInitialPerSec, stats.Config.RateLimitInitialBurst)
+			fmt.Fprintf(&sb, "  Forwarder suspend: %d seconds\n", stats.Config.ForwarderSuspendSeconds)
+			fmt.Fprintf(&sb, "  Forwarder Fail Threshold: %d\n", stats.Config.ForwarderFailThreshold)
+			fmt.Fprintf(&sb, "  Forwarder Retry Attempts: %d\n", stats.Config.ForwarderRetryAttempts)
+			fmt.Fprintf(&sb, "  Forwarder Retry Base (ms): %d\n", stats.Config.ForwarderRetryBaseMs)
 		} else {
 			sb.WriteString("Forwarders: none configured\n")
 		}
 		sb.WriteString("==================\n")
 	}
-	sb.WriteString(fmt.Sprintf("Pending jobs: %d\n", stats.PendingJobs))
-	sb.WriteString(fmt.Sprintf("Tracked hashes: %d\n", stats.TrackedHashes))
-	sb.WriteString(fmt.Sprintf("Disabled forwarders: %d\n", stats.DisabledForwarders))
-	sb.WriteString(fmt.Sprintf("Suspended forwarders: %d\n", stats.SuspendedForwarders))
-	sb.WriteString(fmt.Sprintf("Active forwarders: %d\n", stats.ActiveForwarders))
-	sb.WriteString(fmt.Sprintf("Queue: depth %d / %d (%d%%)\n", stats.QueueDepth, stats.QueueCapacity, stats.QueueFillPct))
-	sb.WriteString(fmt.Sprintf("Workers: %d active / %d max\n", stats.ActiveWorkers, stats.MaxWorkers))
-	sb.WriteString(fmt.Sprintf("Queue drops (full): %d\n", stats.DroppedFull))
-	sb.WriteString(fmt.Sprintf("Rate limited: %d\n", stats.RateLimited))
-	sb.WriteString(fmt.Sprintf("Throttled forwarders skipped: %d\n", stats.ThrottledForwarders))
+	fmt.Fprintf(&sb, "Pending jobs: %d\n", stats.PendingJobs)
+	fmt.Fprintf(&sb, "Tracked hashes: %d\n", stats.TrackedHashes)
+	fmt.Fprintf(&sb, "Disabled forwarders: %d\n", stats.DisabledForwarders)
+	fmt.Fprintf(&sb, "Suspended forwarders: %d\n", stats.SuspendedForwarders)
+	fmt.Fprintf(&sb, "Active forwarders: %d\n", stats.ActiveForwarders)
+	fmt.Fprintf(&sb, "Queue: depth %d / %d (%d%%)\n", stats.QueueDepth, stats.QueueCapacity, stats.QueueFillPct)
+	fmt.Fprintf(&sb, "Workers: %d active / %d max\n", stats.ActiveWorkers, stats.MaxWorkers)
+	fmt.Fprintf(&sb, "Queue drops (full): %d\n", stats.DroppedFull)
+	fmt.Fprintf(&sb, "Rate limited: %d\n", stats.RateLimited)
+	fmt.Fprintf(&sb, "Throttled forwarders skipped: %d\n", stats.ThrottledForwarders)
 
 	// Format forwarders as a table
 	if len(stats.Forwarders) > 0 {
@@ -308,7 +308,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sb.WriteString("\nForwarders:\n")
 		// Order: Proto, Tracker, AvgResp, Interval, AnnCount, FailCount, LastAnn
 		headerFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10s %%10s %%10s\n", maxNameLen)
-		sb.WriteString(fmt.Sprintf(headerFormat, "Proto", "Tracker", "AvgResp", "Interval", "AnnCount", "FailCount", "LastAnn"))
+		fmt.Fprintf(&sb, headerFormat, "Proto", "Tracker", "AvgResp", "Interval", "AnnCount", "FailCount", "LastAnn")
 		sb.WriteString(strings.Repeat("-", 6+maxNameLen+12+10+10+10+10+6) + "\n")
 		for _, forwarder := range stats.Forwarders {
 			protocol := forwarder.Protocol
@@ -318,13 +318,13 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			if forwarder.HasStats {
 				responseTime := forwarder.AvgResponseTime.Round(time.Millisecond).String()
 				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10d %%10d %%10d %%9ds\n", maxNameLen)
-				sb.WriteString(fmt.Sprintf(rowFormat,
+				fmt.Fprintf(&sb, rowFormat,
 					protocol, forwarder.Name, responseTime, forwarder.LastInterval,
-					forwarder.SampleCount, forwarder.FailCount, forwarder.SecondsSinceLastAnnounce))
+					forwarder.SampleCount, forwarder.FailCount, forwarder.SecondsSinceLastAnnounce)
 			} else {
 				rowFormat := fmt.Sprintf("%%-6s %%-%ds %%12s %%10s %%10d %%10d %%10s\n", maxNameLen)
-				sb.WriteString(fmt.Sprintf(rowFormat,
-					protocol, forwarder.Name, "-", "-", 0, forwarder.FailCount, "-"))
+				fmt.Fprintf(&sb, rowFormat,
+					protocol, forwarder.Name, "-", "-", 0, forwarder.FailCount, "-")
 			}
 		}
 	}
@@ -339,7 +339,7 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 
 		sb.WriteString("\nDisabled Forwarders:\n")
 		headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%s\n", disabledNameWidth, 10, 20)
-		sb.WriteString(fmt.Sprintf(headerFormat, "Name", "Failures", "DisabledAt", "Reason"))
+		fmt.Fprintf(&sb, headerFormat, "Name", "Failures", "DisabledAt", "Reason")
 		sb.WriteString(strings.Repeat("-", disabledNameWidth+10+20+50+5) + "\n")
 		for _, d := range stats.DisabledDetails {
 			disabledAt := time.Unix(d.DisabledAtUnix, 0).Format(time.RFC3339)
@@ -347,12 +347,12 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 			for i, line := range reasonLines {
 				if i == 0 {
 					rowFormat := fmt.Sprintf("%%-%ds %%-%dd %%-%ds %%s\n", disabledNameWidth, 10, 20)
-					sb.WriteString(fmt.Sprintf(rowFormat,
-						d.Name, d.FailureCount, disabledAt, line))
+					fmt.Fprintf(&sb, rowFormat,
+						d.Name, d.FailureCount, disabledAt, line)
 					continue
 				}
 				contFormat := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%s\n", disabledNameWidth, 10, 20)
-				sb.WriteString(fmt.Sprintf(contFormat, "", "", "", line))
+				fmt.Fprintf(&sb, contFormat, "", "", "", line)
 			}
 		}
 	}
@@ -369,19 +369,19 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		}
 
 		headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%s\n", suspendedNameWidth, 12)
-		sb.WriteString(fmt.Sprintf(headerFormat, "Name", "Remaining(s)", "Reason"))
+		fmt.Fprintf(&sb, headerFormat, "Name", "Remaining(s)", "Reason")
 		sb.WriteString(strings.Repeat("-", suspendedNameWidth+12+50+3) + "\n")
 		for _, s := range stats.SuspendedDetails {
 			reasonLines := wrapTextCell(s.Reason, 50)
 			for i, line := range reasonLines {
 				if i == 0 {
 					rowFormat := fmt.Sprintf("%%-%ds %%-%dd %%s\n", suspendedNameWidth, 12)
-					sb.WriteString(fmt.Sprintf(rowFormat,
-						s.Name, s.SecondsRemaining, line))
+					fmt.Fprintf(&sb, rowFormat,
+						s.Name, s.SecondsRemaining, line)
 					continue
 				}
 				contFormat := fmt.Sprintf("%%-%ds %%-%ds %%s\n", suspendedNameWidth, 12)
-				sb.WriteString(fmt.Sprintf(contFormat, "", "", line))
+				fmt.Fprintf(&sb, contFormat, "", "", line)
 			}
 		}
 	}
@@ -389,8 +389,8 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 	// Print per-hash stats as a table with scrape-like info
 	if len(stats.HashPeerStats) > 0 {
 		sb.WriteString("\nTracked Hashes:\n")
-		sb.WriteString(fmt.Sprintf("%-40s %10s %12s %15s %18s\n",
-			"Hash", "Complete", "Incomplete", "LocalUnique", "ForwarderUnique"))
+		fmt.Fprintf(&sb, "%-40s %10s %12s %15s %18s\n",
+			"Hash", "Complete", "Incomplete", "LocalUnique", "ForwarderUnique")
 		sb.WriteString(strings.Repeat("-", 95) + "\n")
 		// Sort hashes for consistent output
 		hashes := make([]string, 0, len(stats.HashPeerStats))
@@ -400,9 +400,9 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		sort.Strings(hashes)
 		for _, hash := range hashes {
 			hashStats := stats.HashPeerStats[hash]
-			sb.WriteString(fmt.Sprintf("%-40s %10d %12d %15d %18d\n",
+			fmt.Fprintf(&sb, "%-40s %10d %12d %15d %18d\n",
 				hash, hashStats.Complete, hashStats.Incomplete,
-				hashStats.LocalUnique, hashStats.ForwarderUnique))
+				hashStats.LocalUnique, hashStats.ForwarderUnique)
 		}
 	}
 
@@ -411,12 +411,12 @@ func (sc *StatsCollector) FormatText(stats *Stats) string {
 		if stats.ClientStats.ActiveClients == 0 {
 			sb.WriteString("\nActive clients: 0\n")
 		} else {
-			sb.WriteString(fmt.Sprintf("\nActive clients: %d\n", stats.ClientStats.ActiveClients))
-			sb.WriteString(fmt.Sprintf("%-50s %-18s %-25s\n", "Key", "AnnouncedHashes", "SecondsSinceLastReq"))
+			fmt.Fprintf(&sb, "\nActive clients: %d\n", stats.ClientStats.ActiveClients)
+			fmt.Fprintf(&sb, "%-50s %-18s %-25s\n", "Key", "AnnouncedHashes", "SecondsSinceLastReq")
 			sb.WriteString(strings.Repeat("-", 93) + "\n")
 			for _, client := range stats.ClientStats.Clients {
-				sb.WriteString(fmt.Sprintf("%-50s %-18d %-25d\n",
-					client.Key, client.AnnouncedHashes, client.SecondsSinceLastReq))
+				fmt.Fprintf(&sb, "%-50s %-18d %-25d\n",
+					client.Key, client.AnnouncedHashes, client.SecondsSinceLastReq)
 			}
 		}
 	}

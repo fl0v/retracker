@@ -22,9 +22,11 @@ import (
 )
 
 const (
-	protocolUDP   = "udp"
-	protocolHTTP  = "http"
-	protocolHTTPS = "https"
+	protocolUDP          = "udp"
+	protocolHTTP         = "http"
+	protocolHTTPS        = "https"
+	forwarderNameLabel   = "name"
+	forwarderStatusLabel = "status"
 )
 
 var (
@@ -262,7 +264,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		fm.recordStats(forwardName, result.Duration, result.Interval)
 
 		if fm.Prometheus != nil {
-			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `200`}).Inc()
+			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{forwarderNameLabel: forwardName, forwarderStatusLabel: `200`}).Inc()
 		}
 
 		if fm.Config.Debug {
@@ -300,7 +302,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	}
 
 	if fm.Prometheus != nil {
-		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{`name`: forwardName, `status`: `error`}).Inc()
+		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{forwarderNameLabel: forwardName, forwarderStatusLabel: `error`}).Inc()
 	}
 
 	if result.NonRetryable {
@@ -429,8 +431,8 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 
 	if fm.Prometheus != nil {
 		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{
-			`name`:   forwardName,
-			`status`: fmt.Sprintf("%d", response.StatusCode),
+			forwarderNameLabel:   forwardName,
+			forwarderStatusLabel: fmt.Sprintf("%d", response.StatusCode),
 		}).Inc()
 	}
 

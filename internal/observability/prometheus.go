@@ -11,6 +11,8 @@ import (
 
 var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
+const forwarderNameLabel = "name"
+
 type Prometheus struct {
 	Requests                        prometheus.Counter
 	ForwarderStatus                 *prometheus.CounterVec
@@ -39,7 +41,7 @@ func NewPrometheus() (*Prometheus, error) {
 		ForwarderStatus: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: `forwarder_status`,
 			Help: `Forwarder response status`,
-		}, []string{`name`, `status`}),
+		}, []string{forwarderNameLabel, `status`}),
 		QueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: `queue_depth`,
 			Help: `Current forwarder job queue depth`,
@@ -79,23 +81,23 @@ func NewPrometheus() (*Prometheus, error) {
 		DisabledForwarderInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: `forwarder_disabled`,
 			Help: `Disabled forwarder marker with reason label (value is always 1 while disabled)`,
-		}, []string{`name`, `reason`}),
+		}, []string{forwarderNameLabel, `reason`}),
 		DisabledForwarderFailureCount: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: `forwarder_disabled_failure_count`,
 			Help: `Failure count recorded when the forwarder was disabled`,
-		}, []string{`name`}),
+		}, []string{forwarderNameLabel}),
 		DisabledForwarderSecondsSince: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: `forwarder_disabled_seconds_since`,
 			Help: `Seconds elapsed since the forwarder was disabled`,
-		}, []string{`name`}),
+		}, []string{forwarderNameLabel}),
 		SuspendedForwarderInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: `forwarder_suspended`,
 			Help: `Suspended forwarder marker with reason label (value is always 1 while suspended)`,
-		}, []string{`name`, `reason`}),
+		}, []string{forwarderNameLabel, `reason`}),
 		SuspendedForwarderSecondsRemain: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: `forwarder_suspended_seconds_remaining`,
 			Help: `Seconds remaining until suspension expires`,
-		}, []string{`name`}),
+		}, []string{forwarderNameLabel}),
 	}
 	if err := prometheus.Register(p.Requests); err != nil {
 		ErrorLog.Println(err.Error())
