@@ -89,6 +89,10 @@ docker-compose up -d
 
 All environment variables override config file settings. Priority: CLI flags > Environment variables > Config file > Defaults.
 
+Only explicitly supplied flags override other settings. For example, YAML `listen: ":7000"` stays in effect without `-l`, while `-l :6969` overrides it. `RETRACKER_DEBUG=false` disables YAML debug logging, and an explicitly empty `RETRACKER_UDP_LISTEN` disables UDP. Invalid nonempty debug environment values cause a startup error.
+
+`-c` overrides `RETRACKER_CONFIG`; `-c=` skips the config file. `-f` overrides `RETRACKER_FORWARDS`; `-f=` disables loading forwarders. These environment variables work for both the standalone binary and the container. The container accepts flags directly, such as `docker run --rm ghcr.io/fl0v/retracker:latest -l :7000 -d=false`.
+
 **Basic Configuration:**
 - `RETRACKER_CONFIG` → `-c` - Path to configuration file (YAML)
 - `RETRACKER_LISTEN` → `-l` - HTTP listen address:port (e.g., `:6969`)

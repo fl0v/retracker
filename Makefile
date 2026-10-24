@@ -17,6 +17,9 @@ PORT := 6969:6969
 BUILD_DIR := bin
 BINARY := $(BUILD_DIR)/retracker
 
+WORKSPACE_PACKAGES := ./... ./common/... ./bittorrent/common/... ./bittorrent/response/... ./bittorrent/tracker/...
+COVERPROFILE ?= coverage.out
+
 # Compose files
 COMPOSE_MAIN := docker/docker-compose.yml
 
@@ -176,7 +179,8 @@ test-compact: ## Run all tests with compact output
 	go test ./...
 
 test-cover: ## Run all tests with coverage report
-	go test ./... -v -cover
+	go test $(WORKSPACE_PACKAGES) -coverpkg=github.com/fl0v/retracker/... -coverprofile="$(COVERPROFILE)"
+	go tool cover -func="$(COVERPROFILE)"
 
 hooks-install: ## Install repository git hooks (.githooks)
 	git config core.hooksPath .githooks

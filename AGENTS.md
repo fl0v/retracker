@@ -16,7 +16,7 @@ This file provides guidance for AI agents working on the retracker codebase. It 
 
 If you need fast orientation, read files in this order:
 
-1. `cmd/retracker/main.go` (startup flow, flags, defaults, HTTP/UDP wiring)
+1. `cmd/retracker/main.go` and `cmd/retracker/config.go` (startup, configuration precedence/defaults, HTTP/UDP wiring)
 2. `internal/config/config.go` (all config fields + YAML keys)
 3. `internal/server/core.go` (how storage/forwarders/receivers are composed)
 4. `internal/server/receiverAnnounce.go` (announce flow and response assembly)
@@ -60,7 +60,7 @@ Notes:
 
 ## Runtime Defaults Snapshot (v0.10.0)
 
-Defaults are initialized in `cmd/retracker/main.go`:
+Defaults are initialized in `cmd/retracker/config.go`:
 - HTTP listen: `:6969`
 - UDP listen: disabled (empty)
 - Debug: `false`
@@ -169,7 +169,9 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Runtime forwarder initialization uses the shared `Core.forwarderMu` read/write lock; HTTP/UDP announces, scrape, and stats synchronize reads with publication
 - Storage stats suppression uses `atomic.Bool` because the manager can be initialized after startup
 - All configuration is in `Config` struct (`config.go`)
-- CLI flags are parsed in `main.go` and passed to `Config`
+- CLI flags are registered and configuration is assembled in `cmd/retracker/config.go`; `main.go` parses flags and starts the server
+- Precedence is defaults, YAML, environment, then explicitly supplied flags. False debug values and empty UDP values override YAML; `-c` and `-f` override their environment paths, including empty flags to skip loading
+- The Docker entrypoint passes arguments through; the Go binary reads configuration environment variables directly
 - Forwarders are loaded from YAML file via `Config.ReloadForwards()`
 
 ### BitTorrent Protocol
@@ -226,6 +228,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Forwarder queue eligibility, scheduling, and throttling should be tested
 - Age-based purging should be tested with time manipulation
 - UDP handler should test connection state management
+- `make test-cover` tests all five workspace modules and writes a combined statement-coverage profile to `coverage.out` (override with `COVERPROFILE`); root `go test ./...` alone excludes nested modules
 
 ## Common Tasks
 

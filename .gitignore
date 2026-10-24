@@ -5,4 +5,5 @@ configs/*
 !configs/forwarders.template.yml
 !configs/config.template.yml
 /bin/
+/coverage.out
 /scripts/lists/
