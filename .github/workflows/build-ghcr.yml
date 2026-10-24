@@ -25,11 +25,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            go.work.sum
-            common/go.sum
-            bittorrent/*/go.sum
+          cache-dependency-path: go.sum
 
       - name: Install pinned QA tools
         run: |
@@ -39,10 +35,10 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
-      - name: Lint workspace
+      - name: Lint
         run: make lint
 
-      - name: Test workspace with race detection and coverage
+      - name: Test with race detection and coverage
         run: make test-race
 
       - name: Build Linux binary

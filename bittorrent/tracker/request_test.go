@@ -8,8 +8,39 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zeebo/bencode"
+
 	"github.com/fl0v/retracker/bittorrent/tracker"
 )
+
+func TestRequestBencodePreservesProtocolFields(t *testing.T) {
+	hash := "\x00\xff" + strings.Repeat("h", 18)
+	peerID := "\x00\xfe" + strings.Repeat("p", 18)
+	req, err := tracker.MakeRequest("192.0.2.99", hash, peerID, "6881", "12", "34", "56", "", "50", "completed", "test-client", "1", "1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := req.Bencode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]interface{}
+	if err := bencode.DecodeString(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]interface{}{
+		"info_hash": hash, "peer_id": peerID, "port": int64(6881),
+		"uploaded": int64(12), "downloaded": int64(34), "left": int64(56),
+		"numwant": int64(50), "event": "completed", "compact": int64(1), "no_peer_id": int64(1),
+	} {
+		if decoded[key] != want {
+			t.Errorf("%s=%v, want %v", key, decoded[key], want)
+		}
+	}
+	if strings.Contains(payload, "192.0.2.99") || strings.Contains(payload, "timestamp") || strings.Contains(payload, "remoteAddr") {
+		t.Fatal("private request metadata leaked into bencode")
+	}
+}
 
 func TestInvalidNumericAnnouncePreservesParseError(t *testing.T) {
 	_, err := tracker.MakeRequest("192.0.2.1", strings.Repeat("h", 20), strings.Repeat("p", 20), "invalid", "0", "0", "1", "", "", "", "", "", "", nil)

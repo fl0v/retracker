@@ -17,7 +17,6 @@ PORT := 6969:6969
 BUILD_DIR := bin
 BINARY := $(BUILD_DIR)/retracker
 
-WORKSPACE_PACKAGES := ./... ./common/... ./bittorrent/common/... ./bittorrent/response/... ./bittorrent/tracker/...
 COVERPROFILE ?= coverage.out
 
 # Compose files
@@ -124,7 +123,7 @@ lint: ## Run golangci-lint
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
-		$(GOLANGCI_LINT) run $(WORKSPACE_PACKAGES); \
+		$(GOLANGCI_LINT) run ./...; \
 	fi
 
 lint-fix: ## Run golangci-lint with auto-fix
@@ -134,7 +133,7 @@ lint-fix: ## Run golangci-lint with auto-fix
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
-		$(GOLANGCI_LINT) run --fix $(WORKSPACE_PACKAGES); \
+		$(GOLANGCI_LINT) run --fix ./...; \
 	fi
 
 # Find gofumpt or gofmt
@@ -169,17 +168,17 @@ fmt-check: ## Check if code is formatted correctly
 check: fmt-check lint ## Run all checks (formatting and linting)
 
 test: ## Run all tests
-	go test $(WORKSPACE_PACKAGES) -v
+	go test ./... -v
 
 test-compact: ## Run all tests with compact output
-	go test $(WORKSPACE_PACKAGES)
+	go test ./...
 
 test-cover: ## Run all tests with coverage report
-	go test $(WORKSPACE_PACKAGES) -coverpkg=github.com/fl0v/retracker/... -coverprofile="$(COVERPROFILE)"
+	go test ./... -coverpkg=./... -coverprofile="$(COVERPROFILE)"
 	go tool cover -func="$(COVERPROFILE)"
 
-test-race: ## Run all workspace tests with race detection and combined coverage
-	go test $(WORKSPACE_PACKAGES) -race -coverpkg=github.com/fl0v/retracker/... -coverprofile="$(COVERPROFILE)"
+test-race: ## Run all tests with race detection and combined coverage
+	go test ./... -race -coverpkg=./... -coverprofile="$(COVERPROFILE)"
 	go tool cover -func="$(COVERPROFILE)"
 
 hooks-install: ## Install repository git hooks (.githooks)

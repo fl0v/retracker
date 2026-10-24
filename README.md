@@ -73,14 +73,19 @@ See [INSTALL.md](INSTALL.md) for configuration env vars and examples.
 - [docs/BITTORRENT.md](docs/BITTORRENT.md) - BitTorrent protocol reference
 
 ## Development
+
+The project uses one root Go module. The `common/` and `bittorrent/` directories are ordinary packages; `go test ./...` discovers all of them.
+
+Other projects importing these packages should depend on the root module, `github.com/fl0v/retracker`. Package import paths stay the same; all packages share the root module's release version and Go requirement.
+
 - Format: `make fmt` (gofumpt)
 - Lint: `make lint` (golangci-lint)
 - All checks: `make check`
-- Tests across all five modules: `make test`
+- Tests across all packages: `make test`
 - Race detection and combined coverage: `make test-race` (writes `coverage.out`)
 - View coverage: `go tool cover -html=coverage.out`
 
-GitHub Actions runs formatting, workspace lint, race tests with coverage, and a Linux build for pull requests, pushes to `master`, and published releases. Image publishing waits for this QA job and runs only for master pushes and releases. Each successful run saves a coverage artifact for 14 days.
+GitHub Actions runs formatting, lint, race tests with coverage, and a Linux build for pull requests, pushes to `master`, and published releases. Image publishing waits for this QA job and runs only for master pushes and releases. Each successful run saves a coverage artifact for 14 days.
 
 ## License
 

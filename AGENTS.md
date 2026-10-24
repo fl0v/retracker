@@ -42,7 +42,7 @@ Full command:
 
 Notes:
 - `make check` runs only `fmt-check` + `lint` (it does not run tests).
-- `make lint`, `make test`, and `make test-compact` cover all five workspace modules. `make test-race` runs all tests with the race detector and writes a combined coverage profile
+- `make lint`, `make test`, and `make test-compact` cover every package with `./...`. `make test-race` runs all tests with the race detector and writes a combined coverage profile
 - `.github/workflows/build-ghcr.yml` runs QA for PRs, master pushes, and published releases. The image job requires QA success and is skipped for PRs; coverage artifacts are retained for 14 days
 - CI pins golangci-lint v2.15.0 and gofumpt v0.9.2. Make targets respect caller-provided Go cache locations
 - If cache directories are not writable in restricted environments, run with local cache overrides:
@@ -50,7 +50,7 @@ Notes:
 
 ### QA Tooling Requirements
 
-- Go 1.26+ with the Go 1.27.3 toolchain (see `go.mod` and `go.work`).
+- Go 1.26+ with the Go 1.27.3 toolchain (see the root `go.mod`).
 - `golangci-lint` v2.15.0 installed and in `PATH` for `make lint`.
   - Install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`
 - `gofumpt` is optional; `make fmt`/`make fmt-check` will fall back to `gofmt` if unavailable.
@@ -98,11 +98,11 @@ retracker/
 │   ├── config/           # Configuration handling
 │   ├── server/           # Server implementation (see file headers for details)
 │   └── observability/    # Prometheus metrics and statistics
-├── bittorrent/           # BitTorrent protocol modules
+├── bittorrent/           # BitTorrent protocol packages
 │   ├── common/           # Common types (InfoHash, PeerID, Peer, Address)
 │   ├── tracker/          # Request parsing/validation
 │   └── response/         # Response encoding (bencode + compact format)
-├── common/               # Shared common module (Forward struct)
+├── common/               # Shared common package (Forward struct)
 ├── scripts/              # Build and utility scripts
 ├── configs/              # Runtime configuration files
 └── docs/                 # Documentation
@@ -226,9 +226,9 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Legacy exported `common.Forward.Uri` and `Ip` names are preserved for compatibility; lint exempts only those two field-name findings
 
 ### Go Modules
-- Project uses Go workspaces (`go.work`)
-- Multiple modules in `bittorrent/` subdirectories
-- Main module `github.com/fl0v/retracker` with local replaces for `bittorrent/*` and `common`
+- One module: `github.com/fl0v/retracker`, declared in the root `go.mod`
+- `common/` and `bittorrent/*` are ordinary packages in that module, with their existing import paths
+- Run Go commands from the repository root; `go test ./...` includes every package
 
 ### Dependencies
 - External: `gopkg.in/yaml.v2`, `github.com/zeebo/bencode`, `github.com/prometheus/client_golang`
@@ -241,7 +241,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Age-based purging should be tested with time manipulation
 - UDP handler should test connection state management
 - Shutdown tests must cover active HTTP/UDP requests, retry cancellation, repeated close, and concurrent queue producers; run the race detector after lifecycle changes
-- `make test-cover` tests all five workspace modules and writes a combined statement-coverage profile to `coverage.out` (override with `COVERPROFILE`); root `go test ./...` alone excludes nested modules
+- `make test-cover` tests every package and writes a combined statement-coverage profile to `coverage.out` (override with `COVERPROFILE`); `make test-race` adds race detection
 
 ## Common Tasks
 

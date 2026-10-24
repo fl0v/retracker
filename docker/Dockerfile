@@ -3,11 +3,11 @@ FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /build
 
-# Copy everything so local replace paths exist
-COPY . .
-
-# Download dependencies
+# Cache external dependencies independently of application source
+COPY go.mod go.sum ./
 RUN go mod download
+
+COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o retracker ./cmd/retracker
