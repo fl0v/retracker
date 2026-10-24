@@ -2,6 +2,12 @@
 
 This document describes how retracker handles BitTorrent announcements, including event handling, forwarder queuing, rate limiting, and response generation.
 
+HTTP announces use `/announce`. The exact root path `/` is an alias only when
+the request Host includes port `6969`; both endpoints run the same announce logic.
+Root on port `80` (or with no port in Host) returns HTTP 200 with
+`retracker is live`, without processing an announce. Root on other ports and
+unrecognized paths return HTTP 404.
+
 ## Current Implementation Note (v0.10.0)
 
 - `ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `forwarderAnnounce.go`, but are not currently invoked from `receiverAnnounce.ProcessAnnounce()`.

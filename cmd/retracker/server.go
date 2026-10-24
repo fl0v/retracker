@@ -80,6 +80,21 @@ func newMux(core *server.Core) *http.ServeMux {
 		_, _ = w.Write(faviconIco)
 	})
 	mux.HandleFunc("/scrape", core.HTTPScrapeHandler)
+	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
+		_, port, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			port = "80" // HTTP Host omits the default port.
+		}
+		switch port {
+		case "6969":
+			core.Receiver.Announce.HTTPHandler(w, r)
+		case "80":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "retracker is live")
+		default:
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/announce", core.Receiver.Announce.HTTPHandler)
 	mux.HandleFunc("/stats", core.HTTPStatsHandler)
 	mux.HandleFunc("/add-forwarder", core.HTTPAddForwarderHandler)

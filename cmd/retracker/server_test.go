@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	btresponse "github.com/fl0v/retracker/bittorrent/response"
 	corecommon "github.com/fl0v/retracker/common"
 	"github.com/fl0v/retracker/internal/server"
 )
@@ -155,6 +157,74 @@ func TestDedicatedMuxRoutes(t *testing.T) {
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		if w.Code != http.StatusNotFound {
 			t.Fatal("metrics enabled without configuration")
+		}
+	}
+}
+
+func TestRootAnnounceOnlyOnPort6969(t *testing.T) {
+	cfg := defaultConfig()
+	core := server.NewCore(&cfg, nil)
+	defer core.Close()
+	mux := newMux(core)
+	query := url.Values{
+		"info_hash":  {string([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 255})},
+		"peer_id":    {strings.Repeat("p", 20)},
+		"port":       {"6881"},
+		"uploaded":   {"0"},
+		"downloaded": {"0"},
+		"left":       {"100"},
+		"compact":    {"1"},
+		"event":      {"started"},
+	}.Encode()
+	var announceBody string
+	for _, target := range []string{
+		"http://retracker.local:6969/announce",
+		"http://retracker.local:6969/",
+		"http://127.0.0.1:6969/",
+		"http://[::1]:6969/",
+		"http://retracker.local/announce",
+		"http://retracker.local:7000/announce",
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target+"?"+query, nil))
+		if w.Code != http.StatusOK || w.Header().Get("Location") != "" {
+			t.Fatalf("%s returned status=%d, redirect=%q", target, w.Code, w.Header().Get("Location"))
+		}
+		response, err := btresponse.Load(w.Body.Bytes())
+		if err != nil || response.FailureReason != "" || response.Interval != cfg.AnnounceInterval {
+			t.Fatalf("%s returned invalid announce: %s (error=%v)", target, w.Body.String(), err)
+		}
+		if announceBody == "" {
+			announceBody = w.Body.String()
+		} else if w.Body.String() != announceBody {
+			t.Fatalf("%s does not match /announce response", target)
+		}
+	}
+	for _, target := range []string{
+		"http://retracker.local:7000/",
+		"http://retracker.local:6969/unknown",
+		"http://retracker.local:6969/announce/",
+		"http://retracker.local:6969/metrics",
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target+"?"+query, nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s returned %d, want 404", target, w.Code)
+		}
+	}
+	for _, target := range []string{"http://retracker.local/", "http://retracker.local:80/", "http://[::1]/"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target+"?"+query, nil))
+		if w.Code != http.StatusOK || w.Body.String() != "retracker is live\n" || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
+			t.Fatalf("%s did not return liveness confirmation: status=%d, body=%s", target, w.Code, w.Body.String())
+		}
+	}
+	for _, target := range []string{"http://retracker.local:6969/", "http://retracker.local:6969/announce"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		response, err := btresponse.Load(w.Body.Bytes())
+		if w.Code != http.StatusBadRequest || err != nil || response.FailureReason == "" {
+			t.Fatalf("%s did not reject a missing hash: status=%d, body=%s", target, w.Code, w.Body.String())
 		}
 	}
 }

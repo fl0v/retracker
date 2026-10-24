@@ -44,6 +44,15 @@ retracker -l :6969 -d
 ```
 Announce URL: `http://<your ip>:6969/announce`
 
+The root URL `http://<your ip>:6969/` is also an HTTP announce endpoint and
+accepts the same query parameters as `/announce`. This alias requires `:6969`
+in the request's Host header. On port 80 (including a Host header without a
+port), `/` returns HTTP 200 with `retracker is live`, so
+`http://retracker.local/` through a proxy provides a liveness check.
+Root on other ports returns HTTP 404. `/announce` works on any configured HTTP
+port. Opening an announce endpoint without parameters
+returns a tracker failure with HTTP 400. Use `/stats` for browser-readable status.
+
 ### With forwarders (HTTP/HTTPS/UDP)
 ```bash
 retracker -l :6969 -d -f forwarders.yml

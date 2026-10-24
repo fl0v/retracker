@@ -36,7 +36,9 @@ Full installation and deployment options are in [INSTALL.md](INSTALL.md).
 - Prometheus metrics: `GET /metrics` (when enabled in config)
 
 ## HTTP API
-- `GET /announce` - BitTorrent announce endpoint.
+- `GET /announce` - BitTorrent announce endpoint on any configured HTTP port.
+- `GET /` - alias for `/announce` only when the request's Host header specifies port `6969`.
+- `GET /` on port 80 (including a Host header without a port) - HTTP 200 with `retracker is live`.
 - `GET /scrape` - BitTorrent scrape endpoint.
 - `GET /stats` - text stats (`GET /stats?format=json` for JSON).
 - `POST /add-forwarder` - add forwarder URLs at runtime (in-memory only, lost on restart).

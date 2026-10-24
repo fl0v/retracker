@@ -82,7 +82,8 @@ Defaults are initialized in `cmd/retracker/config.go`:
 
 ## Endpoint Map
 
-- `GET /announce` -> HTTP announce handler
+- `GET /announce` -> HTTP announce handler on any configured HTTP port
+- `GET /` -> announce when the request Host specifies port `6969`; HTTP 200 with `retracker is live` on port `80` or an omitted Host port; other ports and unknown paths return 404
 - `GET /scrape` -> HTTP scrape handler
 - `GET /stats` -> text stats (`?format=json` for JSON)
 - `GET /metrics` -> Prometheus metrics (only if enabled)
