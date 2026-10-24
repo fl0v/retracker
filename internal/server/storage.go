@@ -1,13 +1,16 @@
 // storage.go - Thread-safe in-memory peer storage.
 // Structure: map[InfoHash]map[PeerID]Request with mutex protection.
 // Includes background purgeRoutine that removes stale peers based on Config.Age.
+// Peer sessions cancel forwarding jobs on removal or expiry.
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fl0v/retracker/bittorrent/common"
@@ -23,27 +26,63 @@ type Storage struct {
 	Config              *config.Config
 	Requests            map[common.InfoHash]map[common.PeerID]tracker.Request
 	requestsMu          sync.Mutex
-	disableStatsRoutine bool // If true, don't start separate stats routine (stats printed by ForwarderManager)
+	peerSessions        map[peerKey]peerSession
+	disableStatsRoutine atomic.Bool // Stats are printed by ForwarderManager when true.
 }
 
-func (s *Storage) Update(request tracker.Request) {
+type peerKey struct {
+	infoHash common.InfoHash
+	peerID   common.PeerID
+}
+
+type peerSession struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (s *Storage) Update(request tracker.Request) context.Context {
 	s.requestsMu.Lock()
 	defer s.requestsMu.Unlock()
 	if _, ok := s.Requests[request.InfoHash]; !ok {
 		s.Requests[request.InfoHash] = make(map[common.PeerID]tracker.Request)
 	}
 	s.Requests[request.InfoHash][request.PeerID] = request
+	if s.peerSessions == nil {
+		s.peerSessions = make(map[peerKey]peerSession)
+	}
+	key := peerKey{request.InfoHash, request.PeerID}
+	if _, ok := s.peerSessions[key]; !ok {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.peerSessions[key] = peerSession{ctx: ctx, cancel: cancel}
+	}
+	return s.peerSessions[key].ctx
 }
 
 func (s *Storage) Delete(request tracker.Request) {
 	s.requestsMu.Lock()
 	defer s.requestsMu.Unlock()
-	if requests, ok := s.Requests[request.InfoHash]; ok {
-		delete(requests, request.PeerID)
+	s.deleteLocked(request.InfoHash, request.PeerID)
+}
+
+// deleteLocked ends a peer session so queued and in-flight jobs become stale.
+func (s *Storage) deleteLocked(infoHash common.InfoHash, peerID common.PeerID) {
+	key := peerKey{infoHash, peerID}
+	if session, ok := s.peerSessions[key]; ok {
+		session.cancel()
+		delete(s.peerSessions, key)
+	}
+	if requests, ok := s.Requests[infoHash]; ok {
+		delete(requests, peerID)
 		if len(requests) == 0 {
-			delete(s.Requests, request.InfoHash)
+			delete(s.Requests, infoHash)
 		}
 	}
+}
+
+func (s *Storage) peerContext(infoHash common.InfoHash, peerID common.PeerID) context.Context {
+	s.requestsMu.Lock()
+	defer s.requestsMu.Unlock()
+	return s.peerSessions[peerKey{infoHash, peerID}].ctx
 }
 
 func (s *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
@@ -61,23 +100,23 @@ func (s *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
 func (s *Storage) purgeRoutine() {
 	for {
 		time.Sleep(1 * time.Minute)
+		s.requestsMu.Lock()
 		if s.Config.Debug {
 			DebugLog.Printf("In memory %d hashes\n", len(s.Requests))
 			DebugLog.Println(`Locking...`)
 		}
-		s.requestsMu.Lock()
 		for hash, requests := range s.Requests {
 			if s.Config.Debug {
 				DebugLog.Printf("%d peer in hash %x\n", len(requests), hash)
 			}
-			for peerId, request := range requests {
+			for peerID, request := range requests {
 				timestampDelta := request.TimeStampDelta()
 				if s.Config.Debug {
-					DebugLog.Printf(" %x %s:%d %v\n", peerId, request.Peer().IP, request.Peer().Port, timestampDelta)
+					DebugLog.Printf(" %x %s:%d %v\n", peerID, request.Peer().IP, request.Peer().Port, timestampDelta)
 				}
 				if timestampDelta > s.Config.Age {
-					DebugLog.Printf("delete peer %x in hash %x\n", peerId, hash)
-					delete(s.Requests[hash], peerId)
+					DebugLog.Printf("delete peer %x in hash %x\n", peerID, hash)
+					s.deleteLocked(hash, peerID)
 				}
 			}
 			if len(requests) == 0 {
@@ -97,7 +136,7 @@ func (s *Storage) statsRoutine() {
 		return
 	}
 	// Check if stats are being handled by ForwarderManager
-	if s.disableStatsRoutine {
+	if s.disableStatsRoutine.Load() {
 		return
 	}
 	ticker := time.NewTicker(time.Duration(s.Config.StatsInterval) * time.Second)
@@ -105,7 +144,7 @@ func (s *Storage) statsRoutine() {
 
 	for range ticker.C {
 		// Double-check in case flag was set after routine started
-		if s.disableStatsRoutine {
+		if s.disableStatsRoutine.Load() {
 			return
 		}
 		s.printClientStats()
@@ -191,7 +230,7 @@ func NewStorage(cfg *config.Config) *Storage {
 		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
 	}
 	go storage.purgeRoutine()
-	if !storage.disableStatsRoutine {
+	if !storage.disableStatsRoutine.Load() {
 		go storage.statsRoutine()
 	}
 	return &storage

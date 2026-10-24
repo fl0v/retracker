@@ -1,6 +1,6 @@
 // receiverUDP.go - UDP tracker server implementation (BEP 15).
 // Handles connect, announce, and scrape requests over UDP.
-// Manages connection state with TempStorage for connection ID validation.
+// Manages connection IDs, packet ownership, and receiver goroutine shutdown.
 // Supports both IPv4 and IPv6 peer formats.
 package server
 
@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -46,6 +47,11 @@ type ReceiverUDP struct {
 	conn             *net.UDPConn
 	connections      map[uint64]time.Time // connection_id -> timestamp
 	connMu           sync.Mutex
+	forwarderMu      *sync.RWMutex
+	lifecycleMu      sync.Mutex
+	stopChan         chan struct{}
+	closed           bool
+	wg               sync.WaitGroup
 }
 
 type UDPConnectRequest struct {
@@ -121,6 +127,11 @@ func NewReceiverUDP(cfg *config.Config, storage *Storage, forwarderStorage *Forw
 }
 
 func (ru *ReceiverUDP) Start(listenAddr string) error {
+	ru.lifecycleMu.Lock()
+	defer ru.lifecycleMu.Unlock()
+	if ru.conn != nil {
+		return fmt.Errorf("UDP receiver already started")
+	}
 	addr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
@@ -132,20 +143,34 @@ func (ru *ReceiverUDP) Start(listenAddr string) error {
 	}
 
 	ru.conn = conn
+	ru.stopChan = make(chan struct{})
 	fmt.Printf("UDP tracker listening on %s\n", listenAddr)
 
 	// Start connection cleanup routine
-	go ru.cleanupConnections()
+	ru.wg.Add(2)
+	go func() {
+		defer ru.wg.Done()
+		ru.cleanupConnections()
+	}()
 
 	// Start packet handler
-	go ru.handlePackets()
+	go func() {
+		defer ru.wg.Done()
+		ru.handlePackets()
+	}()
 
 	return nil
 }
 
 func (ru *ReceiverUDP) cleanupConnections() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
 	for {
-		time.Sleep(1 * time.Minute)
+		select {
+		case <-ru.stopChan:
+			return
+		case <-ticker.C:
+		}
 		ru.connMu.Lock()
 		now := time.Now()
 		// BEP 15: Trackers should accept connection IDs until 2 minutes after they've been sent
@@ -163,8 +188,10 @@ func (ru *ReceiverUDP) handlePackets() {
 	for {
 		n, clientAddr, err := ru.conn.ReadFromUDP(buffer)
 		if err != nil {
-			ErrorLogUDP.Printf("UDP read error: %s\n", err.Error())
-			continue
+			if !errors.Is(err, net.ErrClosed) {
+				ErrorLogUDP.Printf("UDP read error: %s\n", err.Error())
+			}
+			return
 		}
 
 		if n < 16 {
@@ -172,7 +199,12 @@ func (ru *ReceiverUDP) handlePackets() {
 			continue
 		}
 
-		go ru.handlePacket(buffer[:n], clientAddr)
+		packet := append([]byte(nil), buffer[:n]...)
+		ru.wg.Add(1)
+		go func() {
+			defer ru.wg.Done()
+			ru.handlePacket(packet, clientAddr)
+		}()
 	}
 }
 
@@ -439,6 +471,10 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 		ru.sendError(clientAddr, req.TransactionID, message)
 		return
 	}
+	if response.FailureReason != "" {
+		ru.sendError(clientAddr, req.TransactionID, response.FailureReason)
+		return
+	}
 
 	ru.sendAnnounceResponse(clientAddr, req.TransactionID, response)
 }
@@ -509,7 +545,14 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	// Use unified scrape statistics collection
-	stats := getScrapeStats(ru.Storage, ru.ForwarderStorage, infoHashList)
+	if ru.forwarderMu != nil {
+		ru.forwarderMu.RLock()
+	}
+	forwarderStorage := ru.ForwarderStorage
+	if ru.forwarderMu != nil {
+		ru.forwarderMu.RUnlock()
+	}
+	stats := getScrapeStats(ru.Storage, forwarderStorage, infoHashList)
 
 	// Build UDP scrape response
 	scrapeData := make([]UDPScrapeData, 0, len(infoHashes))
@@ -539,6 +582,10 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 }
 
 func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent, compactFlag, noPeerIDFlag string) (*Response.Response, string) {
+	if ru.forwarderMu != nil {
+		ru.forwarderMu.RLock()
+		defer ru.forwarderMu.RUnlock()
+	}
 	// Reuse the existing HTTP announce processing logic
 	// We'll create a temporary ReceiverAnnounce to use its ProcessAnnounce method
 	ra := &ReceiverAnnounce{
@@ -639,8 +686,14 @@ func (ru *ReceiverUDP) sendError(clientAddr *net.UDPAddr, transactionID uint32, 
 }
 
 func (ru *ReceiverUDP) Close() error {
-	if ru.conn != nil {
-		return ru.conn.Close()
+	ru.lifecycleMu.Lock()
+	defer ru.lifecycleMu.Unlock()
+	if ru.conn == nil || ru.closed {
+		return nil
 	}
-	return nil
+	ru.closed = true
+	close(ru.stopChan)
+	err := ru.conn.Close()
+	ru.wg.Wait()
+	return err
 }

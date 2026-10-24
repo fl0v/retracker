@@ -1,6 +1,7 @@
 // core.go - Central application structure and orchestration.
 // Contains Core struct that holds Storage, ForwarderStorage, ForwarderManager, and Receiver.
 // Also provides HTTP stats endpoint handler and simpleStatsProvider for non-forwarder mode.
+// Shares a read/write lock with receivers to publish runtime forwarder initialization safely.
 package server
 
 import (
@@ -23,7 +24,7 @@ type Core struct {
 	ForwarderStorage *ForwarderStorage
 	ForwarderManager *ForwarderManager
 	Receiver         *Receiver
-	forwarderMu      sync.Mutex
+	forwarderMu      sync.RWMutex
 }
 
 func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
@@ -40,7 +41,7 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 		// Prometheus will be set later if enabled
 
 		// Disable Storage's separate stats routine since ForwarderManager will handle it
-		storage.disableStatsRoutine = true
+		storage.disableStatsRoutine.Store(true)
 
 		forwarderManager = NewForwarderManager(cfg, forwarderStorage, storage, prometheus, tempStorage)
 		forwarderManager.Start()
@@ -55,6 +56,8 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 	}
 	core.Receiver.Announce.TempStorage = tempStorage
 	core.Receiver.UDP.TempStorage = tempStorage
+	core.Receiver.Announce.forwarderMu = &core.forwarderMu
+	core.Receiver.UDP.forwarderMu = &core.forwarderMu
 	return &core
 }
 
@@ -64,12 +67,14 @@ func (core *Core) HTTPStatsHandler(w http.ResponseWriter, r *http.Request) {
 	collector := observability.NewStatsCollector()
 
 	var provider observability.StatsDataProvider
+	core.forwarderMu.RLock()
 	if core.ForwarderManager != nil {
 		provider = &forwarderStatsProvider{fm: core.ForwarderManager, cfg: core.Config, now: now}
 	} else {
 		// When no forwarders are configured, create a simple provider using only Storage
 		provider = &simpleStatsProvider{storage: core.Storage, cfg: core.Config, now: now}
 	}
+	core.forwarderMu.RUnlock()
 
 	stats := collector.CollectStats(provider)
 
@@ -121,7 +126,7 @@ func (core *Core) ensureForwarderManager() *ForwarderManager {
 	}
 
 	// ForwarderManager provides combined stats updates when forwarding is active.
-	core.Storage.disableStatsRoutine = true
+	core.Storage.disableStatsRoutine.Store(true)
 
 	var prom *observability.Prometheus
 	var tempStorage *TempStorage

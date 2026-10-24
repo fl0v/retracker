@@ -614,6 +614,8 @@ func TestQueueEligibleAnnouncesRespectsMaxLimit(t *testing.T) {
 	ih := btcommon.InfoHash("max-limit-test-hash1") // 20 bytes
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000000")}
 
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	// Should be limited to 2 jobs
@@ -648,6 +650,8 @@ func TestQueueEligibleAnnouncesThrottleLimitsCount(t *testing.T) {
 	ih := btcommon.InfoHash("throttle-test-hash01") // 20 bytes
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000001")}
 
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	// With throttling (queueThrottleTopN = 1), only 1 job should be added (total 7)
@@ -717,6 +721,8 @@ func TestQueueEligibleAnnouncesSkipsRecentlyAnnounced(t *testing.T) {
 	fs.mu.Unlock()
 
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000002")}
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	// Should queue 2 jobs (ready + alsoready), skip notdue
@@ -758,6 +764,8 @@ func TestQueueEligibleAnnouncesPrioritizesNeverAnnouncedAndOverdue(t *testing.T)
 	fs.mu.Unlock()
 
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000003")}
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	if got := len(fm.jobQueue); got != 2 {
@@ -902,6 +910,8 @@ func TestQueueEligibleAnnouncesQueuesWhenDue(t *testing.T) {
 
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000000")}
 
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	if got := len(fm.jobQueue); got != 1 {
@@ -940,6 +950,8 @@ func TestQueueEligibleAnnouncesSkipsWhenNotDue(t *testing.T) {
 
 	req := tracker.Request{PeerID: btcommon.PeerID("peer-00000000000001")}
 
+	req.InfoHash = ih
+	st.Update(req)
 	fm.QueueEligibleAnnounces(ih, req)
 
 	if got := len(fm.jobQueue); got != 0 {

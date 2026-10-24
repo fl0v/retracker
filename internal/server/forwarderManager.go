@@ -1,9 +1,11 @@
 // forwarderManager.go - Core forwarder orchestration and worker pool management.
 // Manages job queue, worker scaling, rate limiting, throttling, and forwarder lifecycle.
 // Handles job scheduling, deduplication, and forwarder enable/disable/suspend logic.
+// Pending markers belong to individual jobs; peer sessions invalidate stale work.
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -76,7 +78,7 @@ type ForwarderManager struct {
 	stopChan           chan struct{}
 	Prometheus         *observability.Prometheus
 	TempStorage        *TempStorage
-	pendingJobs        map[string]bool
+	pendingJobs        map[string]*announceJobState
 	pendingMu          sync.Mutex
 	stats              map[string]*ForwarderStats
 	statsMu            sync.RWMutex
@@ -189,7 +191,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		stopChan:                 make(chan struct{}),
 		Prometheus:               prom,
 		TempStorage:              tempStorage,
-		pendingJobs:              make(map[string]bool),
+		pendingJobs:              make(map[string]*announceJobState),
 		stats:                    make(map[string]*ForwarderStats),
 		udpForwarder:             NewUDPForwarder(cfg.Debug, cfg.ForwardTimeout, cfg.ForwarderRetryAttempts, cfg.ForwarderRetryBaseMs),
 		failCounts:               make(map[string]int),
@@ -323,19 +325,29 @@ func (fm *ForwarderManager) jobKey(infoHash common.InfoHash, forwarderName strin
 func (fm *ForwarderManager) isJobPending(infoHash common.InfoHash, forwarderName string, peerID common.PeerID) bool {
 	fm.pendingMu.Lock()
 	defer fm.pendingMu.Unlock()
-	return fm.pendingJobs[fm.jobKey(infoHash, forwarderName, peerID)]
+	_, pending := fm.pendingJobs[fm.jobKey(infoHash, forwarderName, peerID)]
+	return pending
 }
 
 func (fm *ForwarderManager) markJobPending(infoHash common.InfoHash, forwarderName string, peerID common.PeerID) {
 	fm.pendingMu.Lock()
 	defer fm.pendingMu.Unlock()
-	fm.pendingJobs[fm.jobKey(infoHash, forwarderName, peerID)] = true
+	fm.pendingJobs[fm.jobKey(infoHash, forwarderName, peerID)] = &announceJobState{}
 }
 
 func (fm *ForwarderManager) unmarkJobPending(infoHash common.InfoHash, forwarderName string, peerID common.PeerID) {
 	fm.pendingMu.Lock()
 	defer fm.pendingMu.Unlock()
 	delete(fm.pendingJobs, fm.jobKey(infoHash, forwarderName, peerID))
+}
+
+func (fm *ForwarderManager) finishJob(job AnnounceJob) {
+	fm.pendingMu.Lock()
+	defer fm.pendingMu.Unlock()
+	key := fm.jobKey(job.InfoHash, job.ForwarderName, job.PeerID)
+	if fm.pendingJobs[key] == job.state {
+		delete(fm.pendingJobs, key)
+	}
 }
 
 // Worker pool
@@ -362,14 +374,18 @@ func (fm *ForwarderManager) worker() {
 			if !ok {
 				return
 			}
+			if job.canceled() {
+				fm.finishJob(job)
+				continue
+			}
 			if !job.ScheduledTime.IsZero() && time.Now().Before(job.ScheduledTime) {
 				if !fm.scheduleJob(job) {
-					fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
+					fm.finishJob(job)
 				}
 				continue
 			}
 			fm.executeAnnounce(job)
-			fm.unmarkJobPending(job.InfoHash, job.ForwarderName, job.PeerID)
+			fm.finishJob(job)
 		}
 	}
 }
@@ -882,6 +898,17 @@ func (fm *ForwarderManager) validateAndRemoveInvalidForwarders() {
 
 // QueueEligibleAnnounces enqueues announce jobs for forwarders that are ready
 func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, request tracker.Request) {
+	var peerContext context.Context
+	if fm.MainStorage != nil {
+		peerContext = fm.MainStorage.peerContext(infoHash, request.PeerID)
+		if peerContext == nil {
+			return
+		}
+	}
+	fm.queueEligibleAnnounces(infoHash, request, peerContext)
+}
+
+func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, request tracker.Request, peerContext context.Context) {
 	// Copy forwarders slice while holding lock to avoid race with disableForwarder
 	fm.forwardersMu.RLock()
 	forwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
@@ -985,9 +1012,17 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 			PeerID:        request.PeerID,
 			Forwarder:     candidate.forwarder,
 			Request:       request,
+			state:         &announceJobState{peerContext: peerContext},
 		}
 
-		fm.markJobPending(infoHash, candidate.forwarderName, request.PeerID)
+		fm.pendingMu.Lock()
+		key := fm.jobKey(infoHash, candidate.forwarderName, request.PeerID)
+		if _, pending := fm.pendingJobs[key]; pending || job.canceled() {
+			fm.pendingMu.Unlock()
+			return true
+		}
+		fm.pendingJobs[key] = job.state
+		fm.pendingMu.Unlock()
 
 		select {
 		case fm.jobQueue <- job:
@@ -997,7 +1032,7 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 			}
 			return true
 		default:
-			fm.unmarkJobPending(infoHash, candidate.forwarderName, request.PeerID)
+			fm.finishJob(job)
 			atomic.AddUint64(&fm.droppedFullCount, 1)
 			if fm.Prometheus != nil {
 				fm.Prometheus.DroppedFull.Inc()
@@ -1090,6 +1125,10 @@ func (fm *ForwarderManager) schedulerRoutine() {
 }
 
 func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.Time) {
+	if job.canceled() {
+		fm.finishJob(job)
+		return
+	}
 	if suspendedUntil, suspended := fm.getSuspendedUntil(job.ForwarderName, now); suspended {
 		rescheduleAt := suspendedUntil
 		if !rescheduleAt.After(now) {
@@ -1097,9 +1136,10 @@ func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.T
 		}
 		job.ScheduledTime = rescheduleAt
 
-		fm.scheduledJobsMu.Lock()
-		fm.scheduledJobs[rescheduleAt] = append(fm.scheduledJobs[rescheduleAt], job)
-		fm.scheduledJobsMu.Unlock()
+		if !fm.scheduleJob(job) {
+			fm.finishJob(job)
+			return
+		}
 
 		InfoLogFwd.Printf("Forwarder %s suspended, rescheduled job for %x at %s\n",
 			job.ForwarderName, job.InfoHash, rescheduleAt.Format(time.RFC3339))
@@ -1112,11 +1152,12 @@ func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.T
 			DebugLogFwd.Printf("Scheduled job ready, queued for %x to %s\n", job.InfoHash, job.ForwarderName)
 		}
 	default:
-		fm.scheduledJobsMu.Lock()
 		newTime := now.Add(10 * time.Second)
 		job.ScheduledTime = newTime
-		fm.scheduledJobs[newTime] = append(fm.scheduledJobs[newTime], job)
-		fm.scheduledJobsMu.Unlock()
+		if !fm.scheduleJob(job) {
+			fm.finishJob(job)
+			return
+		}
 		InfoLogFwd.Printf("Queue full, rescheduled job for %x to %s\n", job.InfoHash, job.ForwarderName)
 	}
 }
@@ -1175,15 +1216,34 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 		Forwarder:     job.Forwarder,
 		Request:       job.Request,
 		ScheduledTime: scheduledTime,
+		state:         &announceJobState{},
+	}
+	if job.state != nil {
+		retryJob.state.peerContext = job.state.peerContext
 	}
 
-	fm.markJobPending(retryJob.InfoHash, retryJob.ForwarderName, retryJob.PeerID)
-	if fm.scheduleJob(retryJob) {
+	fm.pendingMu.Lock()
+	if retryJob.canceled() {
+		fm.pendingMu.Unlock()
+		return true
+	}
+	key := fm.jobKey(retryJob.InfoHash, retryJob.ForwarderName, retryJob.PeerID)
+	previous := fm.pendingJobs[key]
+	fm.pendingJobs[key] = retryJob.state
+	scheduled := fm.scheduleJob(retryJob)
+	if !scheduled {
+		if previous != nil {
+			fm.pendingJobs[key] = previous
+		} else {
+			delete(fm.pendingJobs, key)
+		}
+	}
+	fm.pendingMu.Unlock()
+	if scheduled {
 		if fm.Config.Debug {
 			ErrorLogFwd.Printf("Scheduled retry for %x to %s in %d minutes\n", job.InfoHash, job.ForwarderName, retryMinutes)
 		}
 	} else {
-		fm.unmarkJobPending(retryJob.InfoHash, retryJob.ForwarderName, retryJob.PeerID)
 		if fm.Config.Debug {
 			ErrorLogFwd.Printf("Duplicate retry job already scheduled for %x to %s\n", job.InfoHash, job.ForwarderName)
 		}
@@ -1195,6 +1255,9 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 func (fm *ForwarderManager) scheduleJob(job AnnounceJob) bool {
 	fm.scheduledJobsMu.Lock()
 	defer fm.scheduledJobsMu.Unlock()
+	if job.canceled() {
+		return false
+	}
 
 	for _, jobs := range fm.scheduledJobs {
 		for _, existingJob := range jobs {

@@ -34,13 +34,17 @@ The system uses a multi-tier architecture:
 
 ### Pending Jobs Map (`pendingJobs`)
 
-**Type**: `map[string]bool`  
+**Type**: `map[string]*announceJobState`
+
 **Key Format**: `"infoHash:forwarderName:peerID"` (hex encoded)
 
 **Lifecycle**:
 1. **Mark**: When job is created (before queuing/scheduling)
 2. **Check**: Before creating new job to prevent duplicates
-3. **Unmark**: After job execution completes
+3. **Unmark**: After job execution completes, only if the marker still belongs to that job
+4. **Cancel**: A stopped event removes the peer's markers and scheduled retries. A session context invalidates queued work, cancels HTTP requests, and prevents late results from restoring cache entries
+
+Peer sessions persist across periodic announces and end on deletion or age-based purge. Restarting a peer creates a new session, so old jobs cannot revive or clear a new job's marker.
 
 **Thread Safety**: Protected by `pendingMu` (Mutex)
 
@@ -61,6 +65,7 @@ Every 5 seconds:
   3. Remove processed time slots
   4. Unlock map
   5. For each ready job:
+     - Discard jobs from cancelled peer sessions
      - Try to send to jobQueue (non-blocking)
      - If queue full: reschedule for now + 10 seconds
 ```
@@ -119,11 +124,14 @@ worker():
           decrement count
           return
       case job := <-jobQueue:
+        if peer session cancelled:
+          finishJob(job)
+          continue
         if job.ScheduledTime not zero and not ready:
           reschedule job
           continue
         executeJob(job)
-        unmarkJobPending(job)
+        finishJob(job)  // Removes only this job's pending marker
 ```
 
 ## Job Deduplication
@@ -135,9 +143,9 @@ worker():
 
 ### Deduplication Points
 
-1. **Before Job Creation**: `isJobPending()` check; if pending → skip
+1. **Before Job Creation**: `isJobPending()` check; if pending → skip. Enqueue checks and reserves the marker again under `pendingMu` to prevent concurrent duplicates
 2. **Before Scheduling**: `scheduleJob()` checks for duplicates by InfoHash + ForwarderName
-3. **After Execution**: `unmarkJobPending()` allows new jobs for same key
+3. **After Execution**: `finishJob()` removes the matching job marker, preserving markers owned by a retry or a restarted peer
 
 ### PeerID in Pending vs Scheduled
 

@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -50,6 +51,23 @@ type AnnounceJob struct {
 	Forwarder     CoreCommon.Forward
 	Request       tracker.Request // template request
 	ScheduledTime time.Time       // If set, job should execute at this time (zero means immediate)
+	state         *announceJobState
+}
+
+// Each job owns its pending marker and is tied to one local peer session.
+type announceJobState struct {
+	peerContext context.Context
+}
+
+func (job AnnounceJob) canceled() bool {
+	return job.context().Err() != nil
+}
+
+func (job AnnounceJob) context() context.Context {
+	if job.state != nil && job.state.peerContext != nil {
+		return job.state.peerContext
+	}
+	return context.Background()
 }
 
 func NewForwarderStorage() *ForwarderStorage {

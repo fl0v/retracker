@@ -6,7 +6,7 @@ This document describes how retracker handles BitTorrent announcements, includin
 
 - `ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `forwarderAnnounce.go`, but are not currently invoked from `receiverAnnounce.ProcessAnnounce()`.
 - Current stopped/completed behavior in the announce path is local-state handling:
-  - `stopped`: delete peer, and clean `ForwarderStorage` for the hash if no local peers remain.
+  - `stopped`: delete peer, cancel its session and forwarding jobs, and clean `ForwarderStorage` for the hash if no local peers remain. Upstream stopped events are not sent.
   - `completed`: update local storage and continue normal response flow.
 
 ## Flow Diagram
@@ -19,7 +19,8 @@ flowchart TD
     %% Stopped Event Path
     EventCheck -->|stopped| StoppedPath[handleStoppedEvent]
     StoppedPath --> DeletePeer[Delete Peer from Local Storage]
-    DeletePeer --> CheckLocal{Local Peers Remaining?}
+    DeletePeer --> CancelJobs[Cancel Peer Session and Pending Jobs]
+    CancelJobs --> CheckLocal{Local Peers Remaining?}
     CheckLocal -->|No| CleanupForwarder[Cleanup ForwarderStorage for info_hash]
     CheckLocal -->|Yes| StoppedResponse[Return Response with interval]
     CleanupForwarder --> StoppedResponse
@@ -146,7 +147,7 @@ flowchart TD
 
 ## Event Handling
 
-- **stopped**: Deletes peer from local storage, and cleans forwarder cache for hash if no local peers remain
+- **stopped**: Deletes the peer and ends its session, cancels active HTTP requests, removes scheduled retries and pending markers, and cleans the hash cache if no local peers remain. Workers and result handlers discard stale session jobs, including after a peer restarts. Cache publication and stopped cleanup share the storage lock.
 - **completed**: Updates local storage, continues normal flow
 - **started/empty**: Normal announce flow with first/subsequent distinction
 
@@ -204,6 +205,8 @@ Protects the system during high load by rejecting initial announces early.
 
 **What happens**:
 - Client receives: "tracker busy, retry in X seconds"
+- Both `interval` and `min interval` use `retry_period` (default 300 seconds), bypassing the normal announce minimum
+- UDP returns the failure as an error packet
 - Announce NOT queued to any forwarder
 - `rate_limited` counter increments
 
@@ -286,7 +289,10 @@ Limits forwarders per announce when queue is filling up.
 
 - **Local Storage**: Thread-safe in-memory peers (`map[InfoHash]map[PeerID]Request`)
 - **ForwarderStorage**: Caches peers and intervals from forwarder responses
-- **Background Purge**: Removes peers older than `Config.Age` (default 180 minutes)
+- **Background Purge**: Removes peers older than `Config.Age` (default 180 minutes) and cancels their sessions
+- **Runtime initialization**: Core and receivers share a read/write lock while publishing the first forwarder manager; announce, scrape, and stats readers observe a consistent initialized state
+- **HTTP addresses**: Remote endpoints are parsed with `net.SplitHostPort`, preserving IPv6 addresses without brackets
+- **UDP lifecycle**: Each packet handler owns its bytes. Closing the receiver stops packet reads and connection cleanup, waits for handlers, and can be repeated safely
 
 ## Response Generation
 

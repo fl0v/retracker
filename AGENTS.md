@@ -66,7 +66,7 @@ Defaults are initialized in `cmd/retracker/main.go`:
 - Debug: `false`
 - Peer age: `180` minutes
 - Announce interval: `1800` seconds
-- Retry period for busy/rate-limited initial announces: `300` seconds
+- Retry period for busy/rate-limited initial announces: `300` seconds (both response interval fields preserve this period)
 - Forward timeout: `30` seconds
 - Forwarder workers: `10` (max `20`)
 - Forwarder queue size: `10000`
@@ -121,6 +121,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
   - Structure: `map[InfoHash]map[PeerID]Request`
   - Background goroutine (`purgeRoutine`) removes stale peers based on `Config.Age`
   - Always lock with `requestsMu` before accessing `Requests` map
+  - Peer sessions survive periodic updates and are cancelled on deletion or expiry; forwarding jobs retain their originating session
 
 ### 3. Forwarder System
 - **ForwarderManager** (`forwarderManager.go`): Core forwarder orchestration
@@ -165,6 +166,8 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Both loggers are defined in `main.go` with `log.Lshortfile` flag
 
 ### Configuration
+- Runtime forwarder initialization uses the shared `Core.forwarderMu` read/write lock; HTTP/UDP announces, scrape, and stats synchronize reads with publication
+- Storage stats suppression uses `atomic.Bool` because the manager can be initialized after startup
 - All configuration is in `Config` struct (`config.go`)
 - CLI flags are parsed in `main.go` and passed to `Config`
 - Forwarders are loaded from YAML file via `Config.ReloadForwards()`
@@ -180,17 +183,17 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 ### Event Handling
 - **started**: Triggers forwarder announces if eligible (first announce or NextAnnounce due)
 - **completed**: Updates local storage and continues normal response flow
-- **stopped**: Removes peer from local storage and may clean forwarder cache for the hash when local peers reach zero
+- **stopped**: Removes the peer, cancels its queued/scheduled forwarding work and active HTTP requests, and cleans the hash cache when no local peers remain
 - **Regular (empty)**: Normal periodic updates, uses `Config.AnnounceInterval`
 
 ### Peer Lifecycle
 - Peers are stored when announce is received
 - Background purge routine removes peers older than `Config.Age` (default 180 minutes)
-- Stopped events should immediately remove peers from storage
-- Event-forwarding helpers exist in `ForwarderManager`, but are not currently invoked from `ProcessAnnounce`
+- Stopped events immediately remove peers and cancel the associated peer session; stale results cannot repopulate the forwarder cache
+- Event-forwarding helpers exist in `ForwarderManager`, but are not currently invoked from `ProcessAnnounce`; stopped handling invokes `CancelPendingJobs` directly
 
 ### Forwarder Behavior
-- Forwarders are optional (only if `-f` flag provided)
+- Forwarders are optional (loaded with `-f` or added through `/add-forwarder` at runtime)
 - ForwarderManager uses worker pool for parallel processing
 - Forwarder timeout controlled by `Config.ForwardTimeout` (default 30 seconds)
 - Forwarder responses are aggregated with local peers via `getPeersForResponse()`
@@ -283,9 +286,10 @@ Keep documentation concise and accurate. Remove outdated information rather than
 4. **Memory management**: This is an in-memory tracker - no persistence, no database
 5. **Protocol compliance**: Refer to `BITTORRENT.md` for protocol details and BEP references
 6. **Worker pools**: ForwarderManager uses worker pools - be careful with goroutine management
-7. **UDP state**: UDP requires connection state tracking (see `tempStorage.go` for server-side, `udpForwarder.go` for client-side)
-8. **Protocol detection**: Use `Forward.GetProtocol()` - don't hardcode protocol assumptions
-9. **Keep docs updated**: After logic changes, update AGENTS.md and relevant docs. This file must stay accurate.
+7. **UDP state**: UDP requires connection state tracking (see `receiverUDP.go` for server-side, `udpForwarder.go` for client-side)
+8. **UDP lifecycle**: Copy packet bytes before launching a handler. `ReceiverUDP.Close` stops packet reads and connection cleanup, waits for handlers, and is safe to repeat.
+9. **Protocol detection**: Use `Forward.GetProtocol()` - don't hardcode protocol assumptions
+10. **Keep docs updated**: After logic changes, update AGENTS.md and relevant docs. This file must stay accurate.
 
 ## Task to File Map (fast edit targeting)
 
@@ -304,7 +308,7 @@ Keep documentation concise and accurate. Remove outdated information rather than
 ## Current Behavior Clarification (important)
 
 `ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `internal/server/forwarderAnnounce.go`, but the current announce path in `internal/server/receiverAnnounce.go` does not call them directly. Current stopped/completed handling is:
-- `stopped`: delete peer from local storage and optionally clean forwarder cache for hash if no local peers remain
+- `stopped`: remove peer, cancel its session and pending/scheduled jobs, and clean the forwarder cache if no local peers remain; workers discard stale jobs and results, and HTTP requests use the session context
 - `completed`: update local storage and continue normal response flow
 
 If event forwarding behavior is changed, update this file and `docs/ANNOUNCE_LOGIC.md` together.
@@ -347,7 +351,7 @@ type Response struct {
 
 1. **Using the wrong response package**: Always use `bittorrent/response` (the old `bittorrent/tracker/response.go` was removed).
 2. **Forgetting to lock**: Always lock before accessing `Storage.Requests`.
-3. **Assuming stopped cancels pending jobs automatically**: verify actual call path in `receiverAnnounce.go`.
+3. **Reusing jobs across peer sessions**: stopped and expired sessions invalidate old jobs, including after the same peer restarts.
 4. **Ignoring event semantics**: Event announces are immediate, not scheduled.
 5. **Race conditions**: Be careful with goroutines and shared state.
 6. **Memory leaks**: Ensure purge routine is working and peers are removed on stopped events.

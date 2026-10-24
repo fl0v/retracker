@@ -117,6 +117,9 @@ func isRoutablePeerAddress(address common.Address) bool {
 
 // executeAnnounce routes to the appropriate protocol handler
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
+	if job.canceled() {
+		return
+	}
 	forward := job.Forwarder
 	forwardName := forward.GetName()
 
@@ -227,6 +230,13 @@ func (fm *ForwarderManager) logRetryableAnnounceResult(protocol, trackerURL, has
 
 // handleAnnounceResult processes the result of an announce attempt
 func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result AnnounceResult) {
+	if job.state != nil && job.state.peerContext != nil && fm.MainStorage != nil {
+		fm.MainStorage.requestsMu.Lock()
+		defer fm.MainStorage.requestsMu.Unlock()
+	}
+	if job.canceled() {
+		return
+	}
 	forwardName := job.Forwarder.GetName()
 	trackerURL := job.Forwarder.Uri
 	hash := fmt.Sprintf("%x", job.InfoHash)
@@ -357,8 +367,17 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 
 	var lastErr error
 	for retry := 0; retry < attempts; retry++ {
+		if job.canceled() {
+			return buildFailureResult(time.Since(startTime), job.context().Err())
+		}
 		if retry > 0 {
-			time.Sleep(backoff * time.Duration(1<<retry))
+			timer := time.NewTimer(backoff * time.Duration(1<<retry))
+			select {
+			case <-timer.C:
+			case <-job.context().Done():
+				timer.Stop()
+				return buildFailureResult(time.Since(startTime), job.context().Err())
+			}
 		}
 
 		result := fm.doSingleHTTPRequest(job, uri, startTime)
@@ -388,7 +407,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	hash := fmt.Sprintf("%x", job.InfoHash)
 	trackerURL := forward.Uri
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(fm.Config.ForwardTimeout))
+	ctx, cancel := context.WithTimeout(job.context(), time.Second*time.Duration(fm.Config.ForwardTimeout))
 	defer cancel()
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
@@ -621,7 +640,8 @@ func (fm *ForwarderManager) doHTTPEventRequest(forwarder CoreCommon.Forward, req
 	return nil
 }
 
-// CancelPendingJobs cancels any pending announce jobs for a specific peer
+// CancelPendingJobs removes pending markers and scheduled retries for a peer.
+// Storage ends the peer session, invalidating queued and in-flight jobs too.
 func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID common.PeerID) {
 	fm.pendingMu.Lock()
 	defer fm.pendingMu.Unlock()
@@ -647,5 +667,22 @@ func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID c
 
 	if len(keysToRemove) > 0 && fm.Config.Debug {
 		DebugLogFwd.Printf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID)
+	}
+
+	fm.scheduledJobsMu.Lock()
+	defer fm.scheduledJobsMu.Unlock()
+	for scheduledAt, jobs := range fm.scheduledJobs {
+		kept := jobs[:0]
+		for _, job := range jobs {
+			if job.InfoHash != infoHash || job.PeerID != peerID {
+				kept = append(kept, job)
+			}
+		}
+		clear(jobs[len(kept):])
+		if len(kept) == 0 {
+			delete(fm.scheduledJobs, scheduledAt)
+		} else {
+			fm.scheduledJobs[scheduledAt] = kept
+		}
 	}
 }

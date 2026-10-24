@@ -5,11 +5,13 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"regexp"
+	"sync"
 	"sync/atomic"
 
 	"github.com/fl0v/retracker/bittorrent/common"
@@ -23,7 +25,6 @@ import (
 var (
 	DebugLogAnnounce = log.New(os.Stdout, `debug#`, log.Lshortfile)
 	ErrorLogAnnounce = log.New(os.Stderr, `error#`, log.Lshortfile)
-	remoteAddrRegexp = regexp.MustCompile(`(.*):\d+$`)
 )
 
 type ReceiverAnnounce struct {
@@ -33,6 +34,7 @@ type ReceiverAnnounce struct {
 	ForwarderManager *ForwarderManager
 	Prometheus       *observability.Prometheus
 	TempStorage      *TempStorage
+	forwarderMu      *sync.RWMutex // Shared with Core for runtime initialization.
 }
 
 func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) {
@@ -92,10 +94,7 @@ func (ra *ReceiverAnnounce) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 		fmt.Fprint(w, `d14:failure reason24:internal tracker errore`)
 		return
 	}
-	compacted := false
-	if r.URL.Query().Get(`compact`) == `1` {
-		compacted = true
-	}
+	compacted := r.URL.Query().Get(`compact`) == `1`
 	w.Header().Set(`Content-Type`, `text/plain; charset=utf-8`)
 	d, err := response.Bencode(compacted)
 	if err != nil {
@@ -118,14 +117,18 @@ func (ra *ReceiverAnnounce) getRemoteAddr(r *http.Request, xrealip string) strin
 }
 
 func (ra *ReceiverAnnounce) parseRemoteAddr(in, def string) string {
-	address := def
-	if match := remoteAddrRegexp.FindStringSubmatch(in); len(match) == 2 {
-		address = match[1]
+	address, _, err := net.SplitHostPort(in)
+	if err != nil {
+		return def
 	}
 	return address
 }
 
 func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant, event, userAgent, compactFlag, noPeerIDFlag string) (*Response.Response, string) {
+	if ra.forwarderMu != nil {
+		ra.forwarderMu.RLock()
+		defer ra.forwarderMu.RUnlock()
+	}
 	request, err := tracker.MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
 		event, userAgent, compactFlag, noPeerIDFlag, DebugLog)
 	if err != nil {
@@ -146,9 +149,12 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 	if response.Interval == 0 {
 		response.Interval = ra.Config.AnnounceInterval
 	}
-	// Clamp interval to ensure minimum is AnnounceInterval
-	response.Interval = ra.clampInterval(response.Interval)
-	response.MinInterval = ra.Config.AnnounceInterval
+	if response.FailureReason == "" {
+		response.Interval = ra.clampInterval(response.Interval)
+		response.MinInterval = ra.Config.AnnounceInterval
+	} else {
+		response.MinInterval = response.Interval
+	}
 
 	// Get peers, seeders, and leechers from both local and forwarder storage
 	seeders, leechers, peers := ra.getPeersForResponse(request.InfoHash)
@@ -165,23 +171,23 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 	return &response, ""
 }
 
-// handleStoppedEvent processes a stopped event: forwards to forwarders, cancels pending jobs, and deletes the peer
+// handleStoppedEvent removes the peer, cancels its jobs, and cleans an unused cache.
 func (ra *ReceiverAnnounce) handleStoppedEvent(request *tracker.Request, response *Response.Response) {
-	// Delete peer from storage
-	ra.Storage.Delete(*request)
-
-	// Clean up forwarder storage when no local peers remain
-	if ra.ForwarderStorage != nil {
-		localPeers := ra.Storage.GetPeers(request.InfoHash)
-		if len(localPeers) == 0 {
-			ra.ForwarderStorage.Cleanup(request.InfoHash)
-		}
+	// Serialize session cancellation and cache cleanup with result publication.
+	ra.Storage.requestsMu.Lock()
+	defer ra.Storage.requestsMu.Unlock()
+	ra.Storage.deleteLocked(request.InfoHash, request.PeerID)
+	if ra.ForwarderManager != nil {
+		ra.ForwarderManager.CancelPendingJobs(request.InfoHash, request.PeerID)
+	}
+	if ra.ForwarderStorage != nil && len(ra.Storage.Requests[request.InfoHash]) == 0 {
+		ra.ForwarderStorage.Cleanup(request.InfoHash)
 	}
 
 	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 }
 
-// handleCompletedEvent processes a completed event: updates storage, forwards event, but continues normal flow
+// handleCompletedEvent updates storage and continues the normal response flow.
 func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, response *Response.Response) {
 	// Update storage with completed status
 	ra.Storage.Update(*request)
@@ -197,18 +203,18 @@ func (ra *ReceiverAnnounce) handleCompletedEvent(request *tracker.Request, respo
 // handleRegularAnnounce processes regular announces (started event or empty event)
 func (ra *ReceiverAnnounce) handleRegularAnnounce(request *tracker.Request, response *Response.Response) {
 	// Update storage
-	ra.Storage.Update(*request)
+	peerContext := ra.Storage.Update(*request)
 
 	// Check if this is first announce for this info_hash
 	if ra.isFirstAnnounce(request.InfoHash) {
-		ra.handleFirstAnnounce(request, response)
+		ra.handleFirstAnnounce(request, response, peerContext)
 	} else {
-		ra.handleSubsequentAnnounce(request, response)
+		ra.handleSubsequentAnnounce(request, response, peerContext)
 	}
 }
 
 // handleFirstAnnounce handles the first announce for an info_hash
-func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, response *Response.Response) {
+func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, response *Response.Response, peerContext context.Context) {
 	// First announce: return configured interval and trigger parallel forwarder announces
 	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
 
@@ -242,14 +248,14 @@ func (ra *ReceiverAnnounce) handleFirstAnnounce(request *tracker.Request, respon
 			response.Interval = ra.Config.AnnounceInterval
 			return
 		}
-		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
+		ra.ForwarderManager.queueEligibleAnnounces(request.InfoHash, *request, peerContext)
 	} else if len(ra.Config.Forwards) > 0 {
 		ErrorLogAnnounce.Printf("Forwarders configured (%d) but forwarder manager is nil; cannot forward initial announce for %x", len(ra.Config.Forwards), request.InfoHash)
 	}
 }
 
 // handleSubsequentAnnounce handles subsequent announces for an info_hash
-func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, response *Response.Response) {
+func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, response *Response.Response, peerContext context.Context) {
 	// Peers already collected in handleRegularAnnounce via getPeersForResponse()
 	// No need to collect again here
 
@@ -258,7 +264,7 @@ func (ra *ReceiverAnnounce) handleSubsequentAnnounce(request *tracker.Request, r
 
 	// For regular announces, forward immediately if due or not yet contacted
 	if ra.ForwarderManager != nil {
-		ra.ForwarderManager.QueueEligibleAnnounces(request.InfoHash, *request)
+		ra.ForwarderManager.queueEligibleAnnounces(request.InfoHash, *request, peerContext)
 	}
 }
 

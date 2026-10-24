@@ -125,7 +125,10 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 	}
 
 	// Get unified statistics
-	stats := getScrapeStats(core.Storage, core.ForwarderStorage, infoHashList)
+	core.forwarderMu.RLock()
+	forwarderStorage := core.ForwarderStorage
+	core.forwarderMu.RUnlock()
+	stats := getScrapeStats(core.Storage, forwarderStorage, infoHashList)
 
 	// Convert to HTTP response format
 	scrapeResponse := ScrapeResponse{

@@ -5,10 +5,59 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fl0v/retracker/internal/config"
 )
+
+func TestRuntimeForwarderInitializationDuringRequests(t *testing.T) {
+	cfg := &config.Config{AnnounceInterval: 1800, ForwarderQueueSize: 10, ForwarderWorkers: 1, StatsInterval: 1}
+	core := NewCore(cfg, nil)
+	t.Cleanup(func() {
+		if core.ForwarderManager != nil {
+			core.ForwarderManager.Stop()
+		}
+	})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for worker := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 20 {
+				var failure string
+				if worker%2 == 0 {
+					_, failure = core.Receiver.Announce.ProcessAnnounce("192.0.2.1", strings.Repeat("h", 20), strings.Repeat("p", 20), "6881", "0", "0", "1", "", "50", "started", "", "", "")
+				} else {
+					_, failure = core.Receiver.UDP.ProcessAnnounce("2001:4860::1", strings.Repeat("h", 20), strings.Repeat("q", 20), "6881", "0", "0", "1", "", "50", "started", "", "", "")
+				}
+				if failure != "" {
+					t.Errorf("announce failed: %s", failure)
+				}
+				core.HTTPStatsHandler(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/stats?format=json", nil))
+				if _, err := core.getScrapeResponse([]string{strings.Repeat("h", 20)}); err != nil {
+					t.Errorf("scrape failed: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		// Invalid URLs initialize the manager without introducing network traffic.
+		req := httptest.NewRequest(http.MethodPost, "/add-forwarder", strings.NewReader(`{"urls":["ftp://invalid.example"]}`))
+		core.HTTPAddForwarderHandler(httptest.NewRecorder(), req)
+	}()
+	close(start)
+	wg.Wait()
+	if core.ForwarderManager == nil {
+		t.Fatal("runtime forwarder manager was not initialized")
+	}
+}
 
 func TestHTTPAddForwarderHandler(t *testing.T) {
 	cfg := &config.Config{
