@@ -1,0 +1,16 @@
+.git
+.codex
+.agents
+.aws
+.vscode
+.idea
+bin
+retracker
+coverage*
+*.test
+**/*_test.go
+docs
+*.md
+scripts/lists
+.DS_Store
+*~

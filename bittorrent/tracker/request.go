@@ -93,6 +93,9 @@ func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left,
 	}
 
 	if d, err := strconv.Atoi(port); err == nil {
+		if d < 1 || d > 65535 {
+			return nil, fmt.Errorf("port must be between 1 and 65535: %d", d)
+		}
 		request.Port = d
 	} else {
 		return nil, fmt.Errorf("can't parse 'port' value: %w", err)

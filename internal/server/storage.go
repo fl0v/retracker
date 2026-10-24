@@ -3,6 +3,7 @@
 // Includes background purgeRoutine that removes stale peers based on Config.Age.
 // Peer sessions cancel forwarding jobs on removal or expiry.
 // Close cancels peer sessions and joins the purge and stats routines.
+// Last-peer deletion clears the paired upstream cache; purge logging runs outside its mutex.
 package server
 
 import (
@@ -27,6 +28,7 @@ type Storage struct {
 	Requests            map[common.InfoHash]map[common.PeerID]tracker.Request
 	requestsMu          sync.Mutex
 	peerSessions        map[peerKey]peerSession
+	forwarderStorage    *ForwarderStorage // Protected by requestsMu; shares hash lifetime.
 	tasks               *backgroundTasks
 	disableStatsRoutine atomic.Bool // Stats are printed by ForwarderManager when true.
 }
@@ -80,6 +82,9 @@ func (s *Storage) deleteLocked(infoHash common.InfoHash, peerID common.PeerID) {
 		delete(requests, peerID)
 		if len(requests) == 0 {
 			delete(s.Requests, infoHash)
+			if s.forwarderStorage != nil {
+				s.forwarderStorage.Cleanup(infoHash)
+			}
 		}
 	}
 }
@@ -111,35 +116,30 @@ func (s *Storage) purgeRoutine() {
 			return
 		case <-ticker.C:
 		}
-		s.requestsMu.Lock()
-		if s.Config.Debug {
-			s.Log().Debug(fmt.Sprintf("In memory %d hashes\n", len(s.Requests)))
-			s.Log().Debug("Locking...")
-		}
-		for hash, requests := range s.Requests {
-			if s.Config.Debug {
-				s.Log().Debug(fmt.Sprintf("%d peer in hash %x\n", len(requests), hash))
-			}
-			for peerID, request := range requests {
-				timestampDelta := request.TimeStampDelta()
-				if s.Config.Debug {
-					s.Log().Debug(fmt.Sprintf(" %x %s:%d %v\n", peerID, request.Peer().IP, request.Peer().Port, timestampDelta))
-				}
-				if timestampDelta > s.Config.Age {
-					s.Log().Debug(fmt.Sprintf("delete peer %x in hash %x\n", peerID, hash))
-					s.deleteLocked(hash, peerID)
-				}
-			}
-			if len(requests) == 0 {
-				s.Log().Debug(fmt.Sprintf("delete hash %x\n", hash))
-				delete(s.Requests, hash)
+		s.purgeExpired()
+
+	}
+}
+
+// purgeExpired cancels sessions and clears unused upstream caches under one lock.
+// Log output happens afterwards so a slow sink cannot hold up peer operations.
+func (s *Storage) purgeExpired() {
+	peers, hashes := 0, 0
+	s.requestsMu.Lock()
+	for hash, requests := range s.Requests {
+		for peerID, request := range requests {
+			if request.TimeStampDelta() > s.Config.Age {
+				s.deleteLocked(hash, peerID)
+				peers++
 			}
 		}
-		s.requestsMu.Unlock()
-		if s.Config.Debug {
-			s.Log().Debug("Unlocked")
+		if len(requests) == 0 {
+			hashes++
 		}
 	}
+	remaining := len(s.Requests)
+	s.requestsMu.Unlock()
+	s.Log().Debug("Purged expired peers", "peers", peers, "hashes", hashes, "remaining_hashes", remaining)
 }
 
 func (s *Storage) statsRoutine() {

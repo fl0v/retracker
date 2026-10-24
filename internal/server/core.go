@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -131,6 +133,30 @@ type addForwarderRequest struct {
 	URLs []string `json:"urls"`
 }
 
+const maxAddForwarderBodyBytes = 64 << 10
+
+// decodeForwarderRequest accepts one JSON object, bounded by the HTTP server's
+// read deadline and a size limit. Query-only POST requests can have an empty body.
+func decodeForwarderRequest(w http.ResponseWriter, r *http.Request) (addForwarderRequest, error) {
+	var req addForwarderRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxAddForwarderBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return req, nil
+		}
+		return req, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return req, err
+		}
+		return req, errors.New("request body must contain one JSON object")
+	}
+	return req, nil
+}
+
 type addForwarderResult struct {
 	URL    string `json:"url"`
 	Name   string `json:"name,omitempty"`
@@ -205,8 +231,20 @@ func (core *Core) HTTPAddForwarderHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method == http.MethodPost {
-		var req addForwarderRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		req, err := decodeForwarderRequest(w, r)
+		if err != nil {
+			status := http.StatusBadRequest
+			var tooLarge *http.MaxBytesError
+			var networkError net.Error
+			switch {
+			case errors.As(err, &tooLarge):
+				status = http.StatusRequestEntityTooLarge
+			case errors.As(err, &networkError) && networkError.Timeout():
+				status = http.StatusRequestTimeout
+			}
+			http.Error(w, "invalid request body: "+err.Error(), status)
+			return
+		}
 		for _, u := range req.URLs {
 			if trimmed := strings.TrimSpace(u); trimmed != "" {
 				forwarderURLs = append(forwarderURLs, trimmed)

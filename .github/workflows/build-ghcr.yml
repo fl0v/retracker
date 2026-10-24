@@ -94,5 +94,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: true
+          cache-from: type=gha,scope=retracker
+          cache-to: type=gha,mode=max,scope=retracker
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -584,7 +584,13 @@ func (ru *ReceiverUDP) ProcessAnnounce(remoteAddr, infoHash, peerID, port, uploa
 	}
 	// Reuse the existing HTTP announce processing logic
 	// We'll create a temporary ReceiverAnnounce to use its ProcessAnnounce method
+	family := 6
+	if net.ParseIP(remoteAddr).To4() != nil {
+		family = 4
+	}
 	ra := &ReceiverAnnounce{
+		Logging:          ru.Logging,
+		peerFamily:       family,
 		Config:           ru.Config,
 		Storage:          ru.Storage,
 		ForwarderStorage: ru.ForwarderStorage,
@@ -643,10 +649,6 @@ func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transaction
 					peerCount++
 				}
 			}
-		}
-		// Limit to reasonable number of peers (typically 50)
-		if peerCount >= 50 {
-			break
 		}
 	}
 

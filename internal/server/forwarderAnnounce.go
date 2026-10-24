@@ -3,6 +3,7 @@
 // Key functions: executeAnnounce(), doHTTPAnnounce(), doUDPAnnounce(), handleAnnounceResult()
 // Also handles event forwarding (ForwardStoppedEvent, ForwardCompletedEvent).
 // HTTP announces and events share the manager's client and bounded body reads.
+// Cache publication is session-guarded; logging and bookkeeping never hold the peer lock.
 package server
 
 import (
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/fl0v/retracker/bittorrent/common"
@@ -40,6 +42,7 @@ var (
 
 // AnnounceResult represents the outcome of an announce attempt
 type AnnounceResult struct {
+	Deferred     bool // Retry scheduling or permanent rejection already handled.
 	Success      bool
 	Peers        []common.Peer
 	Interval     int
@@ -173,11 +176,7 @@ func (fm *ForwarderManager) logRetryableAnnounceResult(protocol, trackerURL, has
 
 // handleAnnounceResult processes the result of an announce attempt
 func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result AnnounceResult) {
-	if job.state != nil && job.state.peerContext != nil && fm.MainStorage != nil {
-		fm.MainStorage.requestsMu.Lock()
-		defer fm.MainStorage.requestsMu.Unlock()
-	}
-	if job.canceled() || fm.isStopping() {
+	if result.Deferred || job.canceled() || fm.isStopping() {
 		return
 	}
 	forwardName := job.Forwarder.GetName()
@@ -198,14 +197,16 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 
 	if result.Success {
 		// Update storage with peers
-		fm.Storage.UpdatePeers(job.InfoHash, forwardName, result.Peers, result.Interval)
+		if !fm.updatePeerCache(job, func() { fm.Storage.UpdatePeers(job.InfoHash, forwardName, result.Peers, result.Interval) }) {
+			return
+		}
 		if len(result.Peers) > 0 {
 			fm.resetFailure(forwardName)
 		}
 		fm.recordStats(forwardName, result.Duration, result.Interval)
 
-		if fm.Prometheus != nil {
-			fm.Prometheus.ForwarderStatus.With(prometheus.Labels{forwarderNameLabel: forwardName, forwarderStatusLabel: `200`}).Inc()
+		if fm.Prometheus != nil && job.Forwarder.GetProtocol() == protocolUDP {
+			fm.Prometheus.ForwarderStatus.WithLabelValues(forwardName, "200").Inc()
 		}
 
 		if fm.Config.Debug {
@@ -219,6 +220,9 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	if result.Suspend {
 		protocol := job.Forwarder.GetProtocol()
 		fm.logAnnounceResult(protocol, trackerURL, hash, result)
+		if job.canceled() || fm.isStopping() {
+			return
+		}
 
 		suspendFor := time.Duration(fm.Config.ForwarderSuspendSeconds) * time.Second
 		if suspendFor <= 0 {
@@ -242,6 +246,9 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		fm.Log().Error(fmt.Sprintf("  Duration: %v\n", result.Duration))
 	}
 
+	if job.canceled() || fm.isStopping() {
+		return
+	}
 	if fm.Prometheus != nil {
 		fm.Prometheus.ForwarderStatus.With(prometheus.Labels{forwarderNameLabel: forwardName, forwarderStatusLabel: `error`}).Inc()
 	}
@@ -253,7 +260,24 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	}
 
 	// Mark as attempted with default interval to avoid immediate retry
-	fm.Storage.UpdatePeers(job.InfoHash, forwardName, []common.Peer{}, 60)
+	if !fm.isDisabled(forwardName) {
+		fm.updatePeerCache(job, func() { fm.Storage.UpdatePeers(job.InfoHash, forwardName, nil, 60) })
+	}
+}
+
+// updatePeerCache serializes only cache mutation with stopped/expired sessions.
+// Callbacks must only mutate the cache; filtering, logging, metrics and other
+// bookkeeping stay outside this global peer lock.
+func (fm *ForwarderManager) updatePeerCache(job AnnounceJob, update func()) bool {
+	if job.state != nil && job.state.peerContext != nil && fm.MainStorage != nil {
+		fm.MainStorage.requestsMu.Lock()
+		defer fm.MainStorage.requestsMu.Unlock()
+	}
+	if job.canceled() || fm.isStopping() {
+		return false
+	}
+	update()
+	return true
 }
 
 // doUDPAnnounce performs a UDP tracker announce
@@ -332,7 +356,7 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 		result := fm.doSingleHTTPRequest(job, uri, startTime)
 
 		// Handle terminal conditions
-		if result.Success {
+		if result.Success || result.Deferred {
 			return result
 		}
 		if result.NonRetryable || result.Suspend {
@@ -424,7 +448,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	if bitResponse.FailureReason != "" {
 		if handled := fm.handleRetryError(job, bitResponse.FailureReason, bitResponse.RetryIn, trackerURL); handled {
 			// Handled by retry scheduling - return success to stop further retries
-			return AnnounceResult{Success: true, Duration: duration}
+			return AnnounceResult{Deferred: true, Duration: duration}
 		}
 		if fm.Config.Debug {
 			fm.Log().Error(fmt.Sprintf("Tracker failure response: %s\n", bitResponse.FailureReason))
@@ -443,17 +467,27 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 
 // buildAnnounceURI constructs the announce URL
 func (fm *ForwarderManager) buildAnnounceURI(forward CoreCommon.Forward, request tracker.Request, event string) string {
-	uri := fmt.Sprintf("%s?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d",
-		forward.Uri, url.QueryEscape(string(request.InfoHash)),
-		url.QueryEscape(string(request.PeerID)), request.Port, request.Uploaded, request.Downloaded, request.Left)
-
+	uri, err := url.Parse(forward.Uri)
+	if err != nil {
+		return forward.Uri
+	} // Request construction reports malformed URLs.
+	query := uri.Query()
+	query.Set("info_hash", string(request.InfoHash))
+	query.Set("peer_id", string(request.PeerID))
+	query.Set("port", strconv.Itoa(request.Port))
+	query.Set("uploaded", strconv.FormatUint(request.Uploaded, 10))
+	query.Set("downloaded", strconv.FormatUint(request.Downloaded, 10))
+	query.Set("left", strconv.FormatUint(request.Left, 10))
+	query.Del("event")
 	if event != "" {
-		uri = fmt.Sprintf("%s&event=%s", uri, url.QueryEscape(event))
+		query.Set("event", event)
 	}
 	if forward.Ip != "" {
-		uri = fmt.Sprintf("%s&ip=%s&ipv4=%s", uri, forward.Ip, forward.Ip)
+		query.Set("ip", forward.Ip)
+		query.Set("ipv4", forward.Ip)
 	}
-	return uri
+	uri.RawQuery = query.Encode()
+	return uri.String()
 }
 
 // logParseError logs details about a parse failure
@@ -590,14 +624,20 @@ func (fm *ForwarderManager) doHTTPEventRequest(forwarder CoreCommon.Forward, req
 // CancelPendingJobs removes pending markers and scheduled retries for a peer.
 // Storage ends the peer session, invalidating queued and in-flight jobs too.
 func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID common.PeerID) {
+	fm.cancelPendingJobs(infoHash, peerID, nil)
+}
+
+func (fm *ForwarderManager) cancelPendingJobs(infoHash common.InfoHash, peerID common.PeerID, session context.Context) {
 	fm.pendingMu.Lock()
-	defer fm.pendingMu.Unlock()
 
 	expectedPrefix := fmt.Sprintf("%x:", infoHash)
 	expectedSuffix := fmt.Sprintf(":%x", peerID)
 
 	keysToRemove := make([]string, 0)
-	for key := range fm.pendingJobs {
+	for key, state := range fm.pendingJobs {
+		if session != nil && (state == nil || state.peerContext != session) {
+			continue
+		}
 		if len(key) > len(expectedPrefix)+len(expectedSuffix) {
 			if key[:len(expectedPrefix)] == expectedPrefix && key[len(key)-len(expectedSuffix):] == expectedSuffix {
 				keysToRemove = append(keysToRemove, key)
@@ -607,21 +647,12 @@ func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID c
 
 	for _, key := range keysToRemove {
 		delete(fm.pendingJobs, key)
-		if fm.Config.Debug {
-			fm.Log().Debug(fmt.Sprintf("Canceled pending job: %s\n", key))
-		}
 	}
-
-	if len(keysToRemove) > 0 && fm.Config.Debug {
-		fm.Log().Debug(fmt.Sprintf("Canceled %d pending job(s) for peer %x\n", len(keysToRemove), peerID))
-	}
-
 	fm.scheduledJobsMu.Lock()
-	defer fm.scheduledJobsMu.Unlock()
 	for scheduledAt, jobs := range fm.scheduledJobs {
 		kept := jobs[:0]
 		for _, job := range jobs {
-			if job.InfoHash != infoHash || job.PeerID != peerID {
+			if job.InfoHash != infoHash || job.PeerID != peerID || (session != nil && job.context() != session) {
 				kept = append(kept, job)
 			}
 		}
@@ -631,5 +662,10 @@ func (fm *ForwarderManager) CancelPendingJobs(infoHash common.InfoHash, peerID c
 		} else {
 			fm.scheduledJobs[scheduledAt] = kept
 		}
+	}
+	fm.scheduledJobsMu.Unlock()
+	fm.pendingMu.Unlock()
+	if len(keysToRemove) > 0 && fm.Config.Debug {
+		fm.Log().Debug("Canceled pending forwarding jobs", "peer_id", fmt.Sprintf("%x", peerID), "count", len(keysToRemove))
 	}
 }

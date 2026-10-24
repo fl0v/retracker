@@ -44,7 +44,7 @@ The system uses a multi-tier architecture:
 3. **Unmark**: After job execution completes, only if the marker still belongs to that job
 4. **Cancel**: A stopped event removes the peer's markers and scheduled retries. A session context invalidates queued work, cancels HTTP requests, and prevents late results from restoring cache entries
 
-Peer sessions persist across periodic announces and end on deletion or age-based purge. Restarting a peer creates a new session, so old jobs cannot revive or clear a new job's marker.
+Peer sessions persist across periodic announces and end on deletion or age-based purge. Restarting a peer creates a new session, so old jobs cannot revive or clear a new job's marker. Last-peer removal clears its upstream cache under the same storage lock. Pending-job cleanup and logging run after releasing the peer lock and match the canceled session.
 
 **Thread Safety**: Protected by `pendingMu` (Mutex)
 
@@ -198,3 +198,12 @@ worker():
 5. **If still full**: reschedule again
 
 Ensures no job loss during overload.
+
+## Cache and Retry Maintenance
+
+Each scheduler tick also removes canceled retries and prunes expired cached peers.
+Cached peers use the configured peer age (180 minutes by default); announce and scrape reads omit expired
+payloads immediately. Future upstream cooldowns survive payload expiry.
+BEP 31 positive retry periods, including periods of ten minutes or more, retain
+the requested cooldown and schedule a retry. Deferred/permanent responses are
+separate from successful results, so they do not reset the cache interval.

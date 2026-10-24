@@ -158,7 +158,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		queueScaleThresh = 60
 	}
 	queueRateLimitThresh := cfg.QueueRateLimitThreshold
-	if queueRateLimitThresh <= 0 {
+	if queueRateLimitThresh < 0 {
 		queueRateLimitThresh = 80
 	}
 	queueThrottleThresh := cfg.QueueThrottleThreshold
@@ -222,6 +222,16 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		suspendedForwarders: make(map[string]*SuspendedForwarder),
 		scaleDownChan:       make(chan struct{}, 100),
 		scheduledJobs:       make(map[time.Time][]AnnounceJob),
+	}
+	if mainStorage != nil {
+		mainStorage.requestsMu.Lock()
+		mainStorage.forwarderStorage = storage
+		mainStorage.requestsMu.Unlock()
+	}
+	if cfg.Age > 0 {
+		storage.mu.Lock()
+		storage.maxPeerAge = time.Duration(cfg.Age * float64(time.Minute))
+		storage.mu.Unlock()
 	}
 	fm.stopChan = fm.tasks.ctx.Done()
 	fm.httpClient = settings.httpClient
@@ -1179,14 +1189,29 @@ func (fm *ForwarderManager) schedulerRoutine() {
 			return
 		case <-ticker.C:
 			now := time.Now()
+			fm.Storage.Prune(now)
 			fm.scheduledJobsMu.Lock()
 			readyJobs := make([]AnnounceJob, 0)
 			timesToRemove := make([]time.Time, 0)
 
+			var canceledJobs []AnnounceJob
 			for scheduledTime, jobs := range fm.scheduledJobs {
-				if !now.Before(scheduledTime) {
-					readyJobs = append(readyJobs, jobs...)
+				kept := jobs[:0]
+				for _, job := range jobs {
+					switch {
+					case job.canceled():
+						canceledJobs = append(canceledJobs, job)
+					case !now.Before(scheduledTime):
+						readyJobs = append(readyJobs, job)
+					default:
+						kept = append(kept, job)
+					}
+				}
+				clear(jobs[len(kept):])
+				if len(kept) == 0 {
 					timesToRemove = append(timesToRemove, scheduledTime)
+				} else {
+					fm.scheduledJobs[scheduledTime] = kept
 				}
 			}
 
@@ -1195,6 +1220,9 @@ func (fm *ForwarderManager) schedulerRoutine() {
 			}
 			fm.scheduledJobsMu.Unlock()
 
+			for _, job := range canceledJobs {
+				fm.finishJob(job)
+			}
 			for _, job := range readyJobs {
 				fm.processScheduledReadyJob(job, now)
 			}
@@ -1247,6 +1275,9 @@ func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.T
 }
 
 func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason string, retryIn interface{}, trackerURL string) bool {
+	if job.canceled() || fm.isStopping() {
+		return true
+	}
 	if retryIn == nil {
 		return false
 	}
@@ -1285,14 +1316,13 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 		return false
 	}
 
-	if retryMinutes >= 10 {
-		if fm.Config.Debug {
-			fm.Log().Error(fmt.Sprintf("Tracker %s requested retry in %d minutes (>= 10), treating as completed\n", trackerURL, retryMinutes))
-		}
+	if int64(retryMinutes) > (1<<63-1)/int64(time.Minute) {
+		return false
+	}
+	scheduledTime := time.Now().Add(time.Duration(retryMinutes) * time.Minute)
+	if !fm.updatePeerCache(job, func() { scheduledTime = fm.Storage.DeferAnnounce(job.InfoHash, job.ForwarderName, scheduledTime) }) {
 		return true
 	}
-
-	scheduledTime := time.Now().Add(time.Duration(retryMinutes) * time.Minute)
 	retryJob := AnnounceJob{
 		InfoHash:      job.InfoHash,
 		ForwarderName: job.ForwarderName,

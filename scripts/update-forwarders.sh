@@ -377,8 +377,8 @@ fi
 
 # Count trackers by protocol
 TRACKER_COUNT=$(wc -l < "$UNIQUE_TRACKERS" 2>/dev/null | tr -d ' ' || echo "0")
-HTTP_COUNT=$(grep -c '^https\?://' "$UNIQUE_TRACKERS" 2>/dev/null || echo "0")
-UDP_COUNT=$(grep -c '^udp://' "$UNIQUE_TRACKERS" 2>/dev/null || echo "0")
+HTTP_COUNT=$(grep -c '^https\?://' "$UNIQUE_TRACKERS" 2>/dev/null || true)
+UDP_COUNT=$(grep -c '^udp://' "$UNIQUE_TRACKERS" 2>/dev/null || true)
 echo "Found ${TRACKER_COUNT} unique trackers (${HTTP_COUNT} HTTP, ${UDP_COUNT} UDP)"
 
 # Generate forwarders.yml

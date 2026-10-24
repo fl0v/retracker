@@ -41,7 +41,7 @@ Full installation and deployment options are in [INSTALL.md](INSTALL.md).
 - `GET /` on port 80 (including a Host header without a port) - HTTP 200 with `retracker is live`.
 - `GET /scrape` - BitTorrent scrape endpoint.
 - `GET /stats` - text stats (`GET /stats?format=json` for JSON).
-- `POST /add-forwarder` - add forwarder URLs at runtime (in-memory only, lost on restart).
+- `POST /add-forwarder` - add forwarder URLs at runtime (in-memory only, lost on restart). Accepts one JSON object up to 64 KiB.
   - Request body JSON (multiple only): `{"urls":["https://t1.example.com/announce","udp://t2.example.com:6969/announce"]}`
 - `GET /add-forwarder` - add forwarder URLs from query string.
   - Query format: `?urls=url1,url2,` (comma-separated, trailing comma allowed)
@@ -69,6 +69,10 @@ curl "http://127.0.0.1:6969/add-forwarder?urls=udp://tracker.example.com:6969/an
 
 See [INSTALL.md](INSTALL.md) for configuration env vars and examples.
 
+The image uses `alpine:latest`, a stripped static Go binary, and retains Bash/curl
+for the optional startup updater. Root `.dockerignore` excludes build-only noise;
+BuildKit caches local Go compilation and CI reuses exported image/build layers.
+
 ## Documentation
 
 - [INSTALL.md](INSTALL.md) - Installation and deployment options
@@ -95,6 +99,8 @@ Runtime service logs use Go `slog` text records on stdout in the CLI; debug
 records are enabled with `-d`. Announce failures and forwarder outcomes include
 structured context such as hash, protocol, timing, and errors. Each running
 tracker serves its own Prometheus registry, including Go and process metrics.
+HTTP numeric forwarder status counters count received responses once per attempt;
+the `error` status counts failed announces, and UDP successful outcomes use `200`.
 
 ## License
 

@@ -147,7 +147,7 @@ Only explicitly supplied flags override other settings. For example, YAML `liste
 
 ## From source
 
-The tracker handles SIGINT and SIGTERM. Active HTTP requests get up to five seconds to finish; forwarding requests/retries and background cleanup are then canceled and joined. Container stop uses this same shutdown path. HTTP connections have a five-second header timeout and a sixty-second idle timeout.
+The tracker handles SIGINT and SIGTERM. Active HTTP requests get up to five seconds to finish; forwarding requests/retries and background cleanup are then canceled and joined. Container stop uses this same shutdown path. HTTP connections have a five-second header timeout, fifteen-second total read timeout, thirty-second write timeout, and sixty-second idle timeout. `/add-forwarder` accepts one JSON object of at most 64 KiB; invalid bodies are rejected before adding forwarders.
 
 ```bash
 git clone https://github.com/fl0v/retracker.git

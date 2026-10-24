@@ -1,6 +1,7 @@
 // forwarderStorage.go - Storage for forwarder state and cached peer responses.
 // Tracks per-hash, per-forwarder: peers, intervals, and NextAnnounce times.
 // Structure: map[InfoHash]map[ForwarderName]ForwarderPeerEntry
+// Peer payloads expire independently of retry cooldown state.
 package server
 
 import (
@@ -40,8 +41,9 @@ type ForwarderPeerEntry struct {
 // This allows each hash to respect each forwarder's specific interval requirements.
 type ForwarderStorage struct {
 	// map[InfoHash]map[ForwarderName]ForwarderPeerEntry
-	Entries map[common.InfoHash]map[string]ForwarderPeerEntry
-	mu      sync.RWMutex
+	Entries    map[common.InfoHash]map[string]ForwarderPeerEntry
+	mu         sync.RWMutex
+	maxPeerAge time.Duration
 }
 
 type AnnounceJob struct {
@@ -72,7 +74,8 @@ func (job AnnounceJob) context() context.Context {
 
 func NewForwarderStorage() *ForwarderStorage {
 	return &ForwarderStorage{
-		Entries: make(map[common.InfoHash]map[string]ForwarderPeerEntry),
+		Entries:    make(map[common.InfoHash]map[string]ForwarderPeerEntry),
+		maxPeerAge: 3 * time.Hour,
 	}
 }
 
@@ -102,10 +105,59 @@ func (fs *ForwarderStorage) GetAllPeers(infoHash common.InfoHash) []common.Peer 
 	allPeers := make([]common.Peer, 0)
 	if forwarders, ok := fs.Entries[infoHash]; ok {
 		for _, entry := range forwarders {
-			allPeers = append(allPeers, entry.Peers...)
+			if !fs.expired(entry, time.Now()) {
+				allPeers = append(allPeers, entry.Peers...)
+			}
 		}
 	}
 	return allPeers
+}
+
+// expired requires mu to be held. Cooldown state can outlive the peer payload.
+func (fs *ForwarderStorage) expired(entry ForwarderPeerEntry, now time.Time) bool {
+	age := fs.maxPeerAge
+	if age <= 0 {
+		age = 3 * time.Hour
+	}
+	return now.Sub(entry.LastUpdate) >= age
+}
+
+// Prune reclaims stale peers without shortening an upstream retry cooldown.
+func (fs *ForwarderStorage) Prune(now time.Time) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	for hash, forwarders := range fs.Entries {
+		for name, entry := range forwarders {
+			if !fs.expired(entry, now) {
+				continue
+			}
+			if entry.NextAnnounce.After(now) {
+				entry.Peers = nil
+				forwarders[name] = entry
+			} else {
+				delete(forwarders, name)
+			}
+		}
+		if len(forwarders) == 0 {
+			delete(fs.Entries, hash)
+		}
+	}
+}
+
+// DeferAnnounce preserves cached peers and never shortens an existing cooldown.
+func (fs *ForwarderStorage) DeferAnnounce(hash common.InfoHash, name string, until time.Time) time.Time {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.Entries[hash] == nil {
+		fs.Entries[hash] = make(map[string]ForwarderPeerEntry)
+	}
+	entry := fs.Entries[hash][name]
+	if entry.NextAnnounce.After(until) {
+		return entry.NextAnnounce
+	}
+	entry.NextAnnounce = until
+	fs.Entries[hash][name] = entry
+	return until
 }
 
 func (fs *ForwarderStorage) GetNextAnnounceJobs(now time.Time) []AnnounceJob {

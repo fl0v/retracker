@@ -29,6 +29,7 @@ type ReceiverAnnounce struct {
 	ForwarderManager *ForwarderManager
 	Prometheus       *observability.Prometheus
 	TempStorage      *TempStorage
+	peerFamily       int           // Zero for HTTP; UDP selects 4 or 6 before limiting peers.
 	forwarderMu      *sync.RWMutex // Shared with Core for runtime initialization.
 }
 
@@ -153,13 +154,15 @@ func (ra *ReceiverAnnounce) ProcessAnnounce(remoteAddr, infoHash, peerID, port, 
 func (ra *ReceiverAnnounce) handleStoppedEvent(request *tracker.Request, response *Response.Response) {
 	// Serialize session cancellation and cache cleanup with result publication.
 	ra.Storage.requestsMu.Lock()
-	defer ra.Storage.requestsMu.Unlock()
+	session := ra.Storage.peerSessions[peerKey{request.InfoHash, request.PeerID}].ctx
 	ra.Storage.deleteLocked(request.InfoHash, request.PeerID)
-	if ra.ForwarderManager != nil {
-		ra.ForwarderManager.CancelPendingJobs(request.InfoHash, request.PeerID)
-	}
 	if ra.ForwarderStorage != nil && len(ra.Storage.Requests[request.InfoHash]) == 0 {
 		ra.ForwarderStorage.Cleanup(request.InfoHash)
+	}
+	ra.Storage.requestsMu.Unlock()
+	// Match the canceled session so a concurrent restart keeps its new jobs.
+	if ra.ForwarderManager != nil && session != nil {
+		ra.ForwarderManager.cancelPendingJobs(request.InfoHash, request.PeerID, session)
 	}
 
 	response.Interval = ra.clampInterval(ra.Config.AnnounceInterval)
@@ -350,6 +353,12 @@ func (ra *ReceiverAnnounce) filterPeers(peers []common.Peer, requester common.Pe
 			continue
 		}
 
+		if ra.peerFamily != 0 {
+			ip := net.ParseIP(string(peer.IP))
+			if ip == nil || (ip.To4() != nil) != (ra.peerFamily == 4) {
+				continue
+			}
+		}
 		key := fmt.Sprintf("%s:%d", peer.IP, peer.Port)
 		if _, exists := seen[key]; exists {
 			continue

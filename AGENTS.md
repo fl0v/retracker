@@ -127,6 +127,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
   - Background goroutine (`purgeRoutine`) removes stale peers based on `Config.Age`
   - Always lock with `requestsMu` before accessing `Requests` map
   - Peer sessions survive periodic updates and are cancelled on deletion or expiry; forwarding jobs retain their originating session
+  - Last-peer removal clears the hash's forwarder cache under `requestsMu`; cache payloads also age out using `Config.Age`, with scheduler cleanup preserving future retry cooldowns
 
 ### 3. Forwarder System
 - **ForwarderManager** (`forwarderManager.go`): Core forwarder orchestration
@@ -152,8 +153,11 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
   - Manages connection IDs with 2-minute lifetime (per BEP 15)
   - Handles connect, announce, and error responses
   - Supports IPv4 and IPv6 peer formats
-  - Automatic retry with exponential backoff
-- **ForwarderStorage** (`forwarderStorage.go`): Tracks forwarder state and peer mappings
+  - Automatic retry with exponential backoff; mismatched datagrams are ignored within the fixed attempt deadline
+- **ForwarderStorage** (`forwarderStorage.go`): Tracks forwarder state, aging peer payloads, and retry cooldowns
+- Result processing holds the peer-storage lock only for its active-session check and cache mutation. Logging, filtering, metrics, and failure bookkeeping run outside that lock
+- Stopped-job cleanup matches the canceled session after releasing the peer lock, preserving jobs from concurrent restarts
+- BEP 31 deferred/permanent outcomes do not enter success publication; all positive retry periods retain cooldowns and schedule retries
 
 ### 4. Request/Response Handling
 - **Receiver** (`receiver.go`): Routes requests to appropriate handlers
@@ -185,13 +189,15 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Precedence is defaults, YAML, environment, then explicitly supplied flags. False debug values and empty UDP values override YAML; `-c` and `-f` override their environment paths, including empty flags to skip loading
 - The Docker entrypoint passes arguments through; the Go binary reads configuration environment variables directly
 - `Core.Start()` starts configured forwarding after metrics are attached. Runtime-created managers start immediately. `Core.Close()` stops UDP intake, joins forwarders, and closes storage; the caller closes its separately owned `TempStorage`
+- HTTP header/read/write/idle deadlines are 5/15/30/60 seconds. `/add-forwarder` POST bodies accept one JSON object of at most 64 KiB; malformed, oversized, and timed-out reads return 400/413/408 before mutation
 - SIGINT/SIGTERM drains HTTP for up to five seconds, then cancels forwarding and joins background routines. `ForwarderManager.Stop`, `UDPForwarder.Stop`, and service `Close` methods are safe to repeat; forwarder queues are never closed while producers may run
 - Forwarders are loaded from YAML file via `Config.ReloadForwards()`
 
 ### BitTorrent Protocol
 - See `BITTORRENT.md` for detailed protocol documentation
 - Key types: `InfoHash`, `PeerID`, `Peer` (from `bittorrent/common`)
-- Requests are built in `bittorrent/tracker/request.go`; responses come from `bittorrent/response`
+- Requests are built in `bittorrent/tracker/request.go`; peer ports must be 1..65535. Responses come from `bittorrent/response`
+- UDP filters peers by transport address family before applying the shared `numwant` limit of 200 and retains injected logger ownership
 - Event types: `started`, `completed`, `stopped`, or empty (regular)
 
 ## Critical Behaviors

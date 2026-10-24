@@ -52,8 +52,17 @@ func run(ctx context.Context, cfg config.Config, loggers ...*slog.Logger) error 
 	}
 	core.Start()
 	logger.Info("Server ready to accept connections", "http_listen", listener.Addr().String(), "udp_listen", cfg.UDPListen, "config", &cfg)
-	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError)}
+	httpServer := newHTTPServer(mux, logger)
 	return serve(ctx, httpServer, listener, shutdownTimeout)
+}
+
+func newHTTPServer(handler http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler: handler, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
+		ErrorLog:    slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
 }
 
 // metricsHandler owns a registry for this tracker, including runtime metrics.

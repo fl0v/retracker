@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -362,4 +363,65 @@ func TestSIGTERMStopsHTTPAndUDP(t *testing.T) {
 		t.Fatal("server ignored SIGTERM")
 	}
 	<-readerDone
+}
+
+func TestHTTPBodyReadDeadline(t *testing.T) {
+	cfg := defaultConfig()
+	core := server.NewCore(&cfg, nil)
+	defer core.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := newHTTPServer(newMux(core), logger)
+	if handler.ReadTimeout <= 0 || handler.WriteTimeout <= 0 {
+		t.Fatal("HTTP deadlines disabled")
+	}
+	handler.ReadTimeout = 50 * time.Millisecond
+	testServer := httptest.NewUnstartedServer(handler.Handler)
+	testServer.Config = handler
+	testServer.Start()
+	defer testServer.Close()
+	conn, err := net.Dial("tcp", testServer.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	_, err = io.WriteString(conn, "POST /add-forwarder HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("stalled body got %d", response.StatusCode)
+	}
+}
+
+func TestHTTPWriteDeadlineReleasesSlowReader(t *testing.T) {
+	finished := make(chan error, 1)
+	handler := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, err := w.Write(make([]byte, 16<<20)); finished <- err }), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler.WriteTimeout = 50 * time.Millisecond
+	testServer := httptest.NewUnstartedServer(handler.Handler)
+	testServer.Config = handler
+	testServer.Start()
+	defer testServer.Close()
+	conn, err := net.Dial("tcp", testServer.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("slow response unexpectedly fit in socket buffers")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("write deadline did not release handler")
+	}
 }

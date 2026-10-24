@@ -97,9 +97,9 @@ flowchart TD
     UDPResponseCheck -->|Success| ParseUDPResponse[Parse Binary UDP Response, Extract Peers]
     UDPResponseCheck -->|Error| ErrorHandling
     
-    HandleRetry --> RetryCheck{Retry < 10min?}
-    RetryCheck -->|Yes| ScheduleRetry[Schedule Job for Retry Time]
-    RetryCheck -->|No| DisableForwarder[Disable Forwarder - Retry too long]
+    HandleRetry --> RetryCheck{Permanent failure?}
+    RetryCheck -->|No| ScheduleRetry[Schedule Job for Retry Time]
+    RetryCheck -->|Yes| DisableForwarder[Disable Forwarder - Retry never]
     ScheduleRetry --> ScheduleMap2[Add to scheduledJobs Map]
     ScheduleMap2 --> SchedulerRoutine2[Scheduler Routine will move to queue when ready]
     SchedulerRoutine2 --> WorkerDone
@@ -153,7 +153,7 @@ flowchart TD
 
 ## Event Handling
 
-- **stopped**: Deletes the peer and ends its session, cancels active HTTP requests, removes scheduled retries and pending markers, and cleans the hash cache if no local peers remain. Workers and result handlers discard stale session jobs, including after a peer restarts. Cache publication and stopped cleanup share the storage lock.
+- **stopped**: Deletes the peer and ends its session, cancels active HTTP requests, removes scheduled retries and pending markers, and cleans the hash cache if no local peers remain. Workers and result handlers discard stale session jobs, including after a peer restarts. Cache publication and stopped cleanup share the storage lock. Only the active-session check and cache mutation hold that lock; filtering, logging, metrics, and failure bookkeeping run outside it. Stopped cleanup removes only the canceled session's jobs, preserving a concurrent restart.
 - **completed**: Updates local storage, continues normal flow
 - **started/empty**: Normal announce flow with first/subsequent distinction
 
@@ -175,7 +175,7 @@ flowchart TD
 **Retry Jobs** (BEP 31):
 - Created by `handleRetryError()` when forwarder requests retry
 - Always scheduled at tracker-specified time
-- If `retry_in >= 10 minutes` → no retry, treat as completed
+- Every positive, representable retry period schedules a retry and preserves the shared hash/forwarder cooldown; deferred failures never publish a successful zero-interval result
 - If `retry_in == "never"` → disable forwarder
 
 ### Eligibility Check (`ShouldAnnounceNow`)
@@ -251,8 +251,10 @@ Limits forwarders per announce when queue is filling up.
 
 ### Protocol Support
 
-- **HTTP/HTTPS**: Standard HTTP GET requests with query parameters
+- **HTTP/HTTPS**: Standard HTTP GET requests, preserving existing URL query parameters such as passkeys
 - **UDP**: BEP 15 protocol with connection ID management
+  - Match transaction IDs before interpreting success or error packets; ignore stale packets within the attempt deadline
+  - Select peers of the client transport family before applying `numwant` (shared maximum 200)
   - Connection IDs cached with 2-minute lifetime
   - Automatic refresh on expiration
   - Binary packet encoding/decoding
@@ -303,7 +305,7 @@ Limits forwarders per announce when queue is filling up.
 - **Runtime initialization**: Core and receivers share a read/write lock while publishing the first forwarder manager; announce, scrape, and stats readers observe a consistent initialized state
 - **HTTP addresses**: Remote endpoints are parsed with `net.SplitHostPort`, preserving IPv6 addresses without brackets
 - **UDP lifecycle**: Each packet handler owns its bytes. Closing the receiver stops packet reads and connection cleanup, waits for handlers, and can be repeated safely
-- **Application shutdown**: SIGINT/SIGTERM stops HTTP admission and allows five seconds for active requests to finish. The application then closes UDP intake, cancels forwarding requests and retries, joins workers and storage routines, and closes diagnostic-file cleanup. HTTP header and idle timeouts are five and sixty seconds respectively
+- **Application shutdown**: SIGINT/SIGTERM stops HTTP admission and allows five seconds for active requests to finish. The application then closes UDP intake, cancels forwarding requests and retries, joins workers and storage routines, and closes diagnostic-file cleanup. HTTP header, total read, write, and idle timeouts are five, fifteen, thirty, and sixty seconds respectively
 
 ## Response Generation
 

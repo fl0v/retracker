@@ -1,6 +1,7 @@
 // udpForwarder.go - UDP tracker client for forwarding to external UDP trackers (BEP 15).
 // Manages connection IDs with 2-minute lifetime, handles connect/announce protocol,
 // supports IPv4/IPv6 peer formats, and implements retry with exponential backoff.
+// Matching transaction IDs is required before interpreting any response action.
 package server
 
 import (
@@ -160,6 +161,21 @@ func (uf *UDPForwarder) dialUDP(ctx context.Context, uri string) (*udpConnection
 	return &udpConnection{UDPConn: udp, stop: stop}, nil
 }
 
+// readUDPTrackerResponse ignores stale/short datagrams within the current
+// attempt's fixed deadline; unrelated error packets cannot affect the request.
+func readUDPTrackerResponse(conn *udpConnection, transactionID uint32, buffer []byte) ([]byte, error) {
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			return nil, err
+		}
+		if n < 8 || binary.BigEndian.Uint32(buffer[4:8]) != transactionID {
+			continue
+		}
+		return buffer[:n], nil
+	}
+}
+
 // generateTransactionID generates a random 32-bit transaction ID
 func generateTransactionID() uint32 {
 	b := make([]byte, 4)
@@ -206,7 +222,8 @@ func (uf *UDPForwarder) connect(ctx context.Context, forwarder CoreCommon.Forwar
 
 		// Read response. Connect success payload is 16 bytes; error payload can include a longer message.
 		respBuf := make([]byte, 2048)
-		n, err := conn.Read(respBuf)
+		packet, err := readUDPTrackerResponse(conn, transactionID, respBuf)
+		n := len(packet)
 		if err != nil {
 			if retry == uf.maxRetries-1 {
 				conn.Close()
@@ -229,15 +246,6 @@ func (uf *UDPForwarder) connect(ctx context.Context, forwarder CoreCommon.Forwar
 		var respTransactionID uint32
 		binary.Read(reader, binary.BigEndian, &respAction)
 		binary.Read(reader, binary.BigEndian, &respTransactionID)
-
-		// Verify transaction ID first (applies to both success and error actions).
-		if respTransactionID != transactionID {
-			if retry == uf.maxRetries-1 {
-				conn.Close()
-				return 0, nil, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
-			}
-			continue
-		}
 
 		// Parse and return tracker error message (BEP 15 action=3).
 		if respAction == udpActionError {
@@ -340,8 +348,8 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 
 	// Determine numwant
 	numWant := int32(50)
-	if request.NumWant > 0 && request.NumWant < 200 {
-		numWant = int32(request.NumWant)
+	if request.NumWant > 0 {
+		numWant = int32(min(request.NumWant, uint64(tracker.MaxNumWant)))
 	}
 
 	buildAnnounceRequest := func(connID uint64, txID uint32) []byte {
@@ -387,7 +395,8 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 
 		// Read response (up to 20 + 6*N bytes for IPv4, or 20 + 18*N for IPv6)
 		respBuf := make([]byte, 4096)
-		n, err := conn.Read(respBuf)
+		packet, err := readUDPTrackerResponse(conn, transactionID, respBuf)
+		n := len(packet)
 		responseSize = n
 		if err != nil {
 			if retry == uf.maxRetries-1 {
@@ -433,6 +442,7 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 				if err != nil {
 					return nil, 0, fmt.Errorf("tracker error: %s (reconnect failed: %w)", errorMsg, err)
 				}
+				retry-- // A cookie refresh does not consume an announce attempt.
 				continue
 			}
 			return nil, 0, fmt.Errorf("tracker error: %s", errorMsg)
@@ -448,13 +458,6 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 		if respAction != udpActionAnnounce {
 			if retry == uf.maxRetries-1 {
 				return nil, 0, fmt.Errorf("unexpected action in announce response: %d", respAction)
-			}
-			continue
-		}
-
-		if respTransactionID != transactionID {
-			if retry == uf.maxRetries-1 {
-				return nil, 0, fmt.Errorf("transaction ID mismatch: expected %d, got %d", transactionID, respTransactionID)
 			}
 			continue
 		}

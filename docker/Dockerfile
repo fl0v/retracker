@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Build stage
 FROM golang:1.27.3-alpine AS builder
 
@@ -10,7 +11,8 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o retracker ./cmd/retracker
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o retracker ./cmd/retracker
 
 # Final stage
 FROM alpine:latest
@@ -25,9 +27,8 @@ RUN mkdir -p /app/scripts
 COPY --from=builder /build/retracker .
 
 # Copy entrypoint and helper scripts from repo
-COPY --from=builder /build/docker/docker-entrypoint.sh /app/docker-entrypoint.sh
-COPY --from=builder /build/scripts/update-forwarders.sh /app/scripts/update-forwarders.sh
-RUN chmod +x /app/docker-entrypoint.sh /app/scripts/update-forwarders.sh
+COPY --from=builder --chmod=0755 /build/docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --from=builder --chmod=0755 /build/scripts/update-forwarders.sh /app/scripts/update-forwarders.sh
 
 EXPOSE 6969 6969/udp
 

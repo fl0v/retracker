@@ -134,3 +134,12 @@ func TestMakeRequestPreservesBinaryIdentifiersAndPeerAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestPeerPortBounds(t *testing.T) {
+	for _, port := range []string{"1", "65535"} {
+		req, err := tracker.MakeRequest("203.0.113.10", strings.Repeat("h", 20), strings.Repeat("p", 20), port, "0", "0", "100", "", "1", "started", "", "", "", nil)
+		if err != nil || req.Port < 1 || req.Port > 65535 {
+			t.Fatalf("valid port %s rejected: %v", port, err)
+		}
+	}
+}
