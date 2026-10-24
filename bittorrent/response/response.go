@@ -1,8 +1,9 @@
 package response
 
 import (
-	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
+
+	"github.com/fl0v/retracker/bittorrent/common"
 )
 
 type Response struct {
@@ -16,24 +17,24 @@ type Response struct {
 	Peers         []common.Peer `bencode:"peers"`
 }
 
-func (self *Response) Bencode(compacted bool) (string, error) {
-	if compacted && self.FailureReason == "" {
-		response := self.Compacted()
+func (r *Response) Bencode(compacted bool) (string, error) {
+	if compacted && r.FailureReason == "" {
+		response := r.Compacted()
 		return response.Bencode()
 	}
-	return bencode.EncodeString(self)
+	return bencode.EncodeString(r)
 }
 
-func (self *Response) Compacted() ResponseCompacted {
+func (r *Response) Compacted() ResponseCompacted {
 	response := ResponseCompacted{
-		Interval:      self.Interval,
-		MinInterval:   self.MinInterval,
-		Complete:      self.Complete,
-		Incomplete:    self.Incomplete,
-		TrackerID:     self.TrackerID,
-		FailureReason: self.FailureReason,
+		Interval:      r.Interval,
+		MinInterval:   r.MinInterval,
+		Complete:      r.Complete,
+		Incomplete:    r.Incomplete,
+		TrackerID:     r.TrackerID,
+		FailureReason: r.FailureReason,
 	}
-	response.ReloadPeers(self.Peers)
+	response.ReloadPeers(r.Peers)
 	return response
 }
 

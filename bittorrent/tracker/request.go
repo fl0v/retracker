@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
+
+	"github.com/fl0v/retracker/bittorrent/common"
 )
 
 const (
@@ -46,32 +47,32 @@ type Request struct {
 	UserAgent  string          `bencode:"user_agent"`
 }
 
-func (self *Request) Peer() common.Peer {
+func (req *Request) Peer() common.Peer {
 	peer := common.Peer{
-		PeerID: self.PeerID,
-		IP:     self.IP,
-		Port:   self.Port,
+		PeerID: req.PeerID,
+		IP:     req.IP,
+		Port:   req.Port,
 	}
 	if !peer.IP.Valid() {
-		peer.IP = self.remoteAddr
+		peer.IP = req.remoteAddr
 	}
 	return peer
 }
 
-func (self *Request) String() string {
-	return fmt.Sprintf("%s info_hash:%x peer_id:%x port:%d ip:%s numwant:%d event:%s", self.remoteAddr, self.InfoHash, self.PeerID, self.Port, self.IP, self.NumWant, self.Event)
+func (req *Request) String() string {
+	return fmt.Sprintf("%s info_hash:%x peer_id:%x port:%d ip:%s numwant:%d event:%s", req.remoteAddr, req.InfoHash, req.PeerID, req.Port, req.IP, req.NumWant, req.Event)
 }
 
-func (self *Request) TimeStampDelta() float64 {
-	return time.Now().Sub(self.timestamp).Minutes()
+func (req *Request) TimeStampDelta() float64 {
+	return time.Since(req.timestamp).Minutes()
 }
 
-func (self *Request) Timestamp() time.Time {
-	return self.timestamp
+func (req *Request) Timestamp() time.Time {
+	return req.timestamp
 }
 
-func (self *Request) Bencode() (string, error) {
-	return bencode.EncodeString(self)
+func (req *Request) Bencode() (string, error) {
+	return bencode.EncodeString(req)
 }
 
 func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left, ip, numwant,
@@ -94,25 +95,25 @@ func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left,
 	if d, err := strconv.Atoi(port); err == nil {
 		request.Port = d
 	} else {
-		return nil, errors.New(fmt.Sprintf("Can't parse 'port' value: '%s'", err.Error()))
+		return nil, fmt.Errorf("can't parse 'port' value: %w", err)
 	}
 
 	if d, err := strconv.ParseUint(uploaded, 10, 64); err == nil {
 		request.Uploaded = d
 	} else {
-		return nil, errors.New(fmt.Sprintf("Can't parse 'uploaded' value: '%s'", err.Error()))
+		return nil, fmt.Errorf("can't parse 'uploaded' value: %w", err)
 	}
 
 	if d, err := strconv.ParseUint(downloaded, 10, 64); err == nil {
 		request.Downloaded = d
 	} else {
-		return nil, errors.New(fmt.Sprintf("Can't parse 'downloaded' value: '%s'", err.Error()))
+		return nil, fmt.Errorf("can't parse 'downloaded' value: %w", err)
 	}
 
 	if d, err := strconv.ParseUint(left, 10, 64); err == nil {
 		request.Left = d
 	} else {
-		return nil, errors.New(fmt.Sprintf("Can't parse 'left' value: '%s'", err.Error()))
+		return nil, fmt.Errorf("can't parse 'left' value: %w", err)
 	}
 
 	request.IP = common.Address(ip)
@@ -127,10 +128,8 @@ func MakeRequest(remoteAddr, infoHash, peerID, port, uploaded, downloaded, left,
 
 	if event := event; event == `` || event == `started` || event == `stopped` || event == `completed` {
 		request.Event = event
-	} else {
-		if logger != nil {
-			logger.Printf("WARNING! Got '%s' event in announce.\n", event)
-		}
+	} else if logger != nil {
+		logger.Printf("WARNING! Got '%s' event in announce.\n", event)
 	}
 
 	request.Compact = compactFlag == "1"

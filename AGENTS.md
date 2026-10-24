@@ -42,6 +42,9 @@ Full command:
 
 Notes:
 - `make check` runs only `fmt-check` + `lint` (it does not run tests).
+- `make lint`, `make test`, and `make test-compact` cover all five workspace modules. `make test-race` runs all tests with the race detector and writes a combined coverage profile
+- `.github/workflows/build-ghcr.yml` runs QA for PRs, master pushes, and published releases. The image job requires QA success and is skipped for PRs; coverage artifacts are retained for 14 days
+- CI pins golangci-lint v2.15.0 and gofumpt v0.9.2. Make targets respect caller-provided Go cache locations
 - If cache directories are not writable in restricted environments, run with local cache overrides:
   - `GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make fmt-check && GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make lint && GOCACHE=/tmp/retracker-gocache make test`
 
@@ -51,6 +54,7 @@ Notes:
 - `golangci-lint` v2.15.0 installed and in `PATH` for `make lint`.
   - Install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`
 - `gofumpt` is optional; `make fmt`/`make fmt-check` will fall back to `gofmt` if unavailable.
+  - CI installs `mvdan.cc/gofumpt@v0.9.2` to keep formatting reproducible.
 
 ### `go mod tidy` Guidance
 
@@ -214,6 +218,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Package-level variables use PascalCase (e.g., `ErrorLog`, `DebugLog`)
 - Struct fields use PascalCase
 - Local variables use camelCase
+- Legacy exported `common.Forward.Uri` and `Ip` names are preserved for compatibility; lint exempts only those two field-name findings
 
 ### Go Modules
 - Project uses Go workspaces (`go.work`)

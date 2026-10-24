@@ -36,6 +36,11 @@ linters:
       - legacy
       - std-error-handling
     rules:
+      # Preserve legacy exported fields used by existing module consumers.
+      - path: ^common/forwards\.go$
+        linters:
+          - staticcheck
+        text: 'ST1003: struct field (Uri|Ip) should be'
       - linters:
           - errcheck
           - goconst

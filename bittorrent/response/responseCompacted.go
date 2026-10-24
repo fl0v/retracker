@@ -5,8 +5,9 @@ import (
 	"encoding/binary"
 	"net"
 
-	"github.com/fl0v/retracker/bittorrent/common"
 	"github.com/zeebo/bencode"
+
+	"github.com/fl0v/retracker/bittorrent/common"
 )
 
 type ResponseCompacted struct {
@@ -21,34 +22,34 @@ type ResponseCompacted struct {
 	Peers6        []byte      `bencode:"peers6"`
 }
 
-func (self *ResponseCompacted) Bencode() (string, error) {
-	return bencode.EncodeString(self)
+func (rc *ResponseCompacted) Bencode() (string, error) {
+	return bencode.EncodeString(rc)
 }
 
-func (self *ResponseCompacted) Response() Response {
+func (rc *ResponseCompacted) Response() Response {
 	response := Response{
-		Interval:      self.Interval,
-		MinInterval:   self.MinInterval,
-		Complete:      self.Complete,
-		Incomplete:    self.Incomplete,
-		TrackerID:     self.TrackerID,
-		FailureReason: self.FailureReason,
-		RetryIn:       self.RetryIn,
-		Peers:         self.Peers(),
+		Interval:      rc.Interval,
+		MinInterval:   rc.MinInterval,
+		Complete:      rc.Complete,
+		Incomplete:    rc.Incomplete,
+		TrackerID:     rc.TrackerID,
+		FailureReason: rc.FailureReason,
+		RetryIn:       rc.RetryIn,
+		Peers:         rc.Peers(),
 	}
 	return response
 }
 
-func (self *ResponseCompacted) Peers() []common.Peer {
-	peers := make([]common.Peer, 0)
-	peers = append(peers, self.peers4Parse()...)
-	peers = append(peers, self.peers6Parse()...)
+func (rc *ResponseCompacted) Peers() []common.Peer {
+	peers := make([]common.Peer, 0, len(rc.Peers4)/6+len(rc.Peers6)/18)
+	peers = append(peers, rc.peers4Parse()...)
+	peers = append(peers, rc.peers6Parse()...)
 	return peers
 }
 
-func (self *ResponseCompacted) peers4Parse() []common.Peer {
+func (rc *ResponseCompacted) peers4Parse() []common.Peer {
 	peers := make([]common.Peer, 0)
-	buf := bytes.NewBuffer(self.Peers4)
+	buf := bytes.NewBuffer(rc.Peers4)
 	for {
 		ipBytes := make([]byte, 4)
 		if n, err := buf.Read(ipBytes); err != nil || n != 4 {
@@ -67,9 +68,9 @@ func (self *ResponseCompacted) peers4Parse() []common.Peer {
 	return peers
 }
 
-func (self *ResponseCompacted) peers6Parse() []common.Peer {
+func (rc *ResponseCompacted) peers6Parse() []common.Peer {
 	peers := make([]common.Peer, 0)
-	buf := bytes.NewBuffer(self.Peers6)
+	buf := bytes.NewBuffer(rc.Peers6)
 	for {
 		ipBytes := make([]byte, 16)
 		if n, err := buf.Read(ipBytes); err != nil || n != 16 {
@@ -88,7 +89,7 @@ func (self *ResponseCompacted) peers6Parse() []common.Peer {
 	return peers
 }
 
-func (self *ResponseCompacted) ReloadPeers(peers []common.Peer) {
+func (rc *ResponseCompacted) ReloadPeers(peers []common.Peer) {
 	var peers4 bytes.Buffer
 	var peers6 bytes.Buffer
 	for _, peer := range peers {
@@ -108,10 +109,10 @@ func (self *ResponseCompacted) ReloadPeers(peers []common.Peer) {
 		}
 		ErrorLog.Printf("Can't identify IP: %v", peer.IP)
 	}
-	self.Peers4 = peers4.Bytes()
+	rc.Peers4 = peers4.Bytes()
 	if peers6.Len() > 0 {
-		self.Peers6 = peers6.Bytes()
+		rc.Peers6 = peers6.Bytes()
 	} else {
-		self.Peers6 = nil
+		rc.Peers6 = nil
 	}
 }

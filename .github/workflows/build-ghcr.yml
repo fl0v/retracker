@@ -1,15 +1,67 @@
-name: Build and Push to GHCR
+name: CI and GHCR
 
 on:
+  pull_request:
   push:
     branches:
       - master   # Only build from master
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  qa:
+    name: Go QA
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            common/go.sum
+            bittorrent/*/go.sum
+
+      - name: Install pinned QA tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          go install mvdan.cc/gofumpt@v0.9.2
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Lint workspace
+        run: make lint
+
+      - name: Test workspace with race detection and coverage
+        run: make test-race
+
+      - name: Build Linux binary
+        run: CGO_ENABLED=0 GOOS=linux go build -o /tmp/retracker ./cmd/retracker
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    name: Build and publish image
+    needs: qa
+    if: github.event_name == 'push' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     permissions:
       contents: read

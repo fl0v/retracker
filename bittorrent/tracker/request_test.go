@@ -1,11 +1,35 @@
 package tracker_test
 
 import (
+	"bytes"
+	"errors"
+	"log"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/fl0v/retracker/bittorrent/tracker"
 )
+
+func TestInvalidNumericAnnouncePreservesParseError(t *testing.T) {
+	_, err := tracker.MakeRequest("192.0.2.1", strings.Repeat("h", 20), strings.Repeat("p", 20), "invalid", "0", "0", "1", "", "", "", "", "", "", nil)
+	var numberError *strconv.NumError
+	if !errors.As(err, &numberError) || numberError.Num != "invalid" {
+		t.Fatalf("expected wrapped numeric parsing error, got %v", err)
+	}
+}
+
+func TestUnknownAnnounceEventFallsBackAndLogs(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New(&output, "", 0)
+	req, err := tracker.MakeRequest("192.0.2.1", strings.Repeat("h", 20), strings.Repeat("p", 20), "6881", "0", "0", "1", "", "", "unknown-event", "", "", "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Event != "" || !strings.Contains(output.String(), "unknown-event") {
+		t.Fatalf("unknown event did not fall back with a warning: %+v, %q", req, output.String())
+	}
+}
 
 func TestMakeRequestRejectsMalformedRequiredFields(t *testing.T) {
 	for _, tc := range []struct {

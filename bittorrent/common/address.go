@@ -7,31 +7,28 @@ import (
 
 type Address string
 
-func (self *Address) Valid() bool {
-	if len(*self) == 0 {
-		return false
-	}
-	return true
+func (a *Address) Valid() bool {
+	return len(*a) != 0
 }
 
-func (self *Address) IPv4() (net.IP, error) {
-	if ip := net.ParseIP(self.String()); ip != nil {
+func (a *Address) IPv4() (net.IP, error) {
+	if ip := net.ParseIP(a.String()); ip != nil {
 		if ip = ip.To4(); ip != nil {
 			return ip, nil
 		}
 	}
-	return nil, errors.New(`Can't convert to IPv4'`)
+	return nil, errors.New("can't convert to IPv4")
 }
 
-func (self *Address) IPv6() (net.IP, error) {
-	if ip := net.ParseIP(self.String()); ip != nil {
+func (a *Address) IPv6() (net.IP, error) {
+	if ip := net.ParseIP(a.String()); ip != nil {
 		if ip = ip.To16(); ip != nil {
 			return ip, nil
 		}
 	}
-	return nil, errors.New(`Can't convert to IPv6'`)
+	return nil, errors.New("can't convert to IPv6")
 }
 
-func (self *Address) String() string {
-	return string(*self)
+func (a *Address) String() string {
+	return string(*a)
 }

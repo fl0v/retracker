@@ -2,7 +2,7 @@
 	docker-build docker-rebuild docker-clean \
 	docker-up docker-down docker-restart docker-logs docker-shell \
 	update-forwarders local-build local-clean local-run local-run-debug \
-	lint lint-fix fmt fmt-check check test test-compact hooks-install
+	lint lint-fix fmt fmt-check check test test-compact test-cover test-race hooks-install
 
 .DEFAULT_GOAL := help
 
@@ -124,10 +124,7 @@ lint: ## Run golangci-lint
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
-		echo "Downloading dependencies..."; \
-		mkdir -p /tmp/retracker-gocache /tmp/retracker-gomodcache && \
-		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache go mod download && \
-		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache $(GOLANGCI_LINT) run ./...; \
+		$(GOLANGCI_LINT) run $(WORKSPACE_PACKAGES); \
 	fi
 
 lint-fix: ## Run golangci-lint with auto-fix
@@ -137,8 +134,7 @@ lint-fix: ## Run golangci-lint with auto-fix
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
-		mkdir -p /tmp/retracker-gocache /tmp/retracker-gomodcache && \
-		GOCACHE=/tmp/retracker-gocache GOMODCACHE=/tmp/retracker-gomodcache $(GOLANGCI_LINT) run --fix ./...; \
+		$(GOLANGCI_LINT) run --fix $(WORKSPACE_PACKAGES); \
 	fi
 
 # Find gofumpt or gofmt
@@ -173,13 +169,17 @@ fmt-check: ## Check if code is formatted correctly
 check: fmt-check lint ## Run all checks (formatting and linting)
 
 test: ## Run all tests
-	go test ./... -v
+	go test $(WORKSPACE_PACKAGES) -v
 
 test-compact: ## Run all tests with compact output
-	go test ./...
+	go test $(WORKSPACE_PACKAGES)
 
 test-cover: ## Run all tests with coverage report
 	go test $(WORKSPACE_PACKAGES) -coverpkg=github.com/fl0v/retracker/... -coverprofile="$(COVERPROFILE)"
+	go tool cover -func="$(COVERPROFILE)"
+
+test-race: ## Run all workspace tests with race detection and combined coverage
+	go test $(WORKSPACE_PACKAGES) -race -coverpkg=github.com/fl0v/retracker/... -coverprofile="$(COVERPROFILE)"
 	go tool cover -func="$(COVERPROFILE)"
 
 hooks-install: ## Install repository git hooks (.githooks)

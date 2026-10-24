@@ -76,6 +76,11 @@ See [INSTALL.md](INSTALL.md) for configuration env vars and examples.
 - Format: `make fmt` (gofumpt)
 - Lint: `make lint` (golangci-lint)
 - All checks: `make check`
+- Tests across all five modules: `make test`
+- Race detection and combined coverage: `make test-race` (writes `coverage.out`)
+- View coverage: `go tool cover -html=coverage.out`
+
+GitHub Actions runs formatting, workspace lint, race tests with coverage, and a Linux build for pull requests, pushes to `master`, and published releases. Image publishing waits for this QA job and runs only for master pushes and releases. Each successful run saves a coverage artifact for 14 days.
 
 ## License
 

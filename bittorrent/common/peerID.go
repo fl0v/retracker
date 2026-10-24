@@ -5,19 +5,18 @@ import (
 	"strings"
 )
 
+const bitCometClient = "BitComet"
+
 type PeerID string
 
-func (self *PeerID) Valid() bool {
-	if len(*self) == 20 {
-		return true
-	}
-	return false
+func (p *PeerID) Valid() bool {
+	return len(*p) == 20
 }
 
 // DecodeClient decodes the client software name and version from peer_id
 // Supports Azureus-style encoding (most common) and other formats
-func (self *PeerID) DecodeClient() string {
-	peerID := string(*self)
+func (p *PeerID) DecodeClient() string {
+	peerID := string(*p)
 	if len(peerID) < 8 {
 		return "unknown"
 	}
@@ -37,7 +36,7 @@ func (self *PeerID) DecodeClient() string {
 			"BT": "BitTorrent",
 			"DE": "Deluge",
 			"AZ": "Azureus/Vuze",
-			"BC": "BitComet",
+			"BC": bitCometClient,
 			"BS": "BTSlave",
 			"CD": "Enhanced CTorrent",
 			"KT": "KTorrent",
@@ -132,7 +131,7 @@ func (self *PeerID) DecodeClient() string {
 	if len(peerID) >= 2 {
 		prefix := peerID[0:2]
 		shadowClients := map[string]string{
-			"ex": "BitComet",
+			"ex": bitCometClient,
 			"FC": "FileCroc",
 			"FD": "Free Download Manager",
 		}
@@ -144,7 +143,7 @@ func (self *PeerID) DecodeClient() string {
 
 	// BitComet style: starts with "exbc"
 	if strings.HasPrefix(peerID, "exbc") {
-		return "BitComet"
+		return bitCometClient
 	}
 
 	return "unknown"
