@@ -1,7 +1,7 @@
 # Installation and Deployment
 
 ## Prerequisites
-- Go 1.22+ for `go install` or building from source.
+- Go 1.26+ (Go 1.27.3 recommended) for `go install` or building from source.
 - Optional: Docker / Docker Compose for containerized runs.
 
 ## Install the binary

@@ -36,7 +36,7 @@ elif [ -f "$HOME/go/bin/golangci-lint" ]; then
     echo "    export PATH=\$PATH:$HOME/go/bin"
 else
     echo "  ✗ Not found"
-    echo "  Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+    echo "  Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
 fi
 
 if [ -n "$GOLANGCI_LINT" ]; then
@@ -89,7 +89,7 @@ echo ""
 echo "=== Recommendations ==="
 if [ -z "$GOLANGCI_LINT" ]; then
     echo "1. Install golangci-lint:"
-    echo "   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+    echo "   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
     echo ""
 fi
 

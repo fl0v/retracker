@@ -117,7 +117,7 @@ GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || \
 lint: ## Run golangci-lint
 	@if [ -z "$(GOLANGCI_LINT)" ]; then \
 		echo "golangci-lint not found in PATH."; \
-		echo "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"; \
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \
@@ -130,7 +130,7 @@ lint: ## Run golangci-lint
 lint-fix: ## Run golangci-lint with auto-fix
 	@if [ -z "$(GOLANGCI_LINT)" ]; then \
 		echo "golangci-lint not found in PATH."; \
-		echo "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"; \
 		echo "Make sure $$(go env GOPATH)/bin is in your PATH"; \
 		exit 1; \
 	else \

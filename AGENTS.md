@@ -47,9 +47,9 @@ Notes:
 
 ### QA Tooling Requirements
 
-- Go toolchain `1.22.x` (see `go.mod` `toolchain`).
-- `golangci-lint` installed and in `PATH` for `make lint`.
-  - Install: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+- Go 1.26+ with the Go 1.27.3 toolchain (see `go.mod` and `go.work`).
+- `golangci-lint` v2.15.0 installed and in `PATH` for `make lint`.
+  - Install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`
 - `gofumpt` is optional; `make fmt`/`make fmt-check` will fall back to `gofmt` if unavailable.
 
 ### `go mod tidy` Guidance
