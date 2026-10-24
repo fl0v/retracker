@@ -2,11 +2,9 @@ package observability
 
 import (
 	"log"
-	"net/http"
 	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
@@ -163,6 +161,5 @@ func NewPrometheus() (*Prometheus, error) {
 		ErrorLog.Println(err.Error())
 		return nil, err
 	}
-	http.Handle("/metrics", promhttp.Handler())
 	return &p, nil
 }

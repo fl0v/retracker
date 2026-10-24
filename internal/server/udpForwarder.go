@@ -5,6 +5,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -56,7 +57,8 @@ type UDPForwarder struct {
 	retryBase   time.Duration
 	connections map[string]connectionEntry // forwarderName -> connection entry
 	connMu      sync.Mutex
-	stopChan    chan struct{}
+	stopChan    <-chan struct{}
+	tasks       *backgroundTasks
 }
 
 // NewUDPForwarder creates a new UDP forwarder client
@@ -76,16 +78,20 @@ func NewUDPForwarder(debug bool, timeout int, retries int, retryBaseMs int) *UDP
 		maxRetries:  retries,
 		retryBase:   time.Duration(retryBaseMs) * time.Millisecond,
 		connections: make(map[string]connectionEntry),
-		stopChan:    make(chan struct{}),
+		tasks:       newBackgroundTasks(),
 	}
 	// Start connection cleanup routine
-	go uf.cleanupConnections()
+	uf.stopChan = uf.tasks.ctx.Done()
+	uf.tasks.run(uf.cleanupConnections)
 	return uf
 }
 
 // Stop stops the UDP forwarder and cleans up resources
 func (uf *UDPForwarder) Stop() {
-	close(uf.stopChan)
+	uf.tasks.close()
+	uf.connMu.Lock()
+	clear(uf.connections)
+	uf.connMu.Unlock()
 }
 
 // cleanupConnections periodically removes expired connection IDs
@@ -114,7 +120,7 @@ func (uf *UDPForwarder) cleanupConnections() {
 }
 
 // getConnectionID retrieves or establishes a connection ID for the forwarder
-func (uf *UDPForwarder) getConnectionID(forwarder CoreCommon.Forward) (uint64, *net.UDPConn, error) {
+func (uf *UDPForwarder) getConnectionID(ctx context.Context, forwarder CoreCommon.Forward) (uint64, *udpConnection, error) {
 	forwarderName := forwarder.GetName()
 
 	// Check if we have a valid cached connection ID
@@ -123,7 +129,7 @@ func (uf *UDPForwarder) getConnectionID(forwarder CoreCommon.Forward) (uint64, *
 	if ok && time.Since(entry.timestamp) < connectionIDLifetime-10*time.Second {
 		// Still valid (with 10s buffer before expiration)
 		uf.connMu.Unlock()
-		conn, err := uf.dialUDP(forwarder.Uri)
+		conn, err := uf.dialUDP(ctx, forwarder.Uri)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -132,11 +138,11 @@ func (uf *UDPForwarder) getConnectionID(forwarder CoreCommon.Forward) (uint64, *
 	uf.connMu.Unlock()
 
 	// Need to establish new connection
-	return uf.connect(forwarder)
+	return uf.connect(ctx, forwarder)
 }
 
 // dialUDP creates a UDP connection to the tracker
-func (uf *UDPForwarder) dialUDP(uri string) (*net.UDPConn, error) {
+func (uf *UDPForwarder) dialUDP(ctx context.Context, uri string) (*udpConnection, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URI: %w", err)
@@ -147,17 +153,14 @@ func (uf *UDPForwarder) dialUDP(uri string) (*net.UDPConn, error) {
 		host = net.JoinHostPort(u.Hostname(), "6969") // Standard UDP tracker port
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", host)
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "udp", host)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve UDP address: %w", err)
+		return nil, err
 	}
-
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial UDP: %w", err)
-	}
-
-	return conn, nil
+	udp := conn.(*net.UDPConn)
+	stop := context.AfterFunc(ctx, func() { _ = udp.Close() })
+	return &udpConnection{UDPConn: udp, stop: stop}, nil
 }
 
 // generateTransactionID generates a random 32-bit transaction ID
@@ -168,10 +171,10 @@ func generateTransactionID() uint32 {
 }
 
 // connect sends a connect request and receives a connection ID
-func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPConn, error) {
+func (uf *UDPForwarder) connect(ctx context.Context, forwarder CoreCommon.Forward) (uint64, *udpConnection, error) {
 	forwarderName := forwarder.GetName()
 
-	conn, err := uf.dialUDP(forwarder.Uri)
+	conn, err := uf.dialUDP(ctx, forwarder.Uri)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -187,8 +190,9 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 	// Send connect request with retries
 	var connectionID uint64
 	for retry := 0; retry < uf.maxRetries; retry++ {
-		if retry > 0 {
-			time.Sleep(uf.retryBase * time.Duration(1<<retry)) // Exponential backoff
+		if retryErr := uf.waitRetry(ctx, retry); retryErr != nil {
+			conn.Close()
+			return 0, nil, retryErr
 		}
 
 		// Reset deadline for each retry attempt
@@ -287,10 +291,25 @@ func (uf *UDPForwarder) connect(forwarder CoreCommon.Forward) (uint64, *net.UDPC
 
 // Announce sends an announce request to the UDP tracker
 func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.Request) (*Response.Response, int, error) {
+	return uf.AnnounceContext(context.Background(), forwarder, request)
+}
+
+// AnnounceContext stops dial, reads, and backoff when the peer or client stops.
+func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCommon.Forward, request tracker.Request) (*Response.Response, int, error) {
+	if !uf.tasks.begin() {
+		return nil, 0, context.Canceled
+	}
+	defer uf.tasks.wg.Done()
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(uf.tasks.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	if uf.tasks.ctx.Err() != nil {
+		return nil, 0, context.Canceled
+	}
 	forwarderName := forwarder.GetName()
 	trackerURL := forwarder.Uri
 
-	connectionID, conn, err := uf.getConnectionID(forwarder)
+	connectionID, conn, err := uf.getConnectionID(ctx, forwarder)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get connection ID: %w", err)
 	}
@@ -352,8 +371,8 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 	var responseSize int
 	retriedAfterReconnect := false
 	for retry := 0; retry < uf.maxRetries; retry++ {
-		if retry > 0 {
-			time.Sleep(uf.retryBase * time.Duration(1<<retry))
+		if retryErr := uf.waitRetry(ctx, retry); retryErr != nil {
+			return nil, 0, retryErr
 		}
 		transactionID := generateTransactionID()
 		requestBytes := buildAnnounceRequest(connectionID, transactionID)
@@ -413,7 +432,7 @@ func (uf *UDPForwarder) Announce(forwarder CoreCommon.Forward, request tracker.R
 				retriedAfterReconnect = true
 				conn.Close()
 				conn = nil
-				connectionID, conn, err = uf.connect(forwarder)
+				connectionID, conn, err = uf.connect(ctx, forwarder)
 				if err != nil {
 					return nil, 0, fmt.Errorf("tracker error: %s (reconnect failed: %w)", errorMsg, err)
 				}
@@ -512,4 +531,32 @@ func shouldReconnectAfterTrackerError(errorMsg string) bool {
 		}
 	}
 	return false
+}
+
+// udpConnection releases its cancellation callback when a request is finished.
+type udpConnection struct {
+	*net.UDPConn
+	stop func() bool
+}
+
+func (conn *udpConnection) Close() error {
+	conn.stop()
+	return conn.UDPConn.Close()
+}
+
+func (uf *UDPForwarder) waitRetry(ctx context.Context, retry int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if retry == 0 {
+		return nil
+	}
+	timer := time.NewTimer(uf.retryBase * time.Duration(1<<retry))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

@@ -91,6 +91,12 @@ Handles edge cases: premature queuing, clock adjustments, reschedules.
 
 ## Worker Pool
 
+### Shutdown
+
+`Core.Start()` starts configured forwarding after metrics setup. Each manager tracks its workers, scaling, scheduler, stats, and event-forwarding goroutines. `Stop()` prevents new queue submissions, cancels HTTP requests and UDP reads/dials/backoff, joins owned goroutines, then clears queued, scheduled, and pending work. Repeated or concurrent stops are safe; starting a stopped manager has no effect.
+
+The job channel stays open. Queue producers synchronize with shutdown and reject work once cancellation begins, avoiding sends to a closed channel. Scaled workers register with the same goroutine group before launch.
+
 ### Base Workers
 
 **Count**: `Config.ForwarderWorkers`  

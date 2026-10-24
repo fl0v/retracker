@@ -2,6 +2,7 @@
 // Manages job queue, worker scaling, rate limiting, throttling, and forwarder lifecycle.
 // Handles job scheduling, deduplication, and forwarder enable/disable/suspend logic.
 // Pending markers belong to individual jobs; peer sessions invalidate stale work.
+// Stop cancels network work and joins workers before releasing queued jobs.
 package server
 
 import (
@@ -75,7 +76,11 @@ type ForwarderManager struct {
 	Forwarders         []CoreCommon.Forward
 	Workers            int
 	jobQueue           chan AnnounceJob
-	stopChan           chan struct{}
+	stopChan           <-chan struct{}
+	tasks              *backgroundTasks
+	startOnce          sync.Once
+	stopOnce           sync.Once
+	queueMu            sync.RWMutex
 	Prometheus         *observability.Prometheus
 	TempStorage        *TempStorage
 	pendingJobs        map[string]*announceJobState
@@ -188,7 +193,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		Forwarders:               cfg.Forwards,
 		Workers:                  cfg.ForwarderWorkers,
 		jobQueue:                 make(chan AnnounceJob, queueSize),
-		stopChan:                 make(chan struct{}),
+		tasks:                    newBackgroundTasks(),
 		Prometheus:               prom,
 		TempStorage:              tempStorage,
 		pendingJobs:              make(map[string]*announceJobState),
@@ -213,6 +218,7 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 		scaleDownChan:       make(chan struct{}, 100),
 		scheduledJobs:       make(map[time.Time][]AnnounceJob),
 	}
+	fm.stopChan = fm.tasks.ctx.Done()
 
 	for _, forwarder := range cfg.Forwards {
 		fm.stats[forwarder.GetName()] = &ForwarderStats{SampleCount: 0}
@@ -231,31 +237,85 @@ func NewForwarderManager(cfg *config.Config, storage *ForwarderStorage, mainStor
 }
 
 func (fm *ForwarderManager) Start() {
-	for i := 0; i < fm.Workers; i++ {
-		go fm.worker()
-	}
-	if fm.Prometheus != nil {
-		fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
-	}
-	go fm.scaleWorkers()
-	go fm.schedulerRoutine()
+	fm.queueMu.RLock()
+	defer fm.queueMu.RUnlock()
+	fm.startOnce.Do(func() {
+		if fm.isStopping() {
+			return
+		}
+		for i := 0; i < fm.Workers; i++ {
+			fm.tasks.run(fm.worker)
+		}
+		if fm.Prometheus != nil {
+			fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+		}
+		fm.tasks.run(fm.scaleWorkers)
+		fm.tasks.run(fm.schedulerRoutine)
 
-	if fm.Config.StatsInterval > 0 {
-		go fm.statsRoutine()
-	}
+		if fm.Config.StatsInterval > 0 {
+			fm.tasks.run(fm.statsRoutine)
+		}
+	})
 }
 
 func (fm *ForwarderManager) Stop() {
-	close(fm.stopChan)
-	close(fm.jobQueue)
-	if fm.udpForwarder != nil {
-		fm.udpForwarder.Stop()
+	fm.stopOnce.Do(func() {
+		fm.queueMu.Lock()
+		fm.tasks.stop()
+		fm.queueMu.Unlock()
+		if fm.udpForwarder != nil {
+			fm.udpForwarder.Stop()
+		}
+		fm.tasks.wg.Wait()
+		fm.pendingMu.Lock()
+		clear(fm.pendingJobs)
+		fm.pendingMu.Unlock()
+		fm.scheduledJobsMu.Lock()
+		clear(fm.scheduledJobs)
+		fm.scheduledJobsMu.Unlock()
+		fm.workerCountMu.Lock()
+		fm.workerCount = 0
+		fm.workerCountMu.Unlock()
+		if fm.Prometheus != nil {
+			fm.Prometheus.WorkerCount.Set(0)
+		}
+		// The queue is never closed: concurrent producers cannot send to a closed channel.
+		for {
+			select {
+			case <-fm.jobQueue:
+			default:
+				return
+			}
+		}
+	})
+}
+
+func (fm *ForwarderManager) isStopping() bool {
+	select {
+	case <-fm.stopChan:
+		return true
+	default:
+		return false
 	}
+}
+
+func (fm *ForwarderManager) requestContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, time.Duration(fm.Config.ForwardTimeout)*time.Second)
+	if fm.tasks == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(fm.tasks.ctx, cancel)
+	return ctx, func() { stop(); cancel() }
 }
 
 // AddRuntimeForwarder adds a new forwarder in memory at runtime.
 // The forwarder is not persisted and is lost on restart.
 func (fm *ForwarderManager) AddRuntimeForwarder(forwarderURL string) (CoreCommon.Forward, error) {
+	fm.queueMu.RLock()
+	defer fm.queueMu.RUnlock()
+	if fm.isStopping() {
+		return CoreCommon.Forward{}, fmt.Errorf("forwarder manager is stopped")
+	}
 	uri := strings.TrimSpace(forwarderURL)
 	if uri == "" {
 		return CoreCommon.Forward{}, fmt.Errorf("missing forwarder url")
@@ -362,10 +422,11 @@ func (fm *ForwarderManager) worker() {
 			fm.workerCountMu.Lock()
 			if fm.workerCount > baseWorkers {
 				fm.workerCount--
+				remaining := fm.workerCount
 				fm.workerCountMu.Unlock()
-				InfoLogFwd.Printf("Worker scaling down, remaining: %d\n", fm.workerCount)
+				InfoLogFwd.Printf("Worker scaling down, remaining: %d\n", remaining)
 				if fm.Prometheus != nil {
-					fm.Prometheus.WorkerCount.Set(float64(fm.workerCount))
+					fm.Prometheus.WorkerCount.Set(float64(remaining))
 				}
 				return
 			}
@@ -408,7 +469,7 @@ func (fm *ForwarderManager) scaleWorkers() {
 				fm.workerCount++
 				newCount := fm.workerCount
 				fm.workerCountMu.Unlock()
-				go fm.worker()
+				fm.tasks.run(fm.worker)
 				InfoLogFwd.Printf("Scaling workers up to %d (queue %d%%)\n", newCount, fillPct)
 				if fm.Prometheus != nil {
 					fm.Prometheus.WorkerCount.Set(float64(newCount))
@@ -909,6 +970,11 @@ func (fm *ForwarderManager) QueueEligibleAnnounces(infoHash common.InfoHash, req
 }
 
 func (fm *ForwarderManager) queueEligibleAnnounces(infoHash common.InfoHash, request tracker.Request, peerContext context.Context) {
+	fm.queueMu.RLock()
+	defer fm.queueMu.RUnlock()
+	if fm.isStopping() {
+		return
+	}
 	// Copy forwarders slice while holding lock to avoid race with disableForwarder
 	fm.forwardersMu.RLock()
 	forwarders := make([]CoreCommon.Forward, len(fm.Forwarders))
@@ -1125,6 +1191,12 @@ func (fm *ForwarderManager) schedulerRoutine() {
 }
 
 func (fm *ForwarderManager) processScheduledReadyJob(job AnnounceJob, now time.Time) {
+	fm.queueMu.RLock()
+	defer fm.queueMu.RUnlock()
+	if fm.isStopping() {
+		fm.finishJob(job)
+		return
+	}
 	if job.canceled() {
 		fm.finishJob(job)
 		return
@@ -1255,7 +1327,7 @@ func (fm *ForwarderManager) handleRetryError(job AnnounceJob, failureReason stri
 func (fm *ForwarderManager) scheduleJob(job AnnounceJob) bool {
 	fm.scheduledJobsMu.Lock()
 	defer fm.scheduledJobsMu.Unlock()
-	if job.canceled() {
+	if job.canceled() || fm.isStopping() {
 		return false
 	}
 

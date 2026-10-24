@@ -15,11 +15,7 @@ import (
 func TestRuntimeForwarderInitializationDuringRequests(t *testing.T) {
 	cfg := &config.Config{AnnounceInterval: 1800, ForwarderQueueSize: 10, ForwarderWorkers: 1, StatsInterval: 1}
 	core := NewCore(cfg, nil)
-	t.Cleanup(func() {
-		if core.ForwarderManager != nil {
-			core.ForwarderManager.Stop()
-		}
-	})
+	t.Cleanup(func() { _ = core.Close() })
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for worker := range 8 {
@@ -74,15 +70,12 @@ func TestHTTPAddForwarderHandler(t *testing.T) {
 		t.Fatalf("failed to create temp storage: %v", err)
 	}
 
+	t.Cleanup(func() { _ = tempStorage.Close() })
 	core := NewCore(cfg, tempStorage)
 	if core.ForwarderManager != nil {
 		t.Fatalf("expected no forwarder manager initially")
 	}
-	t.Cleanup(func() {
-		if core.ForwarderManager != nil {
-			core.ForwarderManager.Stop()
-		}
-	})
+	t.Cleanup(func() { _ = core.Close() })
 
 	body := []byte(`{"urls":["https://dynamic-tracker.example.com:443/announce"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/add-forwarder", bytes.NewReader(body))

@@ -106,6 +106,9 @@ Only explicitly supplied flags override other settings. For example, YAML `liste
 - `ADDITIONAL_TRACKERS_FILE` - Path to additional trackers file used by `update-forwarders.sh` (default: `configs/trackers.txt`)
 
 ## From source
+
+The tracker handles SIGINT and SIGTERM. Active HTTP requests get up to five seconds to finish; forwarding requests/retries and background cleanup are then canceled and joined. Container stop uses this same shutdown path. HTTP connections have a five-second header timeout and a sixty-second idle timeout.
+
 ```bash
 git clone https://github.com/fl0v/retracker.git
 cd retracker

@@ -54,11 +54,7 @@ func newIntegrationHarness(t *testing.T, cfg *config.Config, forwarder corecommo
 		fm.Start()
 	}
 
-	cleanup := func() {
-		if startManager {
-			fm.Stop()
-		}
-	}
+	cleanup := func() { fm.Stop() }
 
 	return announceReceiver, fm, forwarderStorage, cleanup
 }

@@ -293,6 +293,7 @@ Limits forwarders per announce when queue is filling up.
 - **Runtime initialization**: Core and receivers share a read/write lock while publishing the first forwarder manager; announce, scrape, and stats readers observe a consistent initialized state
 - **HTTP addresses**: Remote endpoints are parsed with `net.SplitHostPort`, preserving IPv6 addresses without brackets
 - **UDP lifecycle**: Each packet handler owns its bytes. Closing the receiver stops packet reads and connection cleanup, waits for handlers, and can be repeated safely
+- **Application shutdown**: SIGINT/SIGTERM stops HTTP admission and allows five seconds for active requests to finish. The application then closes UDP intake, cancels forwarding requests and retries, joins workers and storage routines, and closes diagnostic-file cleanup. HTTP header and idle timeouts are five and sixty seconds respectively
 
 ## Response Generation
 

@@ -1,15 +1,14 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
-
-	"github.com/fl0v/retracker/internal/observability"
-	"github.com/fl0v/retracker/internal/server"
+	"os/signal"
+	"syscall"
 )
 
 const VERSION = `0.10.0`
@@ -50,53 +49,11 @@ func main() {
 		ErrorLog.Fatalln("Failed to load configuration:", err)
 	}
 
-	tempStorage, err := server.NewTempStorage(``)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err = run(ctx, cfg)
+	stop()
 	if err != nil {
-		os.Exit(1)
-	}
-
-	core := server.NewCore(&cfg, tempStorage)
-
-	// https://github.com/vvampirius/retracker/issues/7
-	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/x-icon")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(faviconIco)))
-		w.Write(faviconIco)
-	})
-
-	http.HandleFunc("/scrape", core.HTTPScrapeHandler)
-	http.HandleFunc("/announce", core.Receiver.Announce.HTTPHandler)
-	http.HandleFunc("/stats", core.HTTPStatsHandler)
-	http.HandleFunc("/add-forwarder", core.HTTPAddForwarderHandler)
-	if cfg.PrometheusEnabled {
-		p, err := observability.NewPrometheus()
-		if err != nil {
-			os.Exit(1)
-		}
-		core.Receiver.Announce.Prometheus = p
-		core.Receiver.UDP.Prometheus = p
-		if core.ForwarderManager != nil {
-			core.ForwarderManager.Prometheus = p
-		}
-	}
-
-	// Print configuration (after all setup is complete)
-	cfg.PrintConfig()
-
-	// Start UDP server if configured
-	if cfg.UDPListen != "" {
-		core.Receiver.UDP.TempStorage = tempStorage
-		if err := core.Receiver.UDP.Start(cfg.UDPListen); err != nil {
-			ErrorLog.Fatalln("Failed to start UDP server:", err.Error())
-		}
-		defer core.Receiver.UDP.Close()
-	}
-
-	fmt.Printf("HTTP tracker listening on %s\n", cfg.Listen)
-	fmt.Println("Server ready to accept connections")
-	fmt.Println()
-
-	if err := http.ListenAndServe(cfg.Listen, nil); err != nil { // set listen port
 		ErrorLog.Println(err)
+		os.Exit(1)
 	}
 }

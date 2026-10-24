@@ -1,3 +1,4 @@
+// tempStorage.go - Diagnostic response files and stoppable age-based cleanup.
 package server
 
 import (
@@ -11,35 +12,48 @@ import (
 var ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
 
 type TempStorage struct {
-	path string
+	path  string
+	tasks *backgroundTasks
 }
 
 func (ts *TempStorage) cleanRoutine() {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
 	for {
-		entries, err := os.ReadDir(ts.path)
-		if err != nil {
-			ErrorLog.Println(err.Error())
-			time.Sleep(time.Hour) // back off to reduce churn on repeated failures
+		if ts.tasks.ctx.Err() != nil {
+			return
+		}
+		ts.cleanExpired()
+		select {
+		case <-ts.tasks.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (ts *TempStorage) cleanExpired() {
+	entries, err := os.ReadDir(ts.path)
+	if err != nil {
+		ErrorLog.Println(err.Error())
+		return
+	}
+	now := time.Now()
+	deadline := now.AddDate(0, 0, -1)
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
-		now := time.Now()
-		deadline := now.AddDate(0, 0, -1)
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil {
+		info, err := entry.Info()
+		if err != nil {
+			ErrorLog.Println(err.Error())
+			continue
+		}
+		if info.ModTime().Before(deadline) {
+			if err := os.Remove(path.Join(ts.path, entry.Name())); err != nil {
 				ErrorLog.Println(err.Error())
-				continue
-			}
-			if info.ModTime().Before(deadline) {
-				if err := os.Remove(path.Join(ts.path, entry.Name())); err != nil {
-					ErrorLog.Println(err.Error())
-				}
 			}
 		}
-		time.Sleep(time.Hour)
 	}
 }
 
@@ -62,15 +76,24 @@ func (ts *TempStorage) SaveBencodeFromForwarder(p []byte, hash string, uri strin
 
 func NewTempStorage(_path string) (*TempStorage, error) {
 	ts := TempStorage{
-		path: _path,
+		path:  _path,
+		tasks: newBackgroundTasks(),
 	}
 	if ts.path == `` {
 		ts.path = path.Join(os.TempDir(), `retracker`)
 	}
 	if err := os.MkdirAll(ts.path, 0o755); err != nil {
+		ts.tasks.close()
 		ErrorLog.Println(err.Error())
 		return nil, err
 	}
-	go ts.cleanRoutine()
+	ts.tasks.run(ts.cleanRoutine)
 	return &ts, nil
+}
+
+func (ts *TempStorage) Close() error {
+	if ts.tasks != nil {
+		ts.tasks.close()
+	}
+	return nil
 }

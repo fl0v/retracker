@@ -16,7 +16,7 @@ This file provides guidance for AI agents working on the retracker codebase. It 
 
 If you need fast orientation, read files in this order:
 
-1. `cmd/retracker/main.go` and `cmd/retracker/config.go` (startup, configuration precedence/defaults, HTTP/UDP wiring)
+1. `cmd/retracker/main.go`, `config.go`, and `server.go` (signals, configuration, HTTP/UDP startup and shutdown)
 2. `internal/config/config.go` (all config fields + YAML keys)
 3. `internal/server/core.go` (how storage/forwarders/receivers are composed)
 4. `internal/server/receiverAnnounce.go` (announce flow and response assembly)
@@ -172,6 +172,8 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - CLI flags are registered and configuration is assembled in `cmd/retracker/config.go`; `main.go` parses flags and starts the server
 - Precedence is defaults, YAML, environment, then explicitly supplied flags. False debug values and empty UDP values override YAML; `-c` and `-f` override their environment paths, including empty flags to skip loading
 - The Docker entrypoint passes arguments through; the Go binary reads configuration environment variables directly
+- `Core.Start()` starts configured forwarding after metrics are attached. Runtime-created managers start immediately. `Core.Close()` stops UDP intake, joins forwarders, and closes storage; the caller closes its separately owned `TempStorage`
+- SIGINT/SIGTERM drains HTTP for up to five seconds, then cancels forwarding and joins background routines. `ForwarderManager.Stop`, `UDPForwarder.Stop`, and service `Close` methods are safe to repeat; forwarder queues are never closed while producers may run
 - Forwarders are loaded from YAML file via `Config.ReloadForwards()`
 
 ### BitTorrent Protocol
@@ -228,6 +230,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Forwarder queue eligibility, scheduling, and throttling should be tested
 - Age-based purging should be tested with time manipulation
 - UDP handler should test connection state management
+- Shutdown tests must cover active HTTP/UDP requests, retry cancellation, repeated close, and concurrent queue producers; run the race detector after lifecycle changes
 - `make test-cover` tests all five workspace modules and writes a combined statement-coverage profile to `coverage.out` (override with `COVERPROFILE`); root `go test ./...` alone excludes nested modules
 
 ## Common Tasks

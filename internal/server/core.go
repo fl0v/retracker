@@ -2,6 +2,7 @@
 // Contains Core struct that holds Storage, ForwarderStorage, ForwarderManager, and Receiver.
 // Also provides HTTP stats endpoint handler and simpleStatsProvider for non-forwarder mode.
 // Shares a read/write lock with receivers to publish runtime forwarder initialization safely.
+// Start begins configured forwarding; Close joins the owned tracker services.
 package server
 
 import (
@@ -25,6 +26,9 @@ type Core struct {
 	ForwarderManager *ForwarderManager
 	Receiver         *Receiver
 	forwarderMu      sync.RWMutex
+	closed           bool
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
@@ -44,7 +48,6 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 		storage.disableStatsRoutine.Store(true)
 
 		forwarderManager = NewForwarderManager(cfg, forwarderStorage, storage, prometheus, tempStorage)
-		forwarderManager.Start()
 	}
 
 	core := Core{
@@ -59,6 +62,31 @@ func NewCore(cfg *config.Config, tempStorage *TempStorage) *Core {
 	core.Receiver.Announce.forwarderMu = &core.forwarderMu
 	core.Receiver.UDP.forwarderMu = &core.forwarderMu
 	return &core
+}
+
+// Start begins configured forwarding after handlers and metrics are configured.
+func (core *Core) Start() {
+	core.forwarderMu.Lock()
+	defer core.forwarderMu.Unlock()
+	if !core.closed && core.ForwarderManager != nil {
+		core.ForwarderManager.Start()
+	}
+}
+
+// Close stops UDP intake, forwarding, and storage background routines in order.
+func (core *Core) Close() error {
+	core.closeOnce.Do(func() {
+		core.forwarderMu.Lock()
+		core.closed = true
+		fm := core.ForwarderManager
+		core.forwarderMu.Unlock()
+		core.closeErr = core.Receiver.UDP.Close()
+		if fm != nil {
+			fm.Stop()
+		}
+		core.closeErr = errors.Join(core.closeErr, core.Storage.Close())
+	})
+	return core.closeErr
 }
 
 // HTTPStatsHandler handles /stats HTTP requests
@@ -116,6 +144,9 @@ type addForwardersResponse struct {
 func (core *Core) ensureForwarderManager() *ForwarderManager {
 	core.forwarderMu.Lock()
 	defer core.forwarderMu.Unlock()
+	if core.closed {
+		return nil
+	}
 
 	if core.ForwarderManager != nil {
 		return core.ForwarderManager
@@ -185,6 +216,10 @@ func (core *Core) HTTPAddForwarderHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	fm := core.ensureForwarderManager()
+	if fm == nil {
+		http.Error(w, "tracker is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	resp := addForwardersResponse{
 		Status:  "added",

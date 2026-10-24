@@ -119,7 +119,7 @@ func isRoutablePeerAddress(address common.Address) bool {
 
 // executeAnnounce routes to the appropriate protocol handler
 func (fm *ForwarderManager) executeAnnounce(job AnnounceJob) {
-	if job.canceled() {
+	if job.canceled() || fm.isStopping() {
 		return
 	}
 	forward := job.Forwarder
@@ -236,7 +236,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		fm.MainStorage.requestsMu.Lock()
 		defer fm.MainStorage.requestsMu.Unlock()
 	}
-	if job.canceled() {
+	if job.canceled() || fm.isStopping() {
 		return
 	}
 	forwardName := job.Forwarder.GetName()
@@ -324,7 +324,7 @@ func (fm *ForwarderManager) doUDPAnnounce(job AnnounceJob) AnnounceResult {
 		DebugLogFwd.Printf("  Using IP: %s\n", forward.Ip)
 	}
 
-	bitResponse, respBytes, err := fm.udpForwarder.Announce(forward, job.Request)
+	bitResponse, respBytes, err := fm.udpForwarder.AnnounceContext(job.context(), forward, job.Request)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -369,6 +369,9 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 
 	var lastErr error
 	for retry := 0; retry < attempts; retry++ {
+		if fm.isStopping() {
+			return buildFailureResult(time.Since(startTime), context.Canceled)
+		}
 		if job.canceled() {
 			return buildFailureResult(time.Since(startTime), job.context().Err())
 		}
@@ -376,6 +379,9 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 			timer := time.NewTimer(backoff * time.Duration(1<<retry))
 			select {
 			case <-timer.C:
+			case <-fm.stopChan:
+				timer.Stop()
+				return buildFailureResult(time.Since(startTime), context.Canceled)
 			case <-job.context().Done():
 				timer.Stop()
 				return buildFailureResult(time.Since(startTime), job.context().Err())
@@ -409,7 +415,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	hash := fmt.Sprintf("%x", job.InfoHash)
 	trackerURL := forward.Uri
 
-	ctx, cancel := context.WithTimeout(job.context(), time.Second*time.Duration(fm.Config.ForwardTimeout))
+	ctx, cancel := fm.requestContext(job.context())
 	defer cancel()
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
@@ -564,13 +570,15 @@ func (fm *ForwarderManager) forwardEventToAll(infoHash common.InfoHash, peerID c
 	fm.forwardersMu.RUnlock()
 
 	done := make(chan struct{})
-	go func() {
+	if !fm.tasks.run(func() {
 		for _, forwarder := range forwarders {
 			f := forwarder
-			go fm.executeEventAnnounce(f, infoHash, peerID, request)
+			fm.tasks.run(func() { fm.executeEventAnnounce(f, infoHash, peerID, request) })
 		}
 		close(done)
-	}()
+	}) {
+		return
+	}
 
 	select {
 	case <-done:
@@ -615,7 +623,7 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 func (fm *ForwarderManager) doHTTPEventRequest(forwarder CoreCommon.Forward, request tracker.Request) error {
 	uri := fm.buildAnnounceURI(forwarder, request, request.Event)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(fm.Config.ForwardTimeout))
+	ctx, cancel := fm.requestContext(context.Background())
 	defer cancel()
 
 	rqst, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)

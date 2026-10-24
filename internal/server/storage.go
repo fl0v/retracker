@@ -2,6 +2,7 @@
 // Structure: map[InfoHash]map[PeerID]Request with mutex protection.
 // Includes background purgeRoutine that removes stale peers based on Config.Age.
 // Peer sessions cancel forwarding jobs on removal or expiry.
+// Close cancels peer sessions and joins the purge and stats routines.
 package server
 
 import (
@@ -27,6 +28,7 @@ type Storage struct {
 	Requests            map[common.InfoHash]map[common.PeerID]tracker.Request
 	requestsMu          sync.Mutex
 	peerSessions        map[peerKey]peerSession
+	tasks               *backgroundTasks
 	disableStatsRoutine atomic.Bool // Stats are printed by ForwarderManager when true.
 }
 
@@ -52,7 +54,11 @@ func (s *Storage) Update(request tracker.Request) context.Context {
 	}
 	key := peerKey{request.InfoHash, request.PeerID}
 	if _, ok := s.peerSessions[key]; !ok {
-		ctx, cancel := context.WithCancel(context.Background())
+		parent := context.Background()
+		if s.tasks != nil {
+			parent = s.tasks.ctx
+		}
+		ctx, cancel := context.WithCancel(parent)
 		s.peerSessions[key] = peerSession{ctx: ctx, cancel: cancel}
 	}
 	return s.peerSessions[key].ctx
@@ -98,8 +104,14 @@ func (s *Storage) GetPeers(infoHash common.InfoHash) []common.Peer {
 }
 
 func (s *Storage) purgeRoutine() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
 	for {
-		time.Sleep(1 * time.Minute)
+		select {
+		case <-s.tasks.ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		s.requestsMu.Lock()
 		if s.Config.Debug {
 			DebugLog.Printf("In memory %d hashes\n", len(s.Requests))
@@ -142,7 +154,12 @@ func (s *Storage) statsRoutine() {
 	ticker := time.NewTicker(time.Duration(s.Config.StatsInterval) * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-s.tasks.ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		// Double-check in case flag was set after routine started
 		if s.disableStatsRoutine.Load() {
 			return
@@ -228,10 +245,24 @@ func NewStorage(cfg *config.Config) *Storage {
 	storage := Storage{
 		Config:   cfg,
 		Requests: make(map[common.InfoHash]map[common.PeerID]tracker.Request),
+		tasks:    newBackgroundTasks(),
 	}
-	go storage.purgeRoutine()
+	storage.tasks.run(storage.purgeRoutine)
 	if !storage.disableStatsRoutine.Load() {
-		go storage.statsRoutine()
+		storage.tasks.run(storage.statsRoutine)
 	}
 	return &storage
+}
+
+func (s *Storage) Close() error {
+	if s.tasks != nil {
+		s.tasks.close()
+	}
+	s.requestsMu.Lock()
+	defer s.requestsMu.Unlock()
+	for key, session := range s.peerSessions {
+		session.cancel()
+		delete(s.peerSessions, key)
+	}
+	return nil
 }
