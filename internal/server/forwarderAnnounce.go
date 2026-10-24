@@ -186,7 +186,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 	if result.Success {
 		routablePeers, dropped := filterRoutableForwarderPeers(result.Peers)
 		if dropped > 0 {
-			fm.Log().Info(fmt.Sprintf("Filtered %d unroutable peer(s) from forwarder %s response\n", dropped, forwardName))
+			fm.Log().Info(fmt.Sprintf("Filtered %d unroutable peer(s) from forwarder %s response", dropped, forwardName))
 		}
 		if len(result.Peers) > 0 && len(routablePeers) == 0 {
 			result = buildFailureResult(result.Duration, fmt.Errorf("forwarder returned only unroutable peers (%d total)", len(result.Peers)))
@@ -229,7 +229,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 			suspendFor = 300 * time.Second
 		}
 		fm.suspendForwarderWithReason(forwardName, suspendFor, result.Error.Error())
-		fm.Log().Info(fmt.Sprintf("Suspending forwarder %s for %v\n", forwardName, suspendFor))
+		fm.Log().Info(fmt.Sprintf("Suspending forwarder %s for %v", forwardName, suspendFor))
 		return
 	}
 
@@ -243,7 +243,7 @@ func (fm *ForwarderManager) handleAnnounceResult(job AnnounceJob, result Announc
 		fm.logRetryableAnnounceResult(protocol, trackerURL, hash, result, nextFailures, threshold)
 	}
 	if fm.Config.Debug {
-		fm.Log().Error(fmt.Sprintf("  Duration: %v\n", result.Duration))
+		fm.Log().Error(fmt.Sprintf("Duration: %v", result.Duration))
 	}
 
 	if job.canceled() || fm.isStopping() {
@@ -286,7 +286,7 @@ func (fm *ForwarderManager) doUDPAnnounce(job AnnounceJob) AnnounceResult {
 	forward := job.Forwarder
 
 	if fm.Config.Debug && forward.Ip != "" {
-		fm.Log().Debug(fmt.Sprintf("  Using IP: %s\n", forward.Ip))
+		fm.Log().Debug(fmt.Sprintf("Using IP: %s", forward.Ip))
 	}
 
 	bitResponse, respBytes, err := fm.udpForwarder.AnnounceContext(job.context(), forward, job.Request)
@@ -314,12 +314,12 @@ func (fm *ForwarderManager) doHTTPAnnounce(job AnnounceJob) AnnounceResult {
 	uri := fm.buildAnnounceURI(forward, request, "")
 
 	if fm.Config.Debug {
-		fm.Log().Debug(fmt.Sprintf("  Request URI: %s\n", uri))
+		fm.Log().Debug(fmt.Sprintf("Request URI: %s", uri))
 		if forward.Ip != "" {
-			fm.Log().Debug(fmt.Sprintf("  Using IP: %s\n", forward.Ip))
+			fm.Log().Debug(fmt.Sprintf("Using IP: %s", forward.Ip))
 		}
 		if forward.Host != "" {
-			fm.Log().Debug(fmt.Sprintf("  Host header: %s\n", forward.Host))
+			fm.Log().Debug(fmt.Sprintf("Host header: %s", forward.Host))
 		}
 	}
 
@@ -417,7 +417,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 
 		result := buildFailureResult(duration, statusErr)
 		if fm.Config.Debug && !result.NonRetryable && !result.Suspend {
-			fm.Log().Error(fmt.Sprintf("HTTP %d %s (retryable)\n", response.StatusCode, response.Status))
+			fm.Log().Error(fmt.Sprintf("HTTP %d %s (retryable)", response.StatusCode, response.Status))
 		}
 		return result
 	}
@@ -426,7 +426,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 	if err != nil {
 		result := buildFailureResult(duration, fmt.Errorf("failed to read response: %w", err))
 		if fm.Config.Debug && !isTimeoutErr(err) && !result.NonRetryable {
-			fm.Log().Error(fmt.Sprintf("Failed to read response (%s): %v\n",
+			fm.Log().Error(fmt.Sprintf("Failed to read response (%s): %v",
 				map[bool]string{true: "non-retryable", false: "retryable"}[result.NonRetryable], err))
 		}
 		return result
@@ -451,7 +451,7 @@ func (fm *ForwarderManager) doSingleHTTPRequest(job AnnounceJob, uri string, sta
 			return AnnounceResult{Deferred: true, Duration: duration}
 		}
 		if fm.Config.Debug {
-			fm.Log().Error(fmt.Sprintf("Tracker failure response: %s\n", bitResponse.FailureReason))
+			fm.Log().Error(fmt.Sprintf("Tracker failure response: %s", bitResponse.FailureReason))
 		}
 		return buildFailureResult(duration, fmt.Errorf("tracker failure: %s", bitResponse.FailureReason))
 	}
@@ -492,7 +492,7 @@ func (fm *ForwarderManager) buildAnnounceURI(forward CoreCommon.Forward, request
 
 // logParseError logs details about a parse failure
 func (fm *ForwarderManager) logParseError(payload []byte, hash, uri string, err error) {
-	fm.Log().Error(fmt.Sprintf("Failed to parse response: %v\n", err))
+	fm.Log().Error(fmt.Sprintf("Failed to parse response: %v", err))
 
 	isText := true
 	if len(payload) > 0 {
@@ -510,14 +510,14 @@ func (fm *ForwarderManager) logParseError(payload []byte, hash, uri string, err 
 		if len(payloadStr) > 500 {
 			payloadStr = payloadStr[:500] + "... (truncated)"
 		}
-		fm.Log().Error(fmt.Sprintf("  Raw response data: %s\n", payloadStr))
+		fm.Log().Error(fmt.Sprintf("Raw response data: %s", payloadStr))
 	} else {
-		fm.Log().Error(fmt.Sprintf("  Response is binary (%d bytes)\n", len(payload)))
+		fm.Log().Error(fmt.Sprintf("Response is binary (%d bytes)", len(payload)))
 	}
 
 	tempFilename := fm.TempStorage.SaveBencodeFromForwarder(payload, hash, uri)
 	if tempFilename != "" {
-		fm.Log().Error(fmt.Sprintf("  Response saved to: %s\n", tempFilename))
+		fm.Log().Error(fmt.Sprintf("Response saved to: %s", tempFilename))
 	}
 }
 
@@ -556,7 +556,7 @@ func (fm *ForwarderManager) forwardEventToAll(infoHash common.InfoHash, peerID c
 	case <-done:
 	case <-time.After(time.Second * time.Duration(fm.Config.ForwardTimeout)):
 		if fm.Config.Debug {
-			fm.Log().Debug(fmt.Sprintf("Timeout waiting for %s event forwards to complete for %x\n", request.Event, infoHash))
+			fm.Log().Debug(fmt.Sprintf("Timeout waiting for %s event forwards to complete for %x", request.Event, infoHash))
 		}
 	}
 }
@@ -568,7 +568,7 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 	protocol := forwarder.GetProtocol()
 
 	if fm.Config.Debug {
-		fm.Log().Debug(fmt.Sprintf("Forwarding %s %s event for %s (peer %x) to %s\n",
+		fm.Log().Debug(fmt.Sprintf("Forwarding %s %s event for %s (peer %x) to %s",
 			protocol, request.Event, hash, peerID, trackerURL))
 	}
 
@@ -580,13 +580,13 @@ func (fm *ForwarderManager) executeEventAnnounce(forwarder CoreCommon.Forward, i
 	}
 
 	if err != nil {
-		fm.Log().Error(fmt.Sprintf("Error forwarding %s event for %s to %s: %s\n",
+		fm.Log().Error(fmt.Sprintf("Error forwarding %s event for %s to %s: %s",
 			request.Event, hash, trackerURL, err.Error()))
 		return
 	}
 
 	if fm.Config.Debug {
-		fm.Log().Debug(fmt.Sprintf("Successfully forwarded %s event for %s to %s\n",
+		fm.Log().Debug(fmt.Sprintf("Successfully forwarded %s event for %s to %s",
 			request.Event, hash, trackerURL))
 	}
 }

@@ -51,9 +51,18 @@ func run(ctx context.Context, cfg config.Config, loggers ...*slog.Logger) error 
 		}
 	}
 	core.Start()
-	logger.Info("Server ready to accept connections", "http_listen", listener.Addr().String(), "udp_listen", cfg.UDPListen, "config", &cfg)
+	logStartupConfig(logger, &cfg)
+	logger.Info("Server ready to accept connections", "http_listen", listener.Addr().String(), "udp_listen", cfg.UDPListen)
 	httpServer := newHTTPServer(mux, logger)
 	return serve(ctx, httpServer, listener, shutdownTimeout)
+}
+
+// logStartupConfig uses labeled, single-line records instead of a struct dump.
+func logStartupConfig(logger *slog.Logger, cfg *config.Config) {
+	logger.Info("Tracker configuration", "announce_interval_seconds", cfg.AnnounceInterval, "retry_period_seconds", cfg.RetryPeriod, "peer_age_minutes", cfg.Age, "tracker_id", cfg.TrackerID, "debug", cfg.Debug, "metrics", cfg.PrometheusEnabled, "x_real_ip", cfg.XRealIP, "stats_interval_seconds", cfg.StatsInterval)
+	logger.Info("Forwarder configuration", "configured", len(cfg.Forwards), "file", cfg.ForwardsFile, "workers", cfg.ForwarderWorkers, "max_workers", cfg.MaxForwarderWorkers, "queue_capacity", cfg.ForwarderQueueSize, "max_per_announce", cfg.MaxForwardersPerAnnounce)
+	logger.Info("Forwarder queue thresholds", "scale_percent", cfg.QueueScaleThresholdPct, "rate_limit_percent", cfg.QueueRateLimitThreshold, "throttle_percent", cfg.QueueThrottleThreshold, "throttle_top", cfg.QueueThrottleTopN, "initial_per_second", cfg.RateLimitInitialPerSec, "initial_burst", cfg.RateLimitInitialBurst)
+	logger.Info("Forwarder retry configuration", "timeout_seconds", cfg.ForwardTimeout, "attempts", cfg.ForwarderRetryAttempts, "backoff_ms", cfg.ForwarderRetryBaseMs, "suspend_seconds", cfg.ForwarderSuspendSeconds, "failure_threshold", cfg.ForwarderFailThreshold)
 }
 
 func newHTTPServer(handler http.Handler, logger *slog.Logger) *http.Server {

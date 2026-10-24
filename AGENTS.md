@@ -4,13 +4,9 @@ This file provides guidance for AI agents working on the retracker codebase. It 
 
 ## Project Overview
 
-**retracker** is a lightweight BitTorrent tracker written in Go that:
-- Receives and processes BitTorrent announce/scrape requests (HTTP and UDP)
-- Stores peer information in-memory (no database)
-- Can forward announces to external trackers (HTTP/HTTPS and UDP) and aggregate peer lists
-- Supports BEP 15 UDP tracker protocol (both server and client)
-- Exposes Prometheus metrics
-- Single binary executable
+Read [README.md](README.md) for features, usage, the HTTP API, development commands,
+and logging conventions. Deployment instructions live in [INSTALL.md](INSTALL.md).
+Keep those details in their canonical documents and link to them here.
 
 ## Fast Context Loading (2-minute scan)
 
@@ -42,19 +38,15 @@ Full command:
 
 Notes:
 - `make check` runs only `fmt-check` + `lint` (it does not run tests).
-- `make lint`, `make test`, and `make test-compact` cover every package with `./...`. `make test-race` runs all tests with the race detector and writes a combined coverage profile
-- `.github/workflows/build-ghcr.yml` runs QA for PRs, master pushes, and published releases. The image job requires QA success and is skipped for PRs; coverage artifacts are retained for 14 days
-- CI pins golangci-lint v2.15.0 and gofumpt v0.9.2. Make targets respect caller-provided Go cache locations
+- Build/test targets and CI behavior are documented in [README.md#development](README.md#development). Make targets respect caller-provided Go cache locations
 - If cache directories are not writable in restricted environments, run with local cache overrides:
   - `GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make fmt-check && GOCACHE=/tmp/retracker-gocache GOLANGCI_LINT_CACHE=/tmp/retracker-golangci-cache make lint && GOCACHE=/tmp/retracker-gocache make test`
 
 ### QA Tooling Requirements
 
-- Go 1.26+ with the Go 1.27.3 toolchain (see the root `go.mod`).
-- `golangci-lint` v2.15.0 installed and in `PATH` for `make lint`.
-  - Install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`
-- `gofumpt` is optional; `make fmt`/`make fmt-check` will fall back to `gofmt` if unavailable.
-  - CI installs `mvdan.cc/gofumpt@v0.9.2` to keep formatting reproducible.
+Use the toolchain declared in [go.mod](go.mod) and the QA tool versions installed
+by [the CI workflow](.github/workflows/build-ghcr.yml). Formatting tool discovery
+and fallback behavior are defined in [Makefile](Makefile).
 
 ### `go mod tidy` Guidance
 
@@ -62,7 +54,7 @@ Notes:
 - Do not run `go mod tidy` as a default QA step for every change.
 - If lint says `running 'go mod tidy' may solve the problem`, first verify it is not a cache/permission issue; in restricted environments, setting `GOCACHE`/`GOLANGCI_LINT_CACHE` is often sufficient.
 
-## Runtime Defaults Snapshot (v0.10.0)
+## Runtime Defaults Snapshot
 
 Defaults are initialized in `cmd/retracker/config.go`:
 - HTTP listen: `:6969`
@@ -82,11 +74,7 @@ Defaults are initialized in `cmd/retracker/config.go`:
 
 ## Endpoint Map
 
-- `GET /announce` -> HTTP announce handler on any configured HTTP port
-- `GET /` -> announce when the request Host specifies port `6969`; HTTP 200 with `retracker is live` on port `80` or an omitted Host port; other ports and unknown paths return 404
-- `GET /scrape` -> HTTP scrape handler
-- `GET /stats` -> text stats (`?format=json` for JSON)
-- `GET /metrics` -> Prometheus metrics (only if enabled)
+See [README.md#http-api](README.md#http-api) for routes and request limits.
 
 ## Project Structure
 
@@ -176,6 +164,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 
 ### Error Handling
 - Runtime services own an injected `*slog.Logger` through `observability.Logging`; use `service.Log().Error/Debug/Info/Warn` and structured attributes for new events
+- User-facing log format and statistics output are documented only in [README.md#logging](README.md#logging). `observability.NewTextLogger` implements that format; derived handlers share their output lock
 - `NewCore(cfg, tempStorage, logger)` propagates the logger to storage, receivers, configured managers, and runtime-created managers; standalone constructors accept an optional logger, and managers use `WithForwarderLogger`
 - Default handlers suppress debug records unless debug is enabled. Injected handlers control their levels; existing expensive debug branches also check `Config.Debug`
 - Configuration loaders return wrapped errors for the caller to log once; do not add package-global loggers
@@ -234,14 +223,10 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Local variables use camelCase
 - Legacy exported `common.Forward.Uri` and `Ip` names are preserved for compatibility; lint exempts only those two field-name findings
 
-### Go Modules
-- One module: `github.com/fl0v/retracker`, declared in the root `go.mod`
-- `common/` and `bittorrent/*` are ordinary packages in that module, with their existing import paths
-- Run Go commands from the repository root; `go test ./...` includes every package
+### Go Modules and Dependencies
 
-### Dependencies
-- External: `gopkg.in/yaml.v2`, `github.com/zeebo/bencode`, `github.com/prometheus/client_golang`
-- Internal: `github.com/fl0v/retracker/bittorrent/*`, `github.com/fl0v/retracker/common`
+Module ownership and commands: [README.md#development](README.md#development).
+Dependency requirements and the toolchain: [go.mod](go.mod).
 
 ## Testing Considerations
 
@@ -250,7 +235,7 @@ Each `.go` file in `internal/server/` has a header comment describing its respon
 - Age-based purging should be tested with time manipulation
 - UDP handler should test connection state management
 - Shutdown tests must cover active HTTP/UDP requests, retry cancellation, repeated close, and concurrent queue producers; run the race detector after lifecycle changes
-- `make test-cover` tests every package and writes a combined statement-coverage profile to `coverage.out` (override with `COVERPROFILE`); `make test-race` adds race detection
+- Use the coverage and race-check commands from [README.md#development](README.md#development)
 
 ## Common Tasks
 
@@ -271,12 +256,8 @@ After any logic changes, update relevant documentation:
 Keep documentation concise and accurate. Remove outdated information rather than letting it accumulate.
 
 ### Debugging
-- Enable debug mode with `-d` flag
-- Debug-level records provide detailed information about:
-  - Storage operations
-  - Peer counts per hash
-  - Timestamp deltas
-  - Lock/unlock operations
+
+See [README.md#logging](README.md#logging) for logging controls and output.
 
 ### Modifying Forwarder Logic
 - Announce execution logic is in `forwarderAnnounce.go` (both HTTP and UDP)
@@ -300,8 +281,12 @@ Keep documentation concise and accurate. Remove outdated information rather than
 
 ## Version Information
 
-- Current version: `0.10.0` (defined in `main.go`)
-- Check version with `-v` flag
+The version is defined in [cmd/retracker/main.go](cmd/retracker/main.go).
+
+- Increment `VERSION` for every batch of changes intended for deployment, before the final commit and image build.
+- Use a patch increment for fixes, a minor increment for compatible features, and a major increment for breaking changes.
+- Include the version bump in the same commit as the changes. Verify the built image's `retracker -v` output before deployment.
+- Keep the version value in `main.go` only; other documents and components should reference that source instead of maintaining copies.
 
 ## Notes for AI Agents
 

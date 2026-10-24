@@ -1,6 +1,7 @@
 // forwarderStats.go - Statistics collection and reporting for forwarders.
 // Implements StatsDataProvider interface for observability.
 // Records response times (EMA), tracks per-hash peer stats, client stats.
+// Periodic console statistics emit one readable record per counter.
 // Key function: GetHashPeerStats() returns seeders/leechers per hash.
 package server
 
@@ -72,8 +73,14 @@ func (fm *ForwarderManager) printStats() {
 	}
 
 	simpleStats := collector.CollectSimpleStats(provider)
-	text := collector.FormatSimpleText(simpleStats)
-	fm.Log().Info("Tracker statistics", "summary", text)
+	logger := fm.Log()
+	logger.Info("Pending jobs", "count", simpleStats.PendingJobs)
+	logger.Info("Tracked hashes", "count", simpleStats.TrackedHashes)
+	logger.Info("Disabled forwarders", "count", simpleStats.DisabledForwarders)
+	logger.Info("Suspended forwarders", "count", simpleStats.SuspendedForwarders)
+	logger.Info("Active forwarders", "count", simpleStats.ActiveForwarders)
+	logger.Info("Active workers", "count", simpleStats.ActiveWorkers)
+	logger.Info("Active clients", "count", simpleStats.ActiveClients)
 }
 
 // forwarderStatsProvider implements observability.StatsDataProvider

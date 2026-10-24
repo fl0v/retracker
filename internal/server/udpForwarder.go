@@ -108,7 +108,7 @@ func (uf *UDPForwarder) cleanupConnections() {
 				if now.Sub(entry.timestamp) > connectionIDLifetime {
 					delete(uf.connections, name)
 					if uf.debug {
-						uf.Log().Debug(fmt.Sprintf("Expired connection ID for %s\n", name))
+						uf.Log().Debug(fmt.Sprintf("Expired connection ID for %s", name))
 					}
 				}
 			}
@@ -288,7 +288,7 @@ func (uf *UDPForwarder) connect(ctx context.Context, forwarder CoreCommon.Forwar
 	uf.connMu.Unlock()
 
 	if uf.debug {
-		uf.Log().Debug(fmt.Sprintf("Got connection ID %d for %s\n", connectionID, forwarderName))
+		uf.Log().Debug(fmt.Sprintf("Got connection ID %d for %s", connectionID, forwarderName))
 	}
 
 	return connectionID, conn, nil
@@ -427,7 +427,7 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 			errorMsg := string(respBuf[8:n])
 			// Check if it's an invalid connection ID error
 			if uf.debug {
-				uf.Log().Debug(fmt.Sprintf("Tracker error: %s\n", errorMsg))
+				uf.Log().Debug(fmt.Sprintf("Tracker error: %s", errorMsg))
 			}
 			// Clear cached connection ID to force reconnect
 			uf.connMu.Lock()
@@ -502,7 +502,7 @@ func (uf *UDPForwarder) AnnounceContext(parent context.Context, forwarder CoreCo
 		}
 
 		if uf.debug {
-			uf.Log().Debug(fmt.Sprintf("UDP announce to %s: interval=%d, seeders=%d, leechers=%d, peers=%d\n",
+			uf.Log().Debug(fmt.Sprintf("UDP announce to %s: interval=%d, seeders=%d, leechers=%d, peers=%d",
 				trackerURL, interval, seeders, leechers, len(peers)))
 		}
 

@@ -8,7 +8,7 @@ Root on port `80` (or with no port in Host) returns HTTP 200 with
 `retracker is live`, without processing an announce. Root on other ports and
 unrecognized paths return HTTP 404.
 
-## Current Implementation Note (v0.10.0)
+## Current Implementation Note
 
 - `ForwardStoppedEvent()` and `ForwardCompletedEvent()` exist in `forwarderAnnounce.go`, but are not currently invoked from `receiverAnnounce.ProcessAnnounce()`.
 - Current stopped/completed behavior in the announce path is local-state handling:

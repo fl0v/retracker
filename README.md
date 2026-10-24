@@ -95,8 +95,21 @@ Other projects importing these packages should depend on the root module, `githu
 
 GitHub Actions runs formatting, lint, race tests with coverage, and a Linux build for pull requests, pushes to `master`, and published releases. Image publishing waits for this QA job and runs only for master pushes and releases. Each successful run saves a coverage artifact for 14 days.
 
-Runtime service logs use Go `slog` text records on stdout in the CLI; debug
-records are enabled with `-d`. Announce failures and forwarder outcomes include
+## Logging
+
+Runtime service logs use readable `LEVEL message key=value` records on stdout
+in the CLI, without application timestamps or `time=`, `level=`, and `msg=`
+prefixes. Docker can add timestamps with `docker logs --timestamps`. Debug
+records are enabled with `-d`. Statistics use separate records for each counter;
+embedded newlines and tabs are flattened so each event stays on one Docker log line.
+
+```text
+INFO Pending jobs count=854
+INFO Tracked hashes count=145
+WARN Forwarder announce failed protocol=udp tracker=example error="request timed out"
+```
+
+Announce failures and forwarder outcomes include
 structured context such as hash, protocol, timing, and errors. Each running
 tracker serves its own Prometheus registry, including Go and process metrics.
 HTTP numeric forwarder status counters count received responses once per attempt;
@@ -104,4 +117,4 @@ the `error` status counts failed announces, and UDP successful outcomes use `200
 
 ## License
 
-MIT License - see [LICENSE](LICENSE).
+See [LICENSE](LICENSE).

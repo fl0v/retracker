@@ -81,7 +81,6 @@ func (config *Config) ReloadForwards(fileName string) error {
 // Prometheus status is always displayed from Config.PrometheusEnabled
 func (config *Config) PrintConfig() {
 	fmt.Println("\n=== Configuration ===")
-	fmt.Printf("Version: %s\n", "0.10.0") // TODO: get from main package
 	fmt.Printf("HTTP Listen: %s\n", config.Listen)
 	if config.UDPListen != "" {
 		fmt.Printf("UDP Listen: %s\n", config.UDPListen)

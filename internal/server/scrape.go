@@ -133,7 +133,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 		infoHash := common.InfoHash(infoHashString)
 		infoHashHex := strings.ToUpper(hex.EncodeToString([]byte(infoHashString)))
 		if stat, ok := stats[infoHash]; ok {
-			core.Log().Debug(fmt.Sprintf("%s\tComplete (seed): %d\tIncomplete (leech): %d", infoHashHex, stat.Complete, stat.Incomplete))
+			core.Log().Debug(fmt.Sprintf("%s Complete (seed): %d Incomplete (leech): %d", infoHashHex, stat.Complete, stat.Incomplete))
 			scrapeResponse.Files[infoHashString] = ScrapeResponseHash(stat)
 		} else {
 			core.Log().Debug(fmt.Sprintf("%s not found in storage", infoHashHex))
@@ -147,7 +147,7 @@ func (core *Core) getScrapeResponse(infoHashes []string) (ScrapeResponse, error)
 
 func (core *Core) HTTPScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	xrealip := r.Header.Get(`X-Real-IP`)
-	core.Log().Debug(fmt.Sprintf("%s %s %s '%s' '%s'\n", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent()))
+	core.Log().Debug(fmt.Sprintf("%s %s %s '%s' '%s'", r.Method, r.RemoteAddr, xrealip, r.RequestURI, r.UserAgent()))
 	query := r.URL.Query()
 	scrapeResponse, err := core.getScrapeResponse(query["info_hash"])
 	if err != nil {

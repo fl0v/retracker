@@ -16,11 +16,7 @@ func NewLogging(debug bool, loggers ...*slog.Logger) Logging {
 	if len(loggers) > 0 && loggers[0] != nil {
 		return Logging{logger: loggers[0]}
 	}
-	level := slog.LevelInfo
-	if debug {
-		level = slog.LevelDebug
-	}
-	return Logging{logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))}
+	return Logging{logger: NewTextLogger(os.Stderr, debug)}
 }
 
 func (logging Logging) Log() *slog.Logger {

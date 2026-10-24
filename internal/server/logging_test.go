@@ -13,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	corecommon "github.com/fl0v/retracker/common"
+	"github.com/fl0v/retracker/internal/observability"
 )
 
 type logBuffer struct {
@@ -139,5 +142,86 @@ func TestTempStorageUsesInjectedLogger(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `"level":"ERROR"`) {
 		t.Fatal("diagnostic error did not reach injected logger")
+	}
+}
+
+func TestStatisticsLogUsesSeparateReadableRecords(t *testing.T) {
+	var output logBuffer
+	cfg := makeCfg()
+	cfg.ForwarderWorkers = 3
+	storage := NewStorage(cfg)
+	defer storage.Close()
+	cache := NewForwarderStorage()
+	metrics, err := observability.NewPrometheus(prometheus.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := NewForwarderManager(cfg, cache, storage, metrics, nil, WithForwarderLogger(observability.NewTextLogger(&output, false)))
+	defer fm.Stop()
+	req := regressionRequest(t)
+	ctx := storage.Update(req)
+	fm.pendingJobs["one"] = &announceJobState{peerContext: ctx}
+	fm.pendingJobs["two"] = &announceJobState{peerContext: ctx}
+	fm.Forwarders = []corecommon.Forward{{Name: "upstream", Uri: "udp://8.8.8.8:6969/announce"}}
+	fm.disabledForwarders["disabled"] = &DisabledForwarder{Reason: "failure", DisabledAt: time.Now().Unix(), FailureCount: 2}
+	fm.suspendedForwarders["suspended"] = &SuspendedForwarder{Reason: "busy", SuspendedUntil: time.Now().Add(time.Minute)}
+	fm.printStats()
+	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	want := []string{"Pending jobs count=2", "Tracked hashes count=1", "Disabled forwarders count=1", "Suspended forwarders count=1", "Active forwarders count=1", "Active workers count=3", "Active clients count=1"}
+	if len(lines) != len(want) {
+		t.Fatalf("want seven records, got %q", output.String())
+	}
+	for i, line := range lines {
+		if line != "INFO "+want[i] || strings.Contains(line, `\n`) || strings.Contains(line, "msg=") || strings.Contains(line, "summary=") {
+			t.Fatalf("bad statistic line: %q", line)
+		}
+	}
+	families, err := metricsRegistryValues(metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if families["forwarder_workers"] != 3 || families["forwarders_disabled"] != 1 || families["forwarders_suspended"] != 1 {
+		t.Fatalf("statistics logging lost metric updates: %v", families)
+	}
+}
+
+func metricsRegistryValues(metrics *observability.Prometheus) (map[string]float64, error) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(metrics)
+	families, err := registry.Gather()
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]float64)
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			if metric.Gauge != nil {
+				values[family.GetName()] = metric.Gauge.GetValue()
+			}
+		}
+	}
+	return values, nil
+}
+
+func TestDiagnosticLogsAreReadableSingleLines(t *testing.T) {
+	var output logBuffer
+	logger := observability.NewTextLogger(&output, true)
+	temp, err := NewTempStorage(t.TempDir(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temp.Close()
+	fm := NewForwarderManager(makeCfg(), NewForwarderStorage(), nil, nil, temp, WithForwarderLogger(logger))
+	defer fm.Stop()
+	fm.logParseError([]byte("first line\n\tsecond line\r\n"), "hash", "http://tracker.example/announce", errors.New("invalid\nbencode"))
+	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want three diagnostic records, got %q", output.String())
+	}
+	if strings.Contains(output.String(), `\n`) || strings.Contains(output.String(), `\t`) || strings.Contains(output.String(), "msg=") {
+		t.Fatalf("escaped formatting remains: %q", output.String())
+	}
+	if !strings.Contains(lines[0], "Failed to parse response: invalid bencode") || !strings.Contains(lines[1], "Raw response data: first line second line") || !strings.Contains(lines[2], "Response saved to:") {
+		t.Fatalf("diagnostic information lost: %q", lines)
 	}
 }

@@ -185,13 +185,13 @@ func (ru *ReceiverUDP) handlePackets() {
 		n, clientAddr, err := ru.conn.ReadFromUDP(buffer)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				ru.Log().Error(fmt.Sprintf("UDP read error: %s\n", err.Error()))
+				ru.Log().Error(fmt.Sprintf("UDP read error: %s", err.Error()))
 			}
 			return
 		}
 
 		if n < 16 {
-			ru.Log().Error(fmt.Sprintf("UDP packet too short: %d bytes\n", n))
+			ru.Log().Error(fmt.Sprintf("UDP packet too short: %d bytes", n))
 			continue
 		}
 
@@ -214,7 +214,7 @@ func (ru *ReceiverUDP) handlePacket(data []byte, clientAddr *net.UDPAddr) {
 	// Check if it's a connect request (first 8 bytes are magic)
 	var magic uint64
 	if err := binary.Read(reader, binary.BigEndian, &magic); err != nil {
-		ru.Log().Error(fmt.Sprintf("Failed to read magic: %s\n", err.Error()))
+		ru.Log().Error(fmt.Sprintf("Failed to read magic: %s", err.Error()))
 		return
 	}
 
@@ -228,7 +228,7 @@ func (ru *ReceiverUDP) handlePacket(data []byte, clientAddr *net.UDPAddr) {
 	var connectionID uint64
 	reader = bytes.NewReader(data)
 	if err := binary.Read(reader, binary.BigEndian, &connectionID); err != nil {
-		ru.Log().Error(fmt.Sprintf("Failed to read connection ID: %s\n", err.Error()))
+		ru.Log().Error(fmt.Sprintf("Failed to read connection ID: %s", err.Error()))
 		return
 	}
 
@@ -252,7 +252,7 @@ func (ru *ReceiverUDP) handlePacket(data []byte, clientAddr *net.UDPAddr) {
 	// Read action
 	var action uint32
 	if err := binary.Read(reader, binary.BigEndian, &action); err != nil {
-		ru.Log().Error(fmt.Sprintf("Failed to read action: %s\n", err.Error()))
+		ru.Log().Error(fmt.Sprintf("Failed to read action: %s", err.Error()))
 		// Try to read transaction ID for error response
 		var transactionID uint32
 		reader.Seek(12, 0)
@@ -275,7 +275,7 @@ func (ru *ReceiverUDP) handlePacket(data []byte, clientAddr *net.UDPAddr) {
 	case UDPActionScrape:
 		ru.handleScrape(data, clientAddr)
 	default:
-		ru.Log().Error(fmt.Sprintf("Unknown action: %d\n", action))
+		ru.Log().Error(fmt.Sprintf("Unknown action: %d", action))
 		ru.sendError(clientAddr, transactionID, "Unknown action")
 	}
 }
@@ -283,7 +283,7 @@ func (ru *ReceiverUDP) handlePacket(data []byte, clientAddr *net.UDPAddr) {
 func (ru *ReceiverUDP) handleConnect(data []byte, clientAddr *net.UDPAddr) {
 	// BEP 15: Check whether the packet is at least 16 bytes
 	if len(data) < 16 {
-		ru.Log().Error(fmt.Sprintf("Connect request too short: %d bytes (minimum 16)\n", len(data)))
+		ru.Log().Error(fmt.Sprintf("Connect request too short: %d bytes (minimum 16)", len(data)))
 		return
 	}
 
@@ -301,13 +301,13 @@ func (ru *ReceiverUDP) handleConnect(data []byte, clientAddr *net.UDPAddr) {
 
 	// BEP 15: Check whether the action is connect (0)
 	if req.Action != UDPActionConnect {
-		ru.Log().Error(fmt.Sprintf("Invalid action in connect request: %d (expected 0)\n", req.Action))
+		ru.Log().Error(fmt.Sprintf("Invalid action in connect request: %d (expected 0)", req.Action))
 		ru.sendError(clientAddr, req.TransactionID, "Invalid action")
 		return
 	}
 
 	if ru.Config.Debug {
-		ru.Log().Debug(fmt.Sprintf("UDP Connect request from %s, transaction_id: %d\n", clientAddr.String(), req.TransactionID))
+		ru.Log().Debug(fmt.Sprintf("UDP Connect request from %s, transaction_id: %d", clientAddr.String(), req.TransactionID))
 	}
 
 	// Generate connection ID - BEP 15: Connection IDs should not be guessable by the client
@@ -315,7 +315,7 @@ func (ru *ReceiverUDP) handleConnect(data []byte, clientAddr *net.UDPAddr) {
 	randomBytes := make([]byte, 8)
 	var connectionID uint64
 	if _, err := rand.Read(randomBytes); err != nil {
-		ru.Log().Error(fmt.Sprintf("Failed to generate random connection ID: %s\n", err.Error()))
+		ru.Log().Error(fmt.Sprintf("Failed to generate random connection ID: %s", err.Error()))
 		// Fallback to timestamp-based if random fails (not ideal but better than crashing)
 		connectionID = uint64(time.Now().UnixNano())
 	} else {
@@ -340,7 +340,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 	// BEP 15: Check whether the packet is at least 20 bytes (minimum for announce)
 	// Actual IPv4 announce request is 98 bytes, but we check minimum per spec
 	if len(data) < 20 {
-		ru.Log().Error(fmt.Sprintf("Announce request too short: %d bytes (minimum 20)\n", len(data)))
+		ru.Log().Error(fmt.Sprintf("Announce request too short: %d bytes (minimum 20)", len(data)))
 		// Try to read transaction ID for error response
 		var transactionID uint32
 		if len(data) >= 16 {
@@ -369,7 +369,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 
 	// BEP 15: Check whether the action is announce (1)
 	if req.Action != UDPActionAnnounce {
-		ru.Log().Error(fmt.Sprintf("Invalid action in announce request: %d (expected 1)\n", req.Action))
+		ru.Log().Error(fmt.Sprintf("Invalid action in announce request: %d (expected 1)", req.Action))
 		ru.sendError(clientAddr, req.TransactionID, "Invalid action")
 		return
 	}
@@ -438,7 +438,7 @@ func (ru *ReceiverUDP) handleAnnounce(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	if ru.Config.Debug {
-		ru.Log().Debug(fmt.Sprintf("UDP Announce from %s, hash: %x, peer_id: %x, port: %d, event: %s\n",
+		ru.Log().Debug(fmt.Sprintf("UDP Announce from %s, hash: %x, peer_id: %x, port: %d, event: %s",
 			remoteAddr, req.InfoHash, req.PeerID, req.Port, eventStr))
 	}
 
@@ -479,7 +479,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	// BEP 15: Check whether the packet is at least 8 bytes (minimum for scrape)
 	// But we need at least connection_id (8) + action (4) + transaction_id (4) = 16 bytes
 	if len(data) < 16 {
-		ru.Log().Error(fmt.Sprintf("Scrape request too short: %d bytes (minimum 16)\n", len(data)))
+		ru.Log().Error(fmt.Sprintf("Scrape request too short: %d bytes (minimum 16)", len(data)))
 		// Try to read transaction ID for error response
 		var transactionID uint32
 		if len(data) >= 12 {
@@ -511,7 +511,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 
 	// BEP 15: Check whether the action is scrape (2)
 	if action != UDPActionScrape {
-		ru.Log().Error(fmt.Sprintf("Invalid action in scrape request: %d (expected 2)\n", action))
+		ru.Log().Error(fmt.Sprintf("Invalid action in scrape request: %d (expected 2)", action))
 		ru.sendError(clientAddr, transactionID, "Invalid action")
 		return
 	}
@@ -527,7 +527,7 @@ func (ru *ReceiverUDP) handleScrape(data []byte, clientAddr *net.UDPAddr) {
 	}
 
 	if ru.Config.Debug {
-		ru.Log().Debug(fmt.Sprintf("UDP Scrape from %s, transaction_id: %d, hashes: %d\n",
+		ru.Log().Debug(fmt.Sprintf("UDP Scrape from %s, transaction_id: %d, hashes: %d",
 			clientAddr.String(), transactionID, len(infoHashes)))
 	}
 
@@ -655,7 +655,7 @@ func (ru *ReceiverUDP) sendAnnounceResponse(clientAddr *net.UDPAddr, transaction
 	ru.conn.WriteToUDP(buf.Bytes(), clientAddr)
 
 	if ru.Config.Debug {
-		ru.Log().Debug(fmt.Sprintf("UDP Announce response sent (%s): interval=%d, seeders=%d, leechers=%d, peers=%d\n",
+		ru.Log().Debug(fmt.Sprintf("UDP Announce response sent (%s): interval=%d, seeders=%d, leechers=%d, peers=%d",
 			map[bool]string{true: "IPv6", false: "IPv4"}[isIPv6], response.Interval, seeders, leechers, peerCount))
 	}
 }

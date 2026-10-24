@@ -5,13 +5,14 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/fl0v/retracker/internal/observability"
 )
 
-const VERSION = `0.10.0`
+const VERSION = `0.10.1`
 
 //go:embed favicon.ico
 var faviconIco []byte
@@ -37,20 +38,17 @@ func main() {
 		os.Exit(0)
 	}
 
-	fmt.Printf("Starting version %s\n", VERSION)
+	logger := observability.NewTextLogger(os.Stdout, false)
+	logger.Info("Starting retracker", "version", VERSION)
 
 	cfg, err := loadConfig(flag.CommandLine, os.LookupEnv)
 	if err != nil {
-		slog.Error("Failed to load configuration", "error", err)
+		logger.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	level := slog.LevelInfo
-	if cfg.Debug {
-		level = slog.LevelDebug
-	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger = observability.NewTextLogger(os.Stdout, cfg.Debug)
 	err = run(ctx, cfg, logger)
 	stop()
 	if err != nil {
